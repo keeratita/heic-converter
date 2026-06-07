@@ -31,7 +31,8 @@
     "sandbox": "node test/browser/server.mjs",
     "lint": "eslint .",
     "sonar": "sonar-scanner",
-    "prepare": "husky"
+    "prepare": "husky",
+    "release": "node build-scripts/release.js"
   },
   "keywords": [
     "heic",

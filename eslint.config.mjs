@@ -10,6 +10,7 @@ export default tseslint.config(
       'dist/',
       'node_modules/',
       'build-wasm/',
+      'build-scripts/',
       'src/wasm/wrapper/heic-decoder.js'
     ],
   },

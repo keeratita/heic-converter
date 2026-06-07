@@ -217,8 +217,24 @@ npm run sandbox
 ```
 Then navigate to: `http://localhost:3000`
 
+### Release / Versioning
+To bump the package version (following SemVer) and push the release commits/tags to the git remote:
+```bash
+npm run release
+```
+Alternatively, you can pass the release type as an argument:
+```bash
+npm run release patch
+npm run release minor
+npm run release major
+npm run release current
+```
+This script will automatically run the linter, build the TS library, run the unit tests. For `patch`, `minor`, and `major`, it bumps the version (updating `package.json`/`package-lock.json`), commits the changes with a Conventional Commit message (`chore(release): X.Y.Z`), tags the commit, and pushes both the commit and tag to the remote. For `current`, it simply tags the current commit with the existing version in `package.json` (e.g. `vX.Y.Z`) and pushes that tag to the remote without committing or altering files.
+
+
 ---
 
 ## 📄 License
 
 MIT © Keerati Tansawatcharoen
+
