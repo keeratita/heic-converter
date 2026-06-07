@@ -1,4 +1,4 @@
-# @keerati/heic-converter
+# @keeratita/heic-converter
 
 A modern, lightweight TypeScript library to convert `.heic` and `.heif` images to standard web formats (JPEG, PNG, SVG) client-side in the browser or on the backend in Node.js.
 
@@ -20,7 +20,7 @@ Designed specifically for environments with strict **Content Security Policy (CS
 ## 📦 Installation
 
 ```bash
-npm install @keerati/heic-converter
+npm install @keeratita/heic-converter
 ```
 
 ---
@@ -32,7 +32,7 @@ npm install @keerati/heic-converter
 In the browser, you can pass a `File` or `Blob` and get a converted `Blob` back:
 
 ```typescript
-import { convertHeic } from '@keerati/heic-converter';
+import { convertHeic } from '@keeratita/heic-converter';
 
 // Convert input File/Blob to JPEG
 const heicBlob = /* your file input */;
@@ -53,7 +53,7 @@ By default, the library tries to fetch `heic-decoder.wasm` relative to the curre
 If your bundler places files in a custom assets folder or CDN, you can configure the default decoder or inject a custom one:
 
 ```typescript
-import { convertHeic, LibheifDecoder } from '@keerati/heic-converter';
+import { convertHeic, LibheifDecoder } from '@keeratita/heic-converter';
 
 // Create decoder with custom asset paths
 const decoder = new LibheifDecoder({
@@ -70,7 +70,7 @@ const pngBlob = await convertHeic(heicBlob, {
 Alternatively, if you prefer to load the WASM binary manually as an `ArrayBuffer` (e.g. from an API or local bundle):
 
 ```typescript
-import { convertHeic, LibheifDecoder } from '@keerati/heic-converter';
+import { convertHeic, LibheifDecoder } from '@keeratita/heic-converter';
 
 const wasmResponse = await fetch('/assets/heic-decoder.wasm');
 const wasmBinary = await wasmResponse.arrayBuffer();
@@ -91,7 +91,7 @@ However, you can use the `LibheifDecoder` in Node.js to retrieve the raw RGBA pi
 
 ```typescript
 import fs from 'fs';
-import { LibheifDecoder } from '@keerati/heic-converter';
+import { LibheifDecoder } from '@keeratita/heic-converter';
 import sharp from 'sharp'; // external node image library
 
 async function convertNode() {
@@ -120,7 +120,7 @@ async function convertNode() {
 For large images, you can pass an `onProgress` callback to track the conversion progress (0% to 100%):
 
 ```typescript
-import { convertHeic } from '@keerati/heic-converter';
+import { convertHeic } from '@keeratita/heic-converter';
 
 const heicBlob = /* your file */;
 const jpegBlob = await convertHeic(heicBlob, {
@@ -181,7 +181,7 @@ The default WASM-based implementation of `IHeicDecoder`.
 The library keeps a shared instance of `LibheifDecoder` to speed up subsequent calls. Call `freeSharedDecoder()` when your application is done converting images to release memory.
 
 ```typescript
-import { freeSharedDecoder } from '@keerati/heic-converter';
+import { freeSharedDecoder } from '@keeratita/heic-converter';
 
 // After you finish converting all images
 freeSharedDecoder();
