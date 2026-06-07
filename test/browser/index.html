@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HEIC Converter Sandbox & CSP Validator</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #090a0f;
+      --surface: #121420;
+      --surface-hover: #1b1e30;
+      --border: #252942;
+      --primary: #8a2be2;
+      --primary-glow: rgba(138, 43, 226, 0.4);
+      --primary-hover: #9b46f8;
+      --text: #f3f4f6;
+      --text-muted: #9ca3af;
+      --success: #10b981;
+      --error: #ef4444;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background-color: var(--bg);
+      color: var(--text);
+      font-family: 'Outfit', sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem 1rem;
+      overflow-x: hidden;
+    }
+
+    /* Decorative background glows */
+    .glow {
+      position: absolute;
+      width: 400px;
+      height: 400px;
+      background: radial-gradient(circle, var(--primary-glow) 0%, rgba(9,10,15,0) 70%);
+      top: -100px;
+      left: -100px;
+      z-index: -1;
+      filter: blur(50px);
+      pointer-events: none;
+    }
+
+    .glow-2 {
+      position: absolute;
+      width: 500px;
+      height: 500px;
+      background: radial-gradient(circle, rgba(16, 185, 129, 0.15) 0%, rgba(9,10,15,0) 70%);
+      bottom: -100px;
+      right: -100px;
+      z-index: -1;
+      filter: blur(60px);
+      pointer-events: none;
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 2.5rem;
+      max-width: 800px;
+      z-index: 1;
+    }
+
+    h1 {
+      font-size: 2.75rem;
+      font-weight: 700;
+      background: linear-gradient(135deg, #fff 30%, #a78bfa 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      margin-bottom: 0.5rem;
+      letter-spacing: -0.025em;
+    }
+
+    p.subtitle {
+      font-size: 1.1rem;
+      color: var(--text-muted);
+      line-height: 1.6;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 1000px;
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 2rem;
+      z-index: 1;
+    }
+
+    @media (min-width: 768px) {
+      .container {
+        grid-template-columns: 1.2fr 1fr;
+      }
+    }
+
+    /* Card component with glassmorphism */
+    .card {
+      background: rgba(18, 20, 32, 0.75);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 2rem;
+      backdrop-filter: blur(16px);
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+    }
+
+    .card-title {
+      font-size: 1.25rem;
+      font-weight: 600;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 0.75rem;
+    }
+
+    /* Drag & Drop Area */
+    .dropzone {
+      border: 2px dashed var(--border);
+      border-radius: 16px;
+      padding: 3rem 1.5rem;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      background: rgba(9, 10, 15, 0.4);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 1rem;
+    }
+
+    .dropzone:hover, .dropzone.dragover {
+      border-color: var(--primary);
+      background: rgba(138, 43, 226, 0.05);
+      box-shadow: 0 0 15px rgba(138, 43, 226, 0.1);
+    }
+
+    .dropzone-icon {
+      font-size: 3rem;
+      color: var(--text-muted);
+      transition: color 0.3s ease;
+    }
+
+    .dropzone:hover .dropzone-icon {
+      color: var(--primary-hover);
+    }
+
+    .dropzone-text {
+      font-weight: 500;
+    }
+
+    .dropzone-subtext {
+      font-size: 0.875rem;
+      color: var(--text-muted);
+    }
+
+    /* Form Controls */
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    label {
+      font-size: 0.875rem;
+      font-weight: 500;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .select-wrapper, .input-wrapper {
+      position: relative;
+    }
+
+    select, input[type="range"] {
+      width: 100%;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 0.75rem 1rem;
+      border-radius: 10px;
+      font-family: inherit;
+      font-size: 1rem;
+      outline: none;
+      transition: border-color 0.2s ease;
+    }
+
+    select:focus {
+      border-color: var(--primary);
+    }
+
+    .range-val {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.875rem;
+      text-align: right;
+      color: var(--primary-hover);
+      margin-top: 0.25rem;
+    }
+
+    /* Button */
+    .btn {
+      background: var(--primary);
+      color: white;
+      border: none;
+      padding: 0.875rem 1.5rem;
+      border-radius: 12px;
+      font-weight: 600;
+      font-size: 1rem;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      box-shadow: 0 4px 14px var(--primary-glow);
+    }
+
+    .btn:hover:not(:disabled) {
+      background: var(--primary-hover);
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px rgba(138, 43, 226, 0.6);
+    }
+
+    .btn:active:not(:disabled) {
+      transform: translateY(0);
+    }
+
+    .btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      box-shadow: none;
+    }
+
+    /* File details panel */
+    .file-details {
+      display: none;
+      background: rgba(9, 10, 15, 0.5);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1rem;
+      font-size: 0.9rem;
+    }
+
+    .file-details.active {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 0.5rem 1rem;
+    }
+
+    .file-details-label {
+      color: var(--text-muted);
+      font-weight: 500;
+    }
+
+    /* Preview section */
+    .preview-container {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 250px;
+      border: 1px dashed var(--border);
+      border-radius: 16px;
+      background: rgba(9, 10, 15, 0.3);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .preview-image {
+      max-width: 100%;
+      max-height: 400px;
+      object-fit: contain;
+      border-radius: 8px;
+      display: none;
+      box-shadow: 0 4px 15px rgba(0, 0, 0, 0.4);
+    }
+
+    .preview-placeholder {
+      color: var(--text-muted);
+      text-align: center;
+      padding: 2rem;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    /* Output details card */
+    .output-info {
+      display: none;
+      border-top: 1px solid var(--border);
+      padding-top: 1rem;
+      margin-top: 0.5rem;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+    }
+
+    .output-info.active {
+      display: grid;
+    }
+
+    .stat-card {
+      background: rgba(25, 27, 43, 0.4);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 0.75rem;
+    }
+
+    .stat-label {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .stat-val {
+      font-size: 1.1rem;
+      font-weight: 600;
+      color: #fff;
+      margin-top: 0.25rem;
+    }
+
+    /* Console logs component */
+    .console-card {
+      grid-column: 1 / -1;
+      background: rgba(10, 11, 16, 0.85);
+    }
+
+    .console-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .console-clear {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      cursor: pointer;
+      background: none;
+      border: 1px solid var(--border);
+      padding: 0.25rem 0.5rem;
+      border-radius: 6px;
+      transition: all 0.2s;
+    }
+
+    .console-clear:hover {
+      color: #fff;
+      border-color: var(--text-muted);
+    }
+
+    .console-output {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.85rem;
+      background: #050608;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1rem;
+      height: 180px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+    }
+
+    .log-line {
+      display: flex;
+      gap: 0.5rem;
+    }
+
+    .log-time {
+      color: #585c89;
+      flex-shrink: 0;
+    }
+
+    .log-tag {
+      font-weight: 600;
+      flex-shrink: 0;
+    }
+
+    .log-info .log-tag { color: var(--primary-hover); }
+    .log-success .log-tag { color: var(--success); }
+    .log-error .log-tag { color: var(--error); }
+    
+    .log-message {
+      color: #d1d5db;
+    }
+
+    /* Footer */
+    footer {
+      margin-top: 3rem;
+      font-size: 0.875rem;
+      color: var(--text-muted);
+      text-align: center;
+    }
+
+    footer a {
+      color: var(--primary-hover);
+      text-decoration: none;
+    }
+
+    footer a:hover {
+      text-decoration: underline;
+    }
+  </style>
+</head>
+<body>
+  <div class="glow"></div>
+  <div class="glow-2"></div>
+
+  <header>
+    <h1>HEIC Converter Sandbox</h1>
+    <p class="subtitle">Convert Apple HEIC images to standard web formats on the fly. Fully client-side, dependency-light, and strictly Content Security Policy (CSP) compliant.</p>
+  </header>
+
+  <main class="container">
+    <!-- Left column: Upload and configurations -->
+    <div class="card">
+      <div class="card-title">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+        <span>Upload & settings</span>
+      </div>
+
+      <div class="dropzone" id="dropzone">
+        <div class="dropzone-icon">☁️</div>
+        <div class="dropzone-text">Drag & drop your .heic image here</div>
+        <div class="dropzone-subtext">or click to choose file from your device</div>
+        <input type="file" id="fileInput" accept=".heic,.heif" style="display: none;">
+      </div>
+
+      <div class="file-details" id="fileDetails">
+        <span class="file-details-label">Name:</span>
+        <span id="fileName">-</span>
+        <span class="file-details-label">Type:</span>
+        <span id="fileType">-</span>
+        <span class="file-details-label">Size:</span>
+        <span id="fileSize">-</span>
+      </div>
+
+      <div class="form-group">
+        <label for="formatSelect">Target Format</label>
+        <select id="formatSelect">
+          <option value="jpeg">JPEG (Lossy)</option>
+          <option value="png">PNG (Lossless)</option>
+          <option value="svg">SVG (Embedded Raster Vector)</option>
+        </select>
+      </div>
+
+      <div class="form-group" id="qualityGroup">
+        <label for="qualityRange">JPEG Quality</label>
+        <input type="range" id="qualityRange" min="0" max="1" step="0.05" value="0.9">
+        <div class="range-val" id="qualityVal">90%</div>
+      </div>
+
+      <button class="btn" id="convertBtn" disabled>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+        <span>Convert Image</span>
+      </button>
+
+      <div id="progressContainer" style="display: none; width: 100%; margin-top: 1.25rem; background: rgba(255, 255, 255, 0.1); border-radius: 100px; height: 8px; overflow: hidden; border: 1px solid var(--border);">
+        <div id="progressBar" style="background: linear-gradient(90deg, #8a2be2, #da70d6); height: 100%; width: 0%; transition: width 0.1s ease-out; border-radius: 100px;"></div>
+      </div>
+    </div>
+
+    <!-- Right column: Preview and output details -->
+    <div class="card">
+      <div class="card-title">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+        <span>Preview & Output</span>
+      </div>
+
+      <div class="preview-container">
+        <div class="preview-placeholder" id="previewPlaceholder">
+          <span>🖼️</span>
+          <span>No image converted yet</span>
+        </div>
+        <img class="preview-image" id="previewImage" alt="Converted Output">
+      </div>
+
+      <div class="output-info" id="outputInfo">
+        <div class="stat-card">
+          <div class="stat-label">Resolution</div>
+          <div class="stat-val" id="outResolution">-</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Output Size</div>
+          <div class="stat-val" id="outSize">-</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Processing Time</div>
+          <div class="stat-val" id="outTime">-</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Format</div>
+          <div class="stat-val" id="outFormat">-</div>
+        </div>
+      </div>
+
+      <a class="btn" id="downloadBtn" style="display: none; text-decoration: none;" download="converted.jpg">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+        <span>Download Converted Image</span>
+      </a>
+    </div>
+
+    <!-- Logger section (full width) -->
+    <div class="card console-card">
+      <div class="console-header">
+        <div class="card-title" style="border: none; padding: 0;">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+          <span>Execution logs</span>
+        </div>
+        <button class="console-clear" id="clearLogsBtn">Clear</button>
+      </div>
+      <div class="console-output" id="consoleOutput"></div>
+    </div>
+  </main>
+
+  <footer>
+    <p>CSP Sandbox v0.1.0</p>
+  </footer>
+
+  <!-- Import Sandbox logic from sandbox.js -->
+  <script type="module" src="sandbox.js"></script>
+</body>
+</html>

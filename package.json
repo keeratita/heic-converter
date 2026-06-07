@@ -1,0 +1,62 @@
+{
+  "name": "@keerati/heic-converter",
+  "version": "0.1.0",
+  "description": "Convert HEIC images to standard web formats (JPG, PNG, SVG) without breaking CSP",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "require": "./dist/index.js",
+      "import": "./dist/index.mjs"
+    },
+    "./wasm": {
+      "require": "./dist/heic-decoder.wasm",
+      "import": "./dist/heic-decoder.wasm"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "build": "tsup",
+    "build:wasm": "bash build-scripts/build-wasm.sh",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:browser": "vitest --browser",
+    "sandbox": "node test/browser/server.mjs",
+    "lint": "eslint ."
+  },
+  "keywords": [
+    "heic",
+    "convert",
+    "image",
+    "csp",
+    "wasm"
+  ],
+  "author": "Keerati Tansawatcharoen <keerati.tansawatcharoen@gmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/keeratita/heic-converter.git"
+  },
+  "bugs": {
+    "url": "https://github.com/keeratita/heic-converter/issues"
+  },
+  "homepage": "https://github.com/keeratita/heic-converter#readme",
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@vitest/browser": "^3.0.0",
+    "eslint": "^10.4.1",
+    "globals": "^17.6.0",
+    "playwright": "^1.40.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.0.0",
+    "typescript-eslint": "^8.60.1",
+    "vitest": "^3.0.0"
+  }
+}
