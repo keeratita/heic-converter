@@ -25,6 +25,16 @@ npm install @keeratita/heic-converter
 
 ---
 
+## 🌍 Live Demo (GitHub Pages)
+
+Try the browser demo here:
+
+https://keeratita.github.io/heic-converter/
+
+The demo is auto-deployed from the `main` branch by the GitHub Actions workflow in `.github/workflows/demo-pages.yml`.
+
+---
+
 ## 🚀 Usage
 
 ### 1. Browser: Simple Conversion
@@ -48,7 +58,7 @@ document.querySelector('img').src = imageUrl;
 
 ### 2. Browser: Serving and Locating WASM (Custom Assets Path)
 
-By default, the library tries to fetch `heic-decoder.wasm` relative to the current module script path (`import.meta.url`). 
+By default, the library tries to fetch `heic-decoder.wasm` relative to the current module script path (`import.meta.url`).
 
 If your bundler places files in a custom assets folder or CDN, you can configure the default decoder or inject a custom one:
 
@@ -57,13 +67,13 @@ import { convertHeic, LibheifDecoder } from '@keeratita/heic-converter';
 
 // Create decoder with custom asset paths
 const decoder = new LibheifDecoder({
-  locateFile: (path, prefix) => `https://cdn.example.com/assets/${path}`
+  locateFile: (path, prefix) => `https://cdn.example.com/assets/${path}`,
 });
 
 // Pass the custom decoder in options
 const pngBlob = await convertHeic(heicBlob, {
   to: 'png',
-  decoder: decoder
+  decoder: decoder,
 });
 ```
 
@@ -79,13 +89,13 @@ const decoder = new LibheifDecoder({ wasmBinary });
 
 const jpegBlob = await convertHeic(heicBlob, {
   to: 'jpeg',
-  decoder: decoder
+  decoder: decoder,
 });
 ```
 
 ### 3. Node.js: Decoding Raw Pixel Data
 
-Since Node.js lacks the native browser Canvas API, `convertHeic` (which relies on Canvas to encode raster formats) will throw an error on the backend. 
+Since Node.js lacks the native browser Canvas API, `convertHeic` (which relies on Canvas to encode raster formats) will throw an error on the backend.
 
 However, you can use the `LibheifDecoder` in Node.js to retrieve the raw RGBA pixels and then encode them using libraries like `sharp` or `pngjs`:
 
@@ -96,20 +106,20 @@ import sharp from 'sharp'; // external node image library
 
 async function convertNode() {
   const heicData = new Uint8Array(fs.readFileSync('input.heic'));
-  
+
   const decoder = new LibheifDecoder();
   await decoder.initialize();
-  
+
   // Decodes to { width, height, data: Uint8ClampedArray (RGBA) }
   const { width, height, data } = await decoder.decode(heicData);
-  
+
   // Process raw pixels using sharp
   await sharp(Buffer.from(data.buffer), {
-    raw: { width, height, channels: 4 }
+    raw: { width, height, channels: 4 },
   })
-  .toFormat('jpeg')
-  .toFile('output.jpg');
-  
+    .toFormat('jpeg')
+    .toFile('output.jpg');
+
   // Clean up WASM memory
   decoder.free();
 }
@@ -194,47 +204,58 @@ freeSharedDecoder();
 If you want to build or modify the WASM wrapper, you will need **Docker** installed.
 
 ### Build WebAssembly
+
 To compile the underlying `libheif` and `libde265` libraries from source using Emscripten:
+
 ```bash
 npm run build:wasm
 ```
 
 ### Build JS & TS Typings
+
 To compile the TypeScript library code to ESM/CJS bundles under the `dist/` directory:
+
 ```bash
 npm run build
 ```
 
 ### Run Unit Tests
+
 ```bash
 npm run test
 ```
 
 ### Run Interactive CSP Sandbox
+
 To test the converter in a local browser running under a strict Content Security Policy, start the sandbox server:
+
 ```bash
 npm run sandbox
 ```
+
 Then navigate to: `http://localhost:3000`
 
 ### Release / Versioning
+
 To bump the package version (following SemVer) and push the release commits/tags to the git remote:
+
 ```bash
 npm run release
 ```
+
 Alternatively, you can pass the release type as an argument:
+
 ```bash
 npm run release patch
 npm run release minor
 npm run release major
 npm run release current
 ```
-This script will automatically run the linter, build the TS library, run the unit tests. For `patch`, `minor`, and `major`, it bumps the version (updating `package.json`/`package-lock.json`), commits the changes with a Conventional Commit message (`chore(release): X.Y.Z`), tags the commit, and pushes both the commit and tag to the remote. For `current`, it simply tags the current commit with the existing version in `package.json` (e.g. `vX.Y.Z`) and pushes that tag to the remote without committing or altering files.
 
+This script will automatically run the linter, build the TS library, run the unit tests. For `patch`, `minor`, and `major`, it bumps the version (updating `package.json`/`package-lock.json`), commits the changes with a Conventional Commit message (`chore(release): X.Y.Z`), tags the commit, and pushes both the commit and tag to the remote. For `current`, it simply tags the current commit with the existing version in `package.json` (e.g. `vX.Y.Z`) and pushes that tag to the remote without committing or altering files.
 
 ---
 
 ## 📄 License
 
 MIT © Keerati Tansawatcharoen
-

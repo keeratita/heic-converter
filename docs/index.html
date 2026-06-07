@@ -1,0 +1,346 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>HEIC Converter Demo</title>
+    <style>
+        :root {
+            --bg: #f7f4ed;
+            --surface: #fffdf7;
+            --text: #1f2937;
+            --muted: #6b7280;
+            --line: #d5cec0;
+            --primary: #0f766e;
+            --primary-hover: #115e59;
+            --accent: #d97706;
+            --ok: #15803d;
+            --error: #b91c1c;
+            --shadow: 0 12px 28px rgba(31, 41, 55, 0.08);
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            color: var(--text);
+            font-family: "Avenir Next", "Segoe UI", sans-serif;
+            background:
+                radial-gradient(circle at 15% 10%, rgba(217, 119, 6, 0.14), transparent 30%),
+                radial-gradient(circle at 85% 0%, rgba(15, 118, 110, 0.18), transparent 35%),
+                linear-gradient(180deg, #f9f6ef 0%, #f5efe1 100%);
+            padding: 24px;
+        }
+
+        .shell {
+            max-width: 980px;
+            margin: 0 auto;
+            display: grid;
+            grid-template-columns: 1.2fr 1fr;
+            gap: 18px;
+        }
+
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--line);
+            border-radius: 18px;
+            box-shadow: var(--shadow);
+            padding: 20px;
+        }
+
+        h1 {
+            margin: 0;
+            font-size: clamp(1.8rem, 3vw, 2.3rem);
+            letter-spacing: 0.01em;
+        }
+
+        .subtitle {
+            margin-top: 8px;
+            color: var(--muted);
+            line-height: 1.5;
+        }
+
+        .upload {
+            margin-top: 18px;
+            border: 2px dashed var(--line);
+            border-radius: 14px;
+            background: #fff;
+            padding: 20px;
+            text-align: center;
+            cursor: pointer;
+            transition: border-color 120ms ease, transform 120ms ease;
+        }
+
+        .upload:hover,
+        .upload.dragging {
+            border-color: var(--accent);
+            transform: translateY(-1px);
+        }
+
+        .upload strong {
+            display: block;
+            font-size: 1.08rem;
+        }
+
+        .upload small {
+            display: block;
+            margin-top: 6px;
+            color: var(--muted);
+        }
+
+        .row {
+            margin-top: 14px;
+            display: grid;
+            gap: 10px;
+            grid-template-columns: 1fr 1fr;
+            align-items: end;
+        }
+
+        .single-col {
+            grid-template-columns: 1fr;
+        }
+
+        label {
+            display: block;
+            font-size: 0.8rem;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            color: var(--muted);
+            margin-bottom: 6px;
+        }
+
+        select,
+        input[type="range"],
+        button {
+            width: 100%;
+            border-radius: 10px;
+            border: 1px solid var(--line);
+            padding: 10px 12px;
+            font-size: 0.98rem;
+            background: #fff;
+            color: var(--text);
+        }
+
+        button {
+            border: 0;
+            background: var(--primary);
+            color: #fff;
+            font-weight: 700;
+            cursor: pointer;
+            transition: background-color 120ms ease;
+        }
+
+        button:hover:enabled {
+            background: var(--primary-hover);
+        }
+
+        button:disabled {
+            opacity: 0.55;
+            cursor: not-allowed;
+        }
+
+        .meta {
+            margin-top: 12px;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            font-size: 0.93rem;
+        }
+
+        .meta div {
+            background: #fff;
+            border: 1px solid var(--line);
+            border-radius: 10px;
+            padding: 8px;
+        }
+
+        .meter {
+            margin-top: 14px;
+            height: 10px;
+            background: #ebe5d8;
+            border-radius: 999px;
+            overflow: hidden;
+            border: 1px solid #ddd3c1;
+        }
+
+        .meter>div {
+            width: 0;
+            height: 100%;
+            background: linear-gradient(90deg, #d97706, #0f766e);
+            transition: width 90ms linear;
+        }
+
+        .status {
+            margin-top: 8px;
+            min-height: 1.3em;
+            font-size: 0.95rem;
+            color: var(--muted);
+        }
+
+        .status.ok {
+            color: var(--ok);
+        }
+
+        .status.error {
+            color: var(--error);
+        }
+
+        .preview {
+            min-height: 230px;
+            border: 1px solid var(--line);
+            border-radius: 12px;
+            background: #fff;
+            display: grid;
+            place-items: center;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .preview img {
+            max-width: 100%;
+            height: auto;
+            display: none;
+        }
+
+        .preview span {
+            color: var(--muted);
+            padding: 14px;
+            text-align: center;
+        }
+
+        .actions {
+            margin-top: 12px;
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .output-title {
+            margin: 0;
+            font-size: 1.2rem;
+        }
+
+        .actions a {
+            text-decoration: none;
+            display: inline-block;
+            padding: 10px 14px;
+            border-radius: 10px;
+            border: 1px solid var(--line);
+            background: #fff;
+            color: var(--text);
+            font-weight: 600;
+            pointer-events: none;
+            opacity: 0.5;
+        }
+
+        .actions a.enabled {
+            pointer-events: auto;
+            opacity: 1;
+            border-color: var(--primary);
+            color: var(--primary);
+        }
+
+        .foot {
+            margin-top: 10px;
+            color: var(--muted);
+            font-size: 0.88rem;
+            line-height: 1.5;
+        }
+
+        input[type="file"] {
+            display: none;
+        }
+
+        @media (max-width: 900px) {
+            .shell {
+                grid-template-columns: 1fr;
+            }
+
+            body {
+                padding: 14px;
+            }
+
+            .row {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div class="shell">
+        <section class="card">
+            <h1>HEIC Converter Demo</h1>
+            <p class="subtitle">
+                Client-side conversion from HEIC or HEIF to JPEG, PNG, or SVG using the same WebAssembly bundle shipped
+                by this repository.
+            </p>
+
+            <div class="upload" id="dropzone" role="button" tabindex="0" aria-label="Choose a HEIC file">
+                <strong>Drop a .heic or .heif file here</strong>
+                <small>or click to browse</small>
+            </div>
+            <input id="fileInput" type="file" accept=".heic,.heif,image/heic,image/heif">
+
+            <div class="meta" id="fileMeta" hidden>
+                <div><strong>Name:</strong> <span id="metaName">-</span></div>
+                <div><strong>Size:</strong> <span id="metaSize">-</span></div>
+            </div>
+
+            <div class="row">
+                <div>
+                    <label for="format">Target format</label>
+                    <select id="format">
+                        <option value="jpeg">JPEG</option>
+                        <option value="png">PNG</option>
+                        <option value="svg">SVG</option>
+                    </select>
+                </div>
+                <div id="qualityWrap">
+                    <label for="quality">JPEG quality: <span id="qualityVal">92%</span></label>
+                    <input id="quality" type="range" min="0.1" max="1" step="0.01" value="0.92">
+                </div>
+            </div>
+
+            <div class="row single-col">
+                <button id="convert" disabled>Convert image</button>
+            </div>
+
+            <div class="meter" aria-hidden="true">
+                <div id="progress"></div>
+            </div>
+            <p id="status" class="status" aria-live="polite"></p>
+
+            <p class="foot">
+                Note: conversion runs locally in your browser. Large files can take several seconds.
+            </p>
+        </section>
+
+        <section class="card">
+            <h2 class="output-title">Output</h2>
+            <div class="preview" id="preview">
+                <span id="previewHint">Your converted image preview appears here.</span>
+                <img id="previewImg" alt="Converted image preview">
+            </div>
+            <div class="meta" id="outputMeta" hidden>
+                <div><strong>Format:</strong> <span id="outFormat">-</span></div>
+                <div><strong>Size:</strong> <span id="outSize">-</span></div>
+            </div>
+            <div class="actions">
+                <a id="download" href="#">Download result</a>
+            </div>
+            <p class="foot">
+                The demo imports from <code>./dist/index.mjs</code> and resolves <code>heic-decoder.wasm</code> from the
+                same folder.
+            </p>
+        </section>
+    </div>
+
+    <script type="module" src="./demo.js"></script>
+</body>
+
+</html>
