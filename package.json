@@ -5,6 +5,7 @@
   "main": "dist/index.js",
   "module": "dist/index.mjs",
   "types": "dist/index.d.ts",
+  "sideEffects": false,
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -28,6 +29,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:browser": "vitest --browser",
+    "test:coverage": "vitest run --coverage",
     "sandbox": "node test/browser/server.mjs",
     "lint": "eslint .",
     "sonar": "sonar-scanner",
@@ -54,6 +56,7 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@vitest/browser": "^4.1.8",
+    "@vitest/coverage-v8": "^4.1.9",
     "eslint": "^10.4.1",
     "globals": "^17.6.0",
     "husky": "^9.1.7",

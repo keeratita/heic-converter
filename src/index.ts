@@ -19,6 +19,17 @@ export function freeSharedDecoder(): void {
 }
 
 /**
+ * Validates quality parameter is within acceptable range.
+ * @param quality The quality value to validate.
+ * @throws Error if quality is not between 0.0 and 1.0.
+ */
+function validateQuality(quality: number): void {
+  if (typeof quality !== 'number' || Number.isNaN(quality) || quality < 0 || quality > 1) {
+    throw new Error(`Quality must be a number between 0.0 and 1.0, got: ${quality}`);
+  }
+}
+
+/**
  * Converts HEIC image data to a standard web format (JPEG, PNG, or SVG).
  *
  * @param input HEIC image as a Blob, File, ArrayBuffer, or Uint8Array.
@@ -44,22 +55,37 @@ export async function convertHeic(
     );
   }
 
-  // 2. Select decoder (user-injected or shared default)
+  // 2. Validate quality parameter if provided
+  if (options?.quality !== undefined) {
+    validateQuality(options.quality);
+  }
+
+  // 3. Select decoder (user-injected or shared default)
   let decoder = options?.decoder;
+  let isSharedDecoder = false;
   if (!decoder) {
     if (!sharedDecoder) {
       sharedDecoder = new LibheifDecoder();
     }
     decoder = sharedDecoder;
+    isSharedDecoder = true;
   }
 
-  // 3. Initialize and decode
+  // 4. Initialize and decode
   await decoder.initialize();
   const decoded = await decoder.decode(buffer, options?.onProgress);
 
-  // 4. Render to canvas and encode to target format
+  // 5. Render to canvas and encode to target format
   const format = options?.to || 'jpeg';
   const quality = options?.quality !== undefined ? options.quality : 0.92;
 
-  return renderAndEncode(decoded, format, quality);
+  try {
+    return await renderAndEncode(decoded, format, quality);
+  } finally {
+    // Free decoder if it was a shared instance and no custom decoder was provided
+    if (isSharedDecoder && !options?.decoder) {
+      decoder.free();
+      sharedDecoder = null;
+    }
+  }
 }
