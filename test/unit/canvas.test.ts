@@ -479,6 +479,313 @@ describe('renderAndEncode Unit Tests', () => {
     });
   });
 
+  describe('Image dimension edge cases', () => {
+    it('should handle zero width image', async () => {
+      const decoded: DecodedImage = {
+        width: 0,
+        height: 100,
+        data: new Uint8ClampedArray(0),
+      };
+      const mockBlob = new Blob(['jpeg-data'], { type: 'image/jpeg' });
+
+      mockCanvas.toBlob = vi.fn((callback: (blob: Blob | null) => void) => {
+        callback(mockBlob);
+      });
+
+      const result = await renderAndEncode(decoded, 'jpeg', 0.92);
+
+      expect(result).toBeInstanceOf(Blob);
+      expect(mockCanvas.width).toBe(0);
+      expect(mockCanvas.height).toBe(100);
+    });
+
+    it('should handle zero height image', async () => {
+      const decoded: DecodedImage = {
+        width: 100,
+        height: 0,
+        data: new Uint8ClampedArray(0),
+      };
+      const mockBlob = new Blob(['jpeg-data'], { type: 'image/jpeg' });
+
+      mockCanvas.toBlob = vi.fn((callback: (blob: Blob | null) => void) => {
+        callback(mockBlob);
+      });
+
+      const result = await renderAndEncode(decoded, 'jpeg', 0.92);
+
+      expect(result).toBeInstanceOf(Blob);
+      expect(mockCanvas.width).toBe(100);
+      expect(mockCanvas.height).toBe(0);
+    });
+
+    it('should handle both zero width and height', async () => {
+      const decoded: DecodedImage = {
+        width: 0,
+        height: 0,
+        data: new Uint8ClampedArray(0),
+      };
+      const mockBlob = new Blob(['jpeg-data'], { type: 'image/jpeg' });
+
+      mockCanvas.toBlob = vi.fn((callback: (blob: Blob | null) => void) => {
+        callback(mockBlob);
+      });
+
+      const result = await renderAndEncode(decoded, 'jpeg', 0.92);
+
+      expect(result).toBeInstanceOf(Blob);
+      expect(mockCanvas.width).toBe(0);
+      expect(mockCanvas.height).toBe(0);
+    });
+
+    it('should handle 1x1 pixel image', async () => {
+      const decoded: DecodedImage = {
+        width: 1,
+        height: 1,
+        data: new Uint8ClampedArray([255, 0, 0, 255]), // Red pixel
+      };
+      const mockBlob = new Blob(['jpeg-data'], { type: 'image/jpeg' });
+
+      mockCanvas.toBlob = vi.fn((callback: (blob: Blob | null) => void) => {
+        callback(mockBlob);
+      });
+
+      const result = await renderAndEncode(decoded, 'jpeg', 0.92);
+
+      expect(result).toBeInstanceOf(Blob);
+      expect(mockCanvas.width).toBe(1);
+      expect(mockCanvas.height).toBe(1);
+    });
+
+    it('should handle extreme aspect ratio (wide)', async () => {
+      const width = 1000;
+      const height = 1;
+      const decoded: DecodedImage = {
+        width,
+        height,
+        data: new Uint8ClampedArray(width * height * 4),
+      };
+      const mockBlob = new Blob(['jpeg-data'], { type: 'image/jpeg' });
+
+      mockCanvas.toBlob = vi.fn((callback: (blob: Blob | null) => void) => {
+        callback(mockBlob);
+      });
+
+      const result = await renderAndEncode(decoded, 'jpeg', 0.92);
+
+      expect(result).toBeInstanceOf(Blob);
+      expect(mockCanvas.width).toBe(width);
+      expect(mockCanvas.height).toBe(height);
+    });
+
+    it('should handle extreme aspect ratio (tall)', async () => {
+      const width = 1;
+      const height = 1000;
+      const decoded: DecodedImage = {
+        width,
+        height,
+        data: new Uint8ClampedArray(width * height * 4),
+      };
+      const mockBlob = new Blob(['jpeg-data'], { type: 'image/jpeg' });
+
+      mockCanvas.toBlob = vi.fn((callback: (blob: Blob | null) => void) => {
+        callback(mockBlob);
+      });
+
+      const result = await renderAndEncode(decoded, 'jpeg', 0.92);
+
+      expect(result).toBeInstanceOf(Blob);
+      expect(mockCanvas.width).toBe(width);
+      expect(mockCanvas.height).toBe(height);
+    });
+
+    it('should handle very large image dimensions', async () => {
+      const width = 5000;
+      const height = 5000;
+      const decoded: DecodedImage = {
+        width,
+        height,
+        data: new Uint8ClampedArray(width * height * 4),
+      };
+      const mockBlob = new Blob(['jpeg-data'], { type: 'image/jpeg' });
+
+      mockCanvas.toBlob = vi.fn((callback: (blob: Blob | null) => void) => {
+        callback(mockBlob);
+      });
+
+      const result = await renderAndEncode(decoded, 'jpeg', 0.92);
+
+      expect(result).toBeInstanceOf(Blob);
+      expect(mockCanvas.width).toBe(width);
+      expect(mockCanvas.height).toBe(height);
+    });
+  });
+
+  describe('Empty and partial data edge cases', () => {
+    it('should throw error for empty data array with non-zero dimensions', async () => {
+      const decoded: DecodedImage = {
+        width: 100,
+        height: 100,
+        data: new Uint8ClampedArray(0),
+      };
+
+      await expect(renderAndEncode(decoded, 'jpeg', 0.92)).rejects.toThrow(
+        'Image data length mismatch'
+      );
+    });
+
+    it('should throw error for partial data (less than expected)', async () => {
+      const decoded: DecodedImage = {
+        width: 100,
+        height: 100,
+        data: new Uint8ClampedArray(1000), // Should be 40000
+      };
+
+      await expect(renderAndEncode(decoded, 'jpeg', 0.92)).rejects.toThrow(
+        'Image data length mismatch'
+      );
+    });
+
+    it('should throw error for excess data (more than expected)', async () => {
+      const decoded: DecodedImage = {
+        width: 100,
+        height: 100,
+        data: new Uint8ClampedArray(50000), // Should be 40000
+      };
+
+      await expect(renderAndEncode(decoded, 'jpeg', 0.92)).rejects.toThrow(
+        'Image data length mismatch'
+      );
+    });
+
+    it('should handle data with all zeros (black image)', async () => {
+      const decoded: DecodedImage = {
+        width: 10,
+        height: 10,
+        data: new Uint8ClampedArray(10 * 10 * 4).fill(0),
+      };
+      const mockBlob = new Blob(['jpeg-data'], { type: 'image/jpeg' });
+
+      mockCanvas.toBlob = vi.fn((callback: (blob: Blob | null) => void) => {
+        callback(mockBlob);
+      });
+
+      const result = await renderAndEncode(decoded, 'jpeg', 0.92);
+
+      expect(result).toBeInstanceOf(Blob);
+    });
+
+    it('should handle data with all 255s (white image)', async () => {
+      const decoded: DecodedImage = {
+        width: 10,
+        height: 10,
+        data: new Uint8ClampedArray(10 * 10 * 4).fill(255),
+      };
+      const mockBlob = new Blob(['jpeg-data'], { type: 'image/jpeg' });
+
+      mockCanvas.toBlob = vi.fn((callback: (blob: Blob | null) => void) => {
+        callback(mockBlob);
+      });
+
+      const result = await renderAndEncode(decoded, 'jpeg', 0.92);
+
+      expect(result).toBeInstanceOf(Blob);
+    });
+  });
+
+  describe('Environment fallback edge cases', () => {
+    it('should handle OffscreenCanvas without convertToBlob', async () => {
+      const decoded = createMockDecodedImage(100, 100);
+      const mockBlob = new Blob(['jpeg-data'], { type: 'image/jpeg' });
+
+      // Set OffscreenCanvas to undefined to force HTMLCanvasElement fallback
+      const originalOffscreenCanvas = global.OffscreenCanvas;
+      global.OffscreenCanvas = undefined as unknown as typeof OffscreenCanvas;
+
+      // Mock document.createElement to provide fallback
+      const fallbackCanvas = {
+        width: 100,
+        height: 100,
+        getContext: vi.fn().mockReturnValue({
+          putImageData: vi.fn(),
+        }),
+        toBlob: vi.fn((callback: (blob: Blob | null) => void) => {
+          callback(mockBlob);
+        }),
+      } as unknown as HTMLCanvasElement;
+
+      global.document = {
+        createElement: vi.fn().mockReturnValue(fallbackCanvas),
+      } as unknown as typeof document;
+
+      // The code should use HTMLCanvasElement when OffscreenCanvas is not available
+      const result = await renderAndEncode(decoded, 'jpeg', 0.92);
+      expect(result).toBeInstanceOf(Blob);
+
+      // Restore original OffscreenCanvas
+      global.OffscreenCanvas = originalOffscreenCanvas;
+    });
+
+    it('should handle getContext returning undefined instead of null', async () => {
+      const decoded = createMockDecodedImage(100, 100);
+
+      mockCanvas.getContext = vi.fn().mockReturnValue(undefined);
+
+      await expect(renderAndEncode(decoded, 'jpeg', 0.92)).rejects.toThrow(
+        'Failed to acquire 2D rendering context from canvas'
+      );
+    });
+
+    it('should handle ImageData constructor throwing an error', async () => {
+      const decoded = createMockDecodedImage(100, 100);
+      const mockBlob = new Blob(['jpeg-data'], { type: 'image/jpeg' });
+
+      mockCanvas.toBlob = vi.fn((callback: (blob: Blob | null) => void) => {
+        callback(mockBlob);
+      });
+
+      const originalImageData = global.ImageData;
+      global.ImageData = class MockImageData {
+        constructor() {
+          throw new Error('ImageData constructor failed');
+        }
+        width = 0;
+        height = 0;
+        data = new Uint8ClampedArray(0);
+      } as unknown as typeof ImageData;
+
+      await expect(renderAndEncode(decoded, 'jpeg', 0.92)).rejects.toThrow(
+        'ImageData constructor failed'
+      );
+
+      global.ImageData = originalImageData;
+    });
+
+    it('should use createImageData fallback when ImageData is undefined', async () => {
+      const decoded = createMockDecodedImage(100, 100);
+      const mockBlob = new Blob(['jpeg-data'], { type: 'image/jpeg' });
+
+      const createdData = {
+        data: new Uint8ClampedArray(100 * 100 * 4),
+      };
+
+      mockCanvas.toBlob = vi.fn((callback: (blob: Blob | null) => void) => {
+        callback(mockBlob);
+      });
+      mockCtx.createImageData = vi.fn().mockReturnValue(createdData);
+      mockCtx.putImageData = vi.fn();
+
+      global.ImageData = undefined as unknown as typeof ImageData;
+
+      const result = await renderAndEncode(decoded, 'jpeg', 0.92);
+
+      expect(result).toBeInstanceOf(Blob);
+      expect(mockCtx.createImageData).toHaveBeenCalledWith(100, 100);
+      expect(mockCtx.putImageData).toHaveBeenCalled();
+
+      global.ImageData = originalImageData;
+    });
+  });
+
   describe('blobToBase64 error handling', () => {
     it('should throw error with message when arrayBuffer fails', async () => {
       const decoded = createMockDecodedImage(100, 100);
