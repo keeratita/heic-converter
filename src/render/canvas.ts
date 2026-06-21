@@ -117,6 +117,8 @@ export async function renderAndEncode(
     return canvasToBlob(canvas, 'image/png');
   } else if (normalizedFormat === 'jpeg' || normalizedFormat === 'jpg') {
     return canvasToBlob(canvas, 'image/jpeg', quality);
+  } else if (normalizedFormat === 'webp') {
+    return canvasToBlob(canvas, 'image/webp', quality);
   } else if (normalizedFormat === 'svg') {
     // SVG wrapping of raster image
     const pngBlob = await canvasToBlob(canvas, 'image/png');

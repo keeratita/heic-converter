@@ -30,7 +30,7 @@ function validateQuality(quality: number): void {
 }
 
 /**
- * Converts HEIC image data to a standard web format (JPEG, PNG, or SVG).
+ * Converts HEIC image data to a standard web format (JPEG, PNG, WebP, or SVG).
  *
  * @param input HEIC image as a Blob, File, ArrayBuffer, or Uint8Array.
  * @param options Conversion configuration options.

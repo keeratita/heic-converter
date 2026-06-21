@@ -208,12 +208,43 @@ describe('renderAndEncode Unit Tests', () => {
     });
   });
 
+  describe('WebP format', () => {
+    it('should encode to WebP with default quality', async () => {
+      const decoded = createMockDecodedImage(100, 100);
+      const mockBlob = new Blob(['webp-data'], { type: 'image/webp' });
+
+      mockCanvas.toBlob = vi.fn((callback: (blob: Blob | null) => void) => {
+        callback(mockBlob);
+      });
+
+      const result = await renderAndEncode(decoded, 'webp', 0.92);
+
+      expect(result).toBeInstanceOf(Blob);
+      expect(result.type).toBe('image/webp');
+      expect(mockCanvas.toBlob).toHaveBeenCalledWith(expect.any(Function), 'image/webp', 0.92);
+    });
+
+    it('should encode to WebP with custom quality', async () => {
+      const decoded = createMockDecodedImage(100, 100);
+      const mockBlob = new Blob(['webp-data'], { type: 'image/webp' });
+
+      mockCanvas.toBlob = vi.fn((callback: (blob: Blob | null) => void) => {
+        callback(mockBlob);
+      });
+
+      const result = await renderAndEncode(decoded, 'webp', 0.5);
+
+      expect(result.type).toBe('image/webp');
+      expect(mockCanvas.toBlob).toHaveBeenCalledWith(expect.any(Function), 'image/webp', 0.5);
+    });
+  });
+
   describe('Error handling', () => {
     it('should throw error for unsupported format', async () => {
       const decoded = createMockDecodedImage(100, 100);
 
-      await expect(renderAndEncode(decoded, 'webp' as any, 0.92)).rejects.toThrow(
-        'Unsupported output format: webp'
+      await expect(renderAndEncode(decoded, 'gif' as any, 0.92)).rejects.toThrow(
+        'Unsupported output format: gif'
       );
     });
 

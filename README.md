@@ -1,6 +1,6 @@
 # @keeratita/heic-converter
 
-A modern, lightweight TypeScript library to convert `.heic` and `.heif` images to standard web formats (JPEG, PNG, SVG) client-side in the browser or on the backend in Node.js.
+A modern, lightweight TypeScript library to convert `.heic` and `.heif` images to standard web formats (JPEG, PNG, WebP, SVG) client-side in the browser or on the backend in Node.js.
 
 Designed specifically for environments with strict **Content Security Policy (CSP)** rules, it is built with WebAssembly compiled **without** dynamic code execution (`eval()` or `new Function()`).
 
@@ -13,7 +13,7 @@ Designed specifically for environments with strict **Content Security Policy (CS
 - ⚡ **Optimized Performance**: Reuses a single shared WASM instance across calls by default. Decodes an image in milliseconds.
 - 🌐 **Isomorphic / Universal**: Runs in Node.js (decoding) and browser (decoding & canvas-based encoding).
 - 📦 **No Bloat**: Zero external production dependencies. Small footprint.
-- 🎨 **Format Support**: Convert to `jpeg` (with quality configuration), `png`, and `svg` (embedded lossless vector).
+- 🎨 **Format Support**: Convert to `jpeg` (with quality configuration), `png`, `webp`, and `svg` (embedded lossless vector).
 
 ---
 
@@ -168,8 +168,8 @@ Converts a HEIC image file to a standard web format.
 
 - **`input`**: `Blob | File | ArrayBuffer | Uint8Array`
 - **`options`**: (optional) `ConvertOptions`
-  - `to`: `'jpeg' | 'jpg' | 'png' | 'svg'` (Default: `'jpeg'`)
-  - `quality`: `number` (0.0 to 1.0, only applicable to JPEG. Default: `0.92`)
+  - `to`: `'jpeg' | 'jpg' | 'png' | 'webp' | 'svg'` (Default: `'jpeg'`)
+  - `quality`: `number` (0.0 to 1.0, applicable to JPEG and WebP. Default: `0.92`)
   - `decoder`: `IHeicDecoder` (Inject custom decoder instance)
   - `onProgress`: `(percent: number) => void` (Optional callback, receives progress percentage from `0` to `100` during decoding)
 - **Returns**: `Promise<Blob>`

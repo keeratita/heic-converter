@@ -26,7 +26,7 @@ export interface IHeicDecoder {
   free(): void;
 }
 
-export type ImageFormat = 'jpeg' | 'jpg' | 'png' | 'svg';
+export type ImageFormat = 'jpeg' | 'jpg' | 'png' | 'svg' | 'webp';
 
 export interface ConvertOptions {
   /**
@@ -37,7 +37,7 @@ export interface ConvertOptions {
 
   /**
    * Quality of the converted image (between 0.0 and 1.0).
-   * Only applicable for 'jpeg' (and 'jpg') format.
+   * Applicable for 'jpeg', 'jpg', and 'webp' formats.
    * @default 0.92
    */
   quality?: number;
