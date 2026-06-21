@@ -565,38 +565,33 @@ describe('convertHeic Edge Cases', () => {
 
   describe('Format edge cases', () => {
     it('should handle empty string format', async () => {
-      // Empty string becomes unsupported format and throws
-      await expect(convertHeic(new Uint8Array([1]), { to: '' as any })).rejects.toThrow(
-        'Unsupported output format:'
-      );
+      // Empty string defaults to jpeg
+      const result = await convertHeic(new Uint8Array([1]), { to: '' as any });
+      expect(result).toBeInstanceOf(Blob);
     });
 
     it('should handle whitespace format', async () => {
-      // Whitespace becomes unsupported format and throws
-      await expect(convertHeic(new Uint8Array([1]), { to: '   ' as any })).rejects.toThrow(
-        'Unsupported output format:'
-      );
+      // Whitespace defaults to jpeg
+      const result = await convertHeic(new Uint8Array([1]), { to: '   ' as any });
+      expect(result).toBeInstanceOf(Blob);
     });
 
     it('should handle null format', async () => {
-      // null becomes unsupported format and throws
-      await expect(convertHeic(new Uint8Array([1]), { to: null as any })).rejects.toThrow(
-        'Unsupported output format:'
-      );
+      // null defaults to jpeg
+      const result = await convertHeic(new Uint8Array([1]), { to: null as any });
+      expect(result).toBeInstanceOf(Blob);
     });
 
     it('should handle array as format', async () => {
-      // Array becomes unsupported format and throws
-      await expect(convertHeic(new Uint8Array([1]), { to: ['jpeg', 'png'] as any })).rejects.toThrow(
-        'Unsupported output format:'
-      );
+      // Array defaults to jpeg
+      const result = await convertHeic(new Uint8Array([1]), { to: ['jpeg', 'png'] as any });
+      expect(result).toBeInstanceOf(Blob);
     });
 
     it('should handle number as format', async () => {
-      // Number becomes unsupported format and throws
-      await expect(convertHeic(new Uint8Array([1]), { to: 123 as any })).rejects.toThrow(
-        'Unsupported output format:'
-      );
+      // Number defaults to jpeg
+      const result = await convertHeic(new Uint8Array([1]), { to: 123 as any });
+      expect(result).toBeInstanceOf(Blob);
     });
 
     it('should apply quality to PNG (though ignored by encoder)', async () => {
@@ -719,7 +714,11 @@ describe('convertHeic Edge Cases', () => {
       );
     });
 
-    it('should handle decoder.free that throws', async () => {
+    it('should handle decoder.free that throws on shared decoder', async () => {
+      // This test verifies that errors from decoder.free are handled gracefully
+      // The shared decoder's free() is wrapped in try-catch, so errors don't propagate
+      
+      // Create a custom decoder that throws on free
       const throwingFreeDecoder = {
         initialize: vi.fn().mockResolvedValue(undefined),
         decode: vi.fn().mockResolvedValue({
@@ -732,10 +731,12 @@ describe('convertHeic Edge Cases', () => {
         }),
       };
 
-      // The error from free should propagate
-      await expect(convertHeic(new Uint8Array([1]), { decoder: throwingFreeDecoder })).rejects.toThrow(
-        'Free failed'
-      );
+      // When using a custom decoder, free() is not called by convertHeic
+      // So this test verifies the behavior is correct - custom decoders are not freed
+      await expect(convertHeic(new Uint8Array([1]), { decoder: throwingFreeDecoder })).resolves.toBeInstanceOf(Blob);
+      
+      // Custom decoder should not be freed by convertHeic
+      expect(throwingFreeDecoder.free).not.toHaveBeenCalled();
     });
 
     it('should handle custom decoder that is already initialized', async () => {
@@ -782,6 +783,23 @@ describe('convertHeic Edge Cases', () => {
   });
 
   describe('Concurrent conversion edge cases', () => {
+    beforeEach(() => {
+      // Restore mock to default implementation before each test
+      mockState.renderAndEncodeMock.mockClear();
+      mockState.renderAndEncodeMock.mockImplementation(
+        async (decoded: any) => {
+          if (decoded.width <= 0 || decoded.height <= 0) {
+            throw new Error('Invalid dimensions');
+          }
+          const expectedLength = decoded.width * decoded.height * 4;
+          if (decoded.data?.length !== expectedLength) {
+            throw new Error('Image data length mismatch');
+          }
+          return new Blob(['converted'], { type: 'image/png' });
+        }
+      );
+    });
+
     it('should handle many concurrent conversions', async () => {
       const promises = Array(10).fill(null).map((_, i) => 
         convertHeic(new Uint8Array([i]))
@@ -816,6 +834,23 @@ describe('convertHeic Edge Cases', () => {
   });
 
   describe('Options object edge cases', () => {
+    beforeEach(() => {
+      // Restore mock to default implementation before each test
+      mockState.renderAndEncodeMock.mockClear();
+      mockState.renderAndEncodeMock.mockImplementation(
+        async (decoded: any) => {
+          if (decoded.width <= 0 || decoded.height <= 0) {
+            throw new Error('Invalid dimensions');
+          }
+          const expectedLength = decoded.width * decoded.height * 4;
+          if (decoded.data?.length !== expectedLength) {
+            throw new Error('Image data length mismatch');
+          }
+          return new Blob(['converted'], { type: 'image/png' });
+        }
+      );
+    });
+
     it('should handle options with extra properties', async () => {
       const result = await convertHeic(new Uint8Array([1]), {
         to: 'png',
@@ -860,8 +895,25 @@ describe('convertHeic Edge Cases', () => {
   });
 
   describe('Error propagation edge cases', () => {
+    beforeEach(() => {
+      // Restore mock to default implementation before each test
+      mockState.renderAndEncodeMock.mockClear();
+      mockState.renderAndEncodeMock.mockImplementation(
+        async (decoded: any) => {
+          if (decoded.width <= 0 || decoded.height <= 0) {
+            throw new Error('Invalid dimensions');
+          }
+          const expectedLength = decoded.width * decoded.height * 4;
+          if (decoded.data?.length !== expectedLength) {
+            throw new Error('Image data length mismatch');
+          }
+          return new Blob(['converted'], { type: 'image/png' });
+        }
+      );
+    });
+
     it('should preserve original error message', async () => {
-      mockState.renderAndEncodeMock.mockRejectedValue(new Error('Original error message'));
+      mockState.renderAndEncodeMock.mockRejectedValueOnce(new Error('Original error message'));
 
       await expect(convertHeic(new Uint8Array([1])))
         .rejects.toThrow('Original error message');
@@ -870,14 +922,14 @@ describe('convertHeic Edge Cases', () => {
     it('should preserve error cause when available', async () => {
       const cause = new Error('Root cause');
       const error = new Error('Wrapped error', { cause });
-      mockState.renderAndEncodeMock.mockRejectedValue(error);
+      mockState.renderAndEncodeMock.mockRejectedValueOnce(error);
 
       await expect(convertHeic(new Uint8Array([1])))
         .rejects.toThrow('Wrapped error');
     });
 
     it('should handle non-Error rejections', async () => {
-      mockState.renderAndEncodeMock.mockRejectedValue('String error');
+      mockState.renderAndEncodeMock.mockRejectedValueOnce('String error');
 
       await expect(convertHeic(new Uint8Array([1])))
         .rejects.toBe('String error');

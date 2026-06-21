@@ -84,7 +84,11 @@ export async function convertHeic(
   } finally {
     // Free decoder if it was a shared instance and no custom decoder was provided
     if (isSharedDecoder && !options?.decoder) {
-      decoder.free();
+      try {
+        decoder.free();
+      } catch {
+        // Ignore errors from free() - decoder is still marked as freed
+      }
       sharedDecoder = null;
     }
   }
