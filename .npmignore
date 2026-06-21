@@ -1,0 +1,49 @@
+# Build artifacts and source files not needed in npm package
+.git
+.gitignore
+.nvmrc
+build-scripts/
+build-wasm/
+docs/
+test/
+*.md
+!README.md
+LICENSE
+sonar-project.properties
+tsconfig.json
+vitest.config.ts
+eslint.config.mjs
+husky/
+.prettierrc*
+.editorconfig
+
+# Node modules
+node_modules/
+
+# Coverage and reports
+coverage/
+*.lcov
+.nyc_output/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# CI/CD files
+.github/
+.gitlab-ci.yml
+.travis.yml
+circle.yml
+.jenkinsfile
+
+# Temporary files
+tmp/
+temp/
+*.tmp

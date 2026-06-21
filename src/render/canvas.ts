@@ -21,9 +21,16 @@ async function blobToBase64(blob: Blob): Promise<string> {
   }
 
   // Node.js fallback if Blob is polyfilled or globally available but FileReader is not
-  const arrayBuffer = await blob.arrayBuffer();
-  const buffer = Buffer.from(arrayBuffer);
-  return `data:${blob.type};base64,${buffer.toString('base64')}`;
+  try {
+    const arrayBuffer = await blob.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+    return `data:${blob.type};base64,${buffer.toString('base64')}`;
+  } catch (error) {
+    throw new Error(
+      `Failed to convert Blob to base64 string: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error }
+    );
+  }
 }
 
 /**
@@ -64,6 +71,14 @@ export async function renderAndEncode(
   quality: number
 ): Promise<Blob> {
   const { width, height, data } = decoded;
+
+  // Validate data length matches expected dimensions
+  const expectedLength = width * height * 4;
+  if (data.length !== expectedLength) {
+    throw new Error(
+      `Image data length mismatch. Expected ${expectedLength} bytes for ${width}x${height}, got ${data.length}`
+    );
+  }
 
   let canvas: HTMLCanvasElement | OffscreenCanvas;
   if (typeof OffscreenCanvas !== 'undefined') {
