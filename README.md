@@ -56,7 +56,32 @@ const imageUrl = URL.createObjectURL(jpegBlob);
 document.querySelector('img').src = imageUrl;
 ```
 
-### 2. Browser: Serving and Locating WASM (Custom Assets Path)
+### 2. Browser: WebP Output
+
+WebP offers excellent compression with quality configuration:
+
+```typescript
+import { convertHeic } from '@keeratita/heic-converter';
+
+const webpBlob = await convertHeic(heicBlob, {
+  to: 'webp',
+  quality: 0.8,
+});
+```
+
+### 3. Browser: SVG Output
+
+SVG wraps the raster image as an embedded lossless PNG inside an SVG container:
+
+```typescript
+import { convertHeic } from '@keeratita/heic-converter';
+
+const svgBlob = await convertHeic(heicBlob, {
+  to: 'svg',
+});
+```
+
+### 4. Browser: Serving and Locating WASM (Custom Assets Path)
 
 By default, the library tries to fetch `heic-decoder.wasm` relative to the current module script path (`import.meta.url`).
 

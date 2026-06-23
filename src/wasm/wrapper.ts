@@ -15,10 +15,39 @@ export interface LibheifDecoderOptions {
   wasmBinary?: ArrayBuffer;
 }
 
+/**
+ * Shape of the decoded result returned by the WASM HeicDecoder.
+ */
+interface HeicDecoderResult {
+  width: number;
+  height: number;
+  data: Uint8Array;
+}
+
+/**
+ * Shape of the WASM HeicDecoder instance exposed by libheif.
+ */
+interface HeicDecoderInstance {
+  decode(data: Uint8Array, onProgress: ((percent: number) => void) | null): HeicDecoderResult | string | null;
+  delete(): void;
+}
+
+/**
+ * Shape of the WASM module factory output.
+ */
+interface HeicDecoderModule {
+  HeicDecoder: new () => HeicDecoderInstance;
+}
+
+interface ModuleInitOptions {
+  locateFile?: LibheifDecoderOptions['locateFile'];
+  wasmBinary?: ArrayBuffer;
+}
+
 export class LibheifDecoder implements IHeicDecoder {
   private options?: LibheifDecoderOptions;
-  private module: any = null;
-  private decoderInstance: any = null;
+  private module: HeicDecoderModule | null = null;
+  private decoderInstance: HeicDecoderInstance | null = null;
 
   constructor(options?: LibheifDecoderOptions) {
     this.options = options;
@@ -32,7 +61,7 @@ export class LibheifDecoder implements IHeicDecoder {
       return;
     }
 
-    const moduleArgs: any = {};
+    const moduleArgs: ModuleInitOptions = {};
     if (this.options?.locateFile) {
       moduleArgs.locateFile = this.options.locateFile;
     }
@@ -57,7 +86,7 @@ export class LibheifDecoder implements IHeicDecoder {
       await this.initialize();
     }
 
-    const result = this.decoderInstance.decode(data, onProgress || null);
+    const result = this.decoderInstance!.decode(data, onProgress ?? null);
     if (!result) {
       throw new Error('HEIC decoding failed');
     }
@@ -67,7 +96,7 @@ export class LibheifDecoder implements IHeicDecoder {
 
     const width = result.width;
     const height = result.height;
-    
+
     // Result.data is a Uint8Array. We wrap it in a Uint8ClampedArray to match DecodedImage type.
     const clampedData = new Uint8ClampedArray(
       result.data.buffer,

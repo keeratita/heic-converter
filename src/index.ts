@@ -1,6 +1,6 @@
 import { LibheifDecoder } from './wasm';
 import { renderAndEncode } from './render/canvas';
-import { ConvertOptions } from './types';
+import type { ConvertOptions } from './types';
 
 export * from './types';
 export { LibheifDecoder, LibheifDecoderOptions } from './wasm';

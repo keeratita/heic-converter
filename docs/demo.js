@@ -99,7 +99,7 @@ fileInput.addEventListener('change', () => {
 });
 
 formatEl.addEventListener('change', () => {
-  qualityWrap.hidden = formatEl.value !== 'jpeg';
+  qualityWrap.hidden = formatEl.value !== 'jpeg' && formatEl.value !== 'webp';
 });
 
 qualityEl.addEventListener('input', () => {
@@ -135,7 +135,14 @@ convertBtn.addEventListener('click', async () => {
     outFormat.textContent = (result.type.split('/')[1] || format).toUpperCase();
     outSize.textContent = formatBytes(result.size);
 
-    const ext = format === 'jpeg' ? 'jpg' : format;
+    const extMap = {
+      jpeg: 'jpg',
+      jpg: 'jpg',
+      png: 'png',
+      svg: 'svg',
+      webp: 'webp',
+    };
+    const ext = extMap[format] || format;
     const baseName = selectedFile.name.replace(/\.[^/.]+$/, '') || 'converted';
     download.href = objectUrl;
     download.download = `${baseName}.${ext}`;

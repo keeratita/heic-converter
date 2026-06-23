@@ -276,7 +276,7 @@
         <section class="card">
             <h1>HEIC Converter Demo</h1>
             <p class="subtitle">
-                Client-side conversion from HEIC or HEIF to JPEG, PNG, or SVG using the same WebAssembly bundle shipped
+                Client-side conversion from HEIC or HEIF to JPEG, PNG, WebP, or SVG using the same WebAssembly bundle shipped
                 by this repository.
             </p>
 
@@ -297,11 +297,12 @@
                     <select id="format">
                         <option value="jpeg">JPEG</option>
                         <option value="png">PNG</option>
+                        <option value="webp">WebP</option>
                         <option value="svg">SVG</option>
                     </select>
                 </div>
                 <div id="qualityWrap">
-                    <label for="quality">JPEG quality: <span id="qualityVal">92%</span></label>
+                    <label for="quality">Output quality: <span id="qualityVal">92%</span></label>
                     <input id="quality" type="range" min="0.1" max="1" step="0.01" value="0.92">
                 </div>
             </div>

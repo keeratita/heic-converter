@@ -2,9 +2,9 @@ import { DecodedImage, ImageFormat } from '../types';
 
 /**
  * Converts a Blob to a base64 Data URL.
- * Supports both browser (FileReader) and Node.js (Buffer) contexts.
+ * Supports both browser (FileReader) and Node.js (btoa) contexts.
  */
-async function blobToBase64(blob: Blob): Promise<string> {
+export async function blobToBase64(blob: Blob): Promise<string> {
   if (typeof FileReader !== 'undefined') {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -23,8 +23,9 @@ async function blobToBase64(blob: Blob): Promise<string> {
   // Node.js fallback if Blob is polyfilled or globally available but FileReader is not
   try {
     const arrayBuffer = await blob.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
-    return `data:${blob.type};base64,${buffer.toString('base64')}`;
+    const bytes = new Uint8Array(arrayBuffer);
+    const base64 = btoa(String.fromCharCode(...bytes));
+    return `data:${blob.type};base64,${base64}`;
   } catch (error) {
     throw new Error(
       `Failed to convert Blob to base64 string: ${error instanceof Error ? error.message : String(error)}`,
@@ -36,7 +37,7 @@ async function blobToBase64(blob: Blob): Promise<string> {
 /**
  * Converts a Canvas to a Blob with format-specific options.
  */
-function canvasToBlob(
+export function canvasToBlob(
   canvas: HTMLCanvasElement | OffscreenCanvas,
   type: string,
   quality?: number
@@ -101,7 +102,13 @@ export async function renderAndEncode(
 
   let imageData: ImageData;
   if (typeof ImageData !== 'undefined') {
-    imageData = new ImageData(data, width, height);
+    // TypeScript may complain about ArrayBufferLike vs ArrayBuffer, but at runtime
+    // the WASM decoder produces a standard ArrayBuffer-backed Uint8ClampedArray.
+    imageData = new ImageData(
+      data as unknown as Uint8ClampedArray<ArrayBuffer>,
+      width,
+      height
+    );
   } else {
     // Fallback for environments where ImageData constructor isn't available but ctx.createImageData is
     const created = ctx.createImageData(width, height);
