@@ -112,6 +112,26 @@ describe('blobToBase64', () => {
     const result = await blobToBase64(blob);
     expect(result).toMatch(/^data:application\/octet-stream;base64,/);
   });
+
+  it('should handle large binary data without stack overflow', async () => {
+    const size = 1024 * 1024; // 1MB
+    const bytes = new Uint8Array(size);
+    for (let i = 0; i < size; i++) {
+      bytes[i] = i % 256;
+    }
+    const blob = new Blob([bytes], { type: 'application/octet-stream' });
+
+    global.FileReader = undefined as unknown as typeof FileReader;
+
+    const result = await blobToBase64(blob);
+    expect(result).toMatch(/^data:application\/octet-stream;base64,/);
+
+    // Verify the chunked encoding round-trips to the exact original bytes.
+    const base64 = result.split(',')[1];
+    const decoded = Buffer.from(base64, 'base64');
+    expect(decoded.length).toBe(size);
+    expect(Array.from(decoded)).toEqual(Array.from(bytes));
+  });
 });
 
 describe('canvasToBlob', () => {

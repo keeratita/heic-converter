@@ -24,7 +24,16 @@ export async function blobToBase64(blob: Blob): Promise<string> {
   try {
     const arrayBuffer = await blob.arrayBuffer();
     const bytes = new Uint8Array(arrayBuffer);
-    const base64 = btoa(String.fromCharCode(...bytes));
+
+    // Convert in chunks to avoid "Maximum call stack size exceeded" when
+    // spreading large byte arrays (e.g. high-resolution HEIC photos).
+    let binary = '';
+    const chunkSize = 0x8000; // 32KB
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+    }
+
+    const base64 = btoa(binary);
     return `data:${blob.type};base64,${base64}`;
   } catch (error) {
     throw new Error(

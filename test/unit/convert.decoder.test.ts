@@ -32,6 +32,7 @@ const mockState = vi.hoisted(() => ({
     decode: ReturnType<typeof vi.fn>;
     free: ReturnType<typeof vi.fn>;
   }>,
+  initializeShouldThrow: false,
 }));
 
 vi.mock('../../src/render/canvas', () => ({
@@ -40,7 +41,11 @@ vi.mock('../../src/render/canvas', () => ({
 
 vi.mock('../../src/wasm', () => {
   class MockLibheifDecoder {
-    initialize = vi.fn(async () => undefined);
+    initialize = vi.fn(async () => {
+      if (mockState.initializeShouldThrow) {
+        throw new Error('Init failed');
+      }
+    });
     decode = vi.fn(
       async (data: Uint8Array, onProgress?: (percent: number) => void) => {
         onProgress?.(100);
@@ -70,6 +75,7 @@ describe('convertHeic - Decoder Lifecycle', () => {
     freeSharedDecoder();
     mockState.renderAndEncodeMock.mockClear();
     mockState.decoderInstances.length = 0;
+    mockState.initializeShouldThrow = false;
   });
 
   it('should use injected decoder instead of creating shared default decoder', async () => {
@@ -269,6 +275,29 @@ describe('convertHeic - Decoder Lifecycle', () => {
       }
 
       expect(customDecoder.free).not.toHaveBeenCalled();
+    });
+
+    it('should free the default decoder when initialize throws', async () => {
+      mockState.initializeShouldThrow = true;
+
+      await expect(convertHeic(new Uint8Array([1]))).rejects.toThrow('Init failed');
+      expect(mockState.decoderInstances[0].free).toHaveBeenCalledTimes(1);
+    });
+
+    it('should free the default decoder when decode throws', async () => {
+      const promise = convertHeic(new Uint8Array([1]));
+      const decoder = mockState.decoderInstances[0];
+      decoder.decode.mockRejectedValue(new Error('Decode failed'));
+
+      await expect(promise).rejects.toThrow('Decode failed');
+      expect(decoder.free).toHaveBeenCalledTimes(1);
+    });
+
+    it('should free the default decoder when renderAndEncode throws', async () => {
+      mockState.renderAndEncodeMock.mockRejectedValueOnce(new Error('Render failed'));
+
+      await expect(convertHeic(new Uint8Array([1]))).rejects.toThrow('Render failed');
+      expect(mockState.decoderInstances[0].free).toHaveBeenCalledTimes(1);
     });
   });
 });

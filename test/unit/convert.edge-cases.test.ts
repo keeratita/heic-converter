@@ -126,18 +126,34 @@ describe('convertHeic - Concurrency', () => {
     mockState.decoderInstances.length = 0;
   });
 
-  it('should handle multiple concurrent conversions', async () => {
-    const promises = [
-      convertHeic(new Uint8Array([1])),
-      convertHeic(new Uint8Array([2])),
-      convertHeic(new Uint8Array([3])),
-    ];
+    it('should handle multiple concurrent conversions', async () => {
+      const promises = [
+        convertHeic(new Uint8Array([1])),
+        convertHeic(new Uint8Array([2])),
+        convertHeic(new Uint8Array([3])),
+      ];
 
-    const results = await Promise.all(promises);
+      const results = await Promise.all(promises);
 
-    expect(results).toHaveLength(3);
-    results.forEach((result) => expect(result).toBeInstanceOf(Blob));
-  });
+      expect(results).toHaveLength(3);
+      results.forEach((result) => expect(result).toBeInstanceOf(Blob));
+    });
+
+    it('should use a distinct decoder instance for each concurrent conversion', async () => {
+      const promises = [
+        convertHeic(new Uint8Array([1])),
+        convertHeic(new Uint8Array([2])),
+        convertHeic(new Uint8Array([3])),
+      ];
+
+      await Promise.all(promises);
+
+      const instances = mockState.decoderInstances;
+      expect(instances).toHaveLength(3);
+      // No two concurrent conversions may share the same decoder instance.
+      expect(new Set(instances).size).toBe(3);
+      instances.forEach((decoder) => expect(decoder.free).toHaveBeenCalledTimes(1));
+    });
 
   it('should handle many concurrent conversions', async () => {
     const promises = Array(10).fill(null).map((_, i) => convertHeic(new Uint8Array([i])));

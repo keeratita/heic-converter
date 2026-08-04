@@ -5,17 +5,14 @@ import type { ConvertOptions } from './types';
 export * from './types';
 export { LibheifDecoder, LibheifDecoderOptions } from './wasm';
 
-let sharedDecoder: LibheifDecoder | null = null;
-
 /**
- * Releases the resources allocated for the shared default decoder instance.
- * Call this when no further HEIC conversions are needed to free memory.
+ * Releases any cached decoder resources.
+ *
+ * Decoders are now created and released per conversion, so there is no shared
+ * instance to free. This function is kept for API compatibility.
  */
 export function freeSharedDecoder(): void {
-  if (sharedDecoder) {
-    sharedDecoder.free();
-    sharedDecoder = null;
-  }
+  // No-op: each conversion owns and frees its own decoder instance.
 }
 
 /**
@@ -60,36 +57,30 @@ export async function convertHeic(
     validateQuality(options.quality);
   }
 
-  // 3. Select decoder (user-injected or shared default)
-  let decoder = options?.decoder;
-  let isSharedDecoder = false;
-  if (!decoder) {
-    if (!sharedDecoder) {
-      sharedDecoder = new LibheifDecoder();
-    }
-    decoder = sharedDecoder;
-    isSharedDecoder = true;
-  }
-
-  // 4. Initialize and decode
-  await decoder.initialize();
-  const decoded = await decoder.decode(buffer, options?.onProgress);
-
-  // 5. Render to canvas and encode to target format
-  const format = options?.to || 'jpeg';
-  const quality = options?.quality !== undefined ? options.quality : 0.92;
+  // 3. Select decoder (user-injected or a fresh default instance).
+  // A fresh instance is created per call so concurrent conversions never share
+  // mutable WASM state, and it is always released in the finally block below.
+  const decoder = options?.decoder ?? new LibheifDecoder();
+  const ownsDecoder = !options?.decoder;
 
   try {
+    // 4. Initialize and decode
+    await decoder.initialize();
+    const decoded = await decoder.decode(buffer, options?.onProgress);
+
+    // 5. Render to canvas and encode to target format
+    const format = options?.to || 'jpeg';
+    const quality = options?.quality !== undefined ? options.quality : 0.92;
+
     return await renderAndEncode(decoded, format, quality);
   } finally {
-    // Free decoder if it was a shared instance and no custom decoder was provided
-    if (isSharedDecoder && !options?.decoder) {
+    // Free the decoder only if we created it (never free a user-injected one).
+    if (ownsDecoder) {
       try {
         decoder.free();
       } catch {
         // Ignore errors from free() - decoder is still marked as freed
       }
-      sharedDecoder = null;
     }
   }
 }
