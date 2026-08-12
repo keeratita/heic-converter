@@ -28,7 +28,7 @@
     "build:wasm": "bash build-scripts/build-wasm.sh",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:browser": "vitest --browser",
+    "test:e2e": "node test/browser/test-playwright.mjs",
     "test:coverage": "vitest run --coverage",
     "sandbox": "node test/browser/server.mjs",
     "lint": "eslint .",

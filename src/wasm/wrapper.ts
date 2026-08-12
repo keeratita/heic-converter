@@ -112,9 +112,11 @@ export class LibheifDecoder implements IHeicDecoder {
     const width = result.width;
     const height = result.height;
 
-    // Copy the pixels out of the WASM heap: the returned DecodedImage owns its
-    // data, so it stays valid after free() and is never corrupted by a later
-    // decode on the same (or any other) decoder instance.
+    // Copy the pixels into an owned Uint8ClampedArray. The current C++ build
+    // already returns an owned Uint8Array, but this copy keeps DecodedImage
+    // independent of the WASM implementation (e.g. if main.cpp ever switches
+    // to an embind typed_memory_view over the heap), so results stay valid
+    // after free() and after a later decode on the same instance.
     const clampedData = new Uint8ClampedArray(result.data);
 
     return {
@@ -126,6 +128,8 @@ export class LibheifDecoder implements IHeicDecoder {
 
   /**
    * Cleans up the WebAssembly decoder instance and resources.
+   * Idempotent: safe to call multiple times. After free(), the instance must
+   * be re-initialized (createHeicDecoderModule runs again on the next call).
    */
   free(): void {
     if (this.decoderInstance) {
@@ -133,5 +137,8 @@ export class LibheifDecoder implements IHeicDecoder {
       this.decoderInstance = null;
     }
     this.module = null;
+    // Drop the module reference so the WASM instance/heap can be garbage
+    // collected, and allow a later initialize() to load a fresh module.
+    this.initPromise = null;
   }
 }

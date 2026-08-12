@@ -26,8 +26,11 @@ jobs:
     - name: Build Library
       run: npm run build
 
-    - name: Run Unit Tests
-      run: npm run test
+    - name: Verify WASM Artifacts Exist
+      run: test -f dist/heic-decoder.wasm && test -f test/fixtures/example.heic
+
+    - name: Run Unit Tests (coverage thresholds enforced)
+      run: npm run test:coverage
 
     - name: Install Playwright Chromium
       run: npx playwright install chromium

@@ -53,6 +53,13 @@ async function runSandboxConversions(page) {
       return lines.some((line) => line.textContent && line.textContent.includes('Conversion successful!'));
     }, { timeout: 30000 });
 
+    // #outResolution is written from previewImage.onload, which runs in a later
+    // task than the success log — wait for it instead of racing it.
+    await page.waitForFunction(() => {
+      const m = /^(\d+)\s*x\s*(\d+)$/.exec(document.querySelector('#outResolution')?.textContent || '');
+      return m && Number(m[1]) > 0 && Number(m[2]) > 0;
+    }, { timeout: 10000 });
+
     const outFormat = (await page.locator('#outFormat').textContent())?.trim();
     const outResolution = (await page.locator('#outResolution').textContent())?.trim();
     const outSize = (await page.locator('#outSize').textContent())?.trim();
@@ -100,6 +107,12 @@ async function runDemoConversions(page) {
 
   await page.waitForFunction(() =>
     document.querySelector('#status')?.textContent?.includes('Conversion complete.'), { timeout: 30000 });
+
+  // The preview is rendered via an <img> that loads the blob URL asynchronously.
+  await page.waitForFunction(() => {
+    const img = document.querySelector('#previewImg');
+    return img && img.naturalWidth > 0;
+  }, { timeout: 10000 });
 
   const previewWidth = await page.locator('#previewImg').evaluate((img) => img.naturalWidth);
   if (previewWidth <= 0) {
@@ -158,6 +171,10 @@ async function runDemoConversions(page) {
   if (webpDownloadAttr !== 'example.webp') {
     fail(`webp download attribute: expected example.webp, got ${webpDownloadAttr}`);
   }
+  const webpOutFormat = (await page.locator('#outFormat').textContent())?.trim().toUpperCase();
+  if (webpOutFormat !== 'WEBP') {
+    fail(`webp output meta format: expected WEBP, got ${webpOutFormat}`);
+  }
   console.log('✅ Demo WebP conversion OK');
 }
 
@@ -192,6 +209,9 @@ async function runTest() {
   try {
     console.log(`Navigating to ${BASE_URL}...`);
     await page.goto(BASE_URL);
+
+    // Fail fast if :3000 is not our sandbox (e.g. an unrelated dev server).
+    await page.waitForSelector('#formatSelect', { timeout: 5000 });
 
     await runSandboxConversions(page);
     await runDemoConversions(page);

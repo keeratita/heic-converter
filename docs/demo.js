@@ -57,6 +57,11 @@ function resetOutput() {
 }
 
 function setFile(file) {
+  // Invalidate any conversion still in flight from a previous selection —
+  // including when the new file is rejected, so stale completions can never
+  // repopulate cleared UI state.
+  conversionId++;
+
   const name = file.name.toLowerCase();
   const isHeic = name.endsWith('.heic') || name.endsWith('.heif');
   if (!isHeic) {
@@ -70,8 +75,6 @@ function setFile(file) {
     return;
   }
 
-  // Invalidate any conversion still in flight from a previous selection.
-  conversionId++;
   selectedFile = file;
   metaName.textContent = file.name;
   metaSize.textContent = formatBytes(file.size);
@@ -135,6 +138,10 @@ convertBtn.addEventListener('click', async () => {
       to: format,
       quality,
       onProgress: (percent) => {
+        // A stale conversion must not keep writing to the progress bar.
+        if (id !== conversionId) {
+          return;
+        }
         progressEl.style.width = `${Math.max(0, Math.min(100, percent)).toFixed(0)}%`;
       },
     });

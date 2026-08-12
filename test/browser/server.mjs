@@ -31,6 +31,14 @@ const server = http.createServer((req, res) => {
   // Remove query params
   reqUrl = reqUrl.split('?')[0];
 
+  // Reject path traversal outright: every matched route stays under ROOT_DIR,
+  // but a `..` segment could otherwise read ANY repository file.
+  if (reqUrl.split('/').includes('..')) {
+    res.writeHead(403, { 'Content-Type': 'text/plain' });
+    res.end('Forbidden');
+    return;
+  }
+
   let filePath;
 
   // Route mapping
@@ -101,7 +109,8 @@ const server = http.createServer((req, res) => {
   });
 });
 
-server.listen(PORT, () => {
+// Local dev server only: never bind to non-loopback interfaces.
+server.listen(PORT, '127.0.0.1', () => {
   console.log(`\n🚀 CSP Sandbox Server running at: http://localhost:${PORT}`);
   console.log(`🔒 Content-Security-Policy is active.`);
   console.log(`📂 Serving sandbox from: test/browser/index.html`);

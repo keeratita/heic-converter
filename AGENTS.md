@@ -21,7 +21,7 @@ Key design constraints:
 | `npm run build:wasm` | Rebuild the WASM decoder (`build-scripts/build-wasm.sh`) — **requires Docker** |
 | `npm test` / `npm run test` | Run unit tests (Vitest, Node environment) |
 | `npm run test:watch` | Run unit tests in watch mode |
-| `npm run test:browser` | Run tests in a real browser via `@vitest/browser` + Playwright |
+| `npm run test:e2e` | Run browser E2E tests (real conversions in the CSP sandbox + GitHub Pages demo) via Playwright — requires `npx playwright install chromium` once |
 | `npm run test:coverage` | Run tests with coverage; thresholds are enforced in `vitest.config.ts` (80% lines/functions/statements, 70% branches) |
 | `npm run sandbox` | Start the interactive CSP sandbox server at `http://localhost:3000` (`test/browser/server.mjs`) |
 | `npm run lint` | ESLint over the whole repo (also runs via the `pre-commit` husky hook) |
@@ -68,7 +68,7 @@ test/
 - **Commit messages must follow Conventional Commits** (`feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert`, optional scope). Enforced by the husky `commit-msg` hook; `pre-commit` runs the linter. Example: `feat(wasm): add progress callback support`.
 - TypeScript, strict-ish typed code; keep public API surface small and backwards compatible (e.g. `freeSharedDecoder` kept as a no-op).
 - Unit tests live in `test/unit/**/*.test.ts` and run in a Node environment with Vitest. Coverage thresholds are configured in `vitest.config.ts`.
-- CI (`.github/workflows/ci.yml`) runs `npm ci` → `npm run build` → `npm run test` on pushes/PRs to `main`. The GitHub Pages demo (`.github/workflows/demo-pages.yml`) builds `docs/` + `dist/` into a site artifact and deploys it from `main`.
+- CI (`.github/workflows/ci.yml`) runs `npm ci` → `npm run build` → `npm run test:coverage` (thresholds enforced) → `npx playwright install chromium` → `node test/browser/test-playwright.mjs` (browser E2E: real conversions against the CSP sandbox and the GitHub Pages demo) on pushes/PRs to `main`. The GitHub Pages demo (`.github/workflows/demo-pages.yml`) builds `docs/` + `dist/` into a site artifact and deploys it from `main`.
 
 ## Gotchas
 

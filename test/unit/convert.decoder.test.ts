@@ -1,27 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockState = vi.hoisted(() => ({
-  renderAndEncodeMock: vi.fn(async (decoded: unknown) => {
-    if (
-      typeof decoded !== 'object' ||
-      decoded === null ||
-      !('width' in decoded) ||
-      !('height' in decoded)
-    ) {
-      throw new Error('Invalid decoded image');
-    }
-    const width = (decoded as { width: number }).width;
-    const height = (decoded as { height: number }).height;
-    if (width <= 0 || height <= 0) {
-      throw new Error('Invalid dimensions');
-    }
-    const expectedLength = width * height * 4;
-    const data = (decoded as { data?: Uint8ClampedArray }).data;
-    if (data?.length !== expectedLength) {
-      throw new Error('Image data length mismatch');
-    }
-    return new Blob(['converted'], { type: 'image/png' });
-  }),
+  // Deliberately a pass-through: convertHeic does not re-validate decoded
+  // output — the real renderAndEncode does (covered in canvas.test.ts).
+  renderAndEncodeMock: vi.fn(async () => new Blob(['converted'], { type: 'image/png' })),
   defaultDecodedImage: {
     width: 1,
     height: 1,
@@ -225,8 +207,8 @@ describe('convertHeic - Decoder Lifecycle', () => {
         .rejects.toThrow('Decode failed');
     });
 
-    it('should handle decoder.decode returning invalid dimensions', async () => {
-      const invalidDecoder = {
+    it('should forward decoder output to renderAndEncode (render layer validates it)', async () => {
+      const garbageDecoder = {
         initialize: vi.fn().mockResolvedValue(undefined),
         decode: vi.fn().mockResolvedValue({
           width: -1,
@@ -236,23 +218,16 @@ describe('convertHeic - Decoder Lifecycle', () => {
         free: vi.fn(),
       };
 
-      await expect(convertHeic(new Uint8Array([1]), { decoder: invalidDecoder }))
-        .rejects.toThrow();
-    });
+      const result = await convertHeic(new Uint8Array([1]), { decoder: garbageDecoder });
 
-    it('should handle decoder.decode returning wrong data length', async () => {
-      const invalidDecoder = {
-        initialize: vi.fn().mockResolvedValue(undefined),
-        decode: vi.fn().mockResolvedValue({
-          width: 100,
-          height: 100,
-          data: new Uint8ClampedArray(100),
-        }),
-        free: vi.fn(),
-      };
-
-      await expect(convertHeic(new Uint8Array([1]), { decoder: invalidDecoder }))
-        .rejects.toThrow('Image data length mismatch');
+      // convertHeic does not re-validate decoded output; validation happens in
+      // renderAndEncode (covered directly in canvas.test.ts).
+      expect(result).toBeInstanceOf(Blob);
+      expect(mockState.renderAndEncodeMock).toHaveBeenCalledWith(
+        expect.objectContaining({ width: -1, height: -1 }),
+        'jpeg',
+        0.92
+      );
     });
 
     it('should not call free on custom decoder even when conversion fails', async () => {

@@ -251,6 +251,15 @@ npm run build
 npm run test
 ```
 
+### Run Browser E2E Tests
+
+Real browser conversions against the CSP sandbox and the GitHub Pages demo (`docs/`):
+
+```bash
+npx playwright install chromium   # one-time
+npm run test:e2e
+```
+
 ### Run Interactive CSP Sandbox
 
 To test the converter in a local browser running under a strict Content Security Policy, start the sandbox server:
