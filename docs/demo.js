@@ -23,6 +23,11 @@ const download = document.getElementById('download');
 let selectedFile = null;
 /** @type {string | null} */
 let objectUrl = null;
+/**
+ * Monotonic counter used to invalidate in-flight conversions when the user
+ * picks a different file, so stale results never overwrite the current UI.
+ */
+let conversionId = 0;
 
 function formatBytes(bytes) {
   if (bytes < 1024) return `${bytes} B`;
@@ -55,10 +60,18 @@ function setFile(file) {
   const name = file.name.toLowerCase();
   const isHeic = name.endsWith('.heic') || name.endsWith('.heif');
   if (!isHeic) {
+    // Clear any previous selection so the UI cannot keep acting on a stale file.
+    selectedFile = null;
+    fileMeta.hidden = true;
+    convertBtn.disabled = true;
+    fileInput.value = ''; // Allow re-selecting the same file later.
+    resetOutput();
     setStatus('Please select a .heic or .heif file.', 'error');
     return;
   }
 
+  // Invalidate any conversion still in flight from a previous selection.
+  conversionId++;
   selectedFile = file;
   metaName.textContent = file.name;
   metaSize.textContent = formatBytes(file.size);
@@ -109,6 +122,7 @@ qualityEl.addEventListener('input', () => {
 convertBtn.addEventListener('click', async () => {
   if (!selectedFile) return;
 
+  const id = ++conversionId;
   resetOutput();
   convertBtn.disabled = true;
   setStatus('Converting...', '');
@@ -124,6 +138,11 @@ convertBtn.addEventListener('click', async () => {
         progressEl.style.width = `${Math.max(0, Math.min(100, percent)).toFixed(0)}%`;
       },
     });
+
+    // Ignore completions from stale conversions (file/settings changed mid-flight).
+    if (id !== conversionId) {
+      return;
+    }
 
     objectUrl = URL.createObjectURL(result);
 
@@ -151,12 +170,20 @@ convertBtn.addEventListener('click', async () => {
     setStatus('Conversion complete.', 'ok');
     progressEl.style.width = '100%';
   } catch (error) {
+    if (id !== conversionId) {
+      return;
+    }
+    // Keep the full error (including cause chain) available for debugging;
+    // stays fully local to the page.
+    console.error('[heic-converter] conversion failed', error);
     const message =
       error instanceof Error ? error.message : 'Unknown conversion error';
     setStatus(`Conversion failed: ${message}`, 'error');
     progressEl.style.width = '0%';
   } finally {
-    convertBtn.disabled = false;
+    if (id === conversionId) {
+      convertBtn.disabled = false;
+    }
   }
 });
 

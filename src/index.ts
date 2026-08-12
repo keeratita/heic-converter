@@ -48,7 +48,7 @@ export async function convertHeic(
     buffer = new Uint8Array(arrayBuffer);
   } else {
     throw new Error(
-      'Unsupported input type. Expected Blob, File, ArrayBuffer, or Uint8Array.'
+      `Unsupported input type. Expected Blob, File, ArrayBuffer, or Uint8Array. Got: ${Object.prototype.toString.call(input)}`
     );
   }
 
@@ -59,28 +59,57 @@ export async function convertHeic(
 
   // 3. Select decoder (user-injected or a fresh default instance).
   // A fresh instance is created per call so concurrent conversions never share
-  // mutable WASM state, and it is always released in the finally block below.
+  // mutable WASM state, and it is always released when this call completes.
   const decoder = options?.decoder ?? new LibheifDecoder();
   const ownsDecoder = !options?.decoder;
 
+  // Free the decoder at most once, and only if we created it (never free a
+  // user-injected decoder). It is released right after decode() to free WASM
+  // memory before the memory-hungry render/encode stage, and again in finally
+  // as a safety net for early failures (free() is idempotent).
+  let decoderFreed = false;
+  const freeDecoder = (): void => {
+    if (!ownsDecoder || decoderFreed) {
+      return;
+    }
+    decoderFreed = true;
+    try {
+      decoder.free();
+    } catch {
+      // Best-effort cleanup; there is nothing actionable if free() fails.
+    }
+  };
+
   try {
     // 4. Initialize and decode
-    await decoder.initialize();
+    try {
+      await decoder.initialize();
+    } catch (error) {
+      throw new Error(
+        `Failed to initialize HEIC decoder: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error }
+      );
+    }
+
     const decoded = await decoder.decode(buffer, options?.onProgress);
+
+    // Decoded pixel data is an independent copy (not a view into WASM memory),
+    // so the decoder can be released before the render/encode stage.
+    freeDecoder();
 
     // 5. Render to canvas and encode to target format
     const format = options?.to || 'jpeg';
     const quality = options?.quality !== undefined ? options.quality : 0.92;
 
-    return await renderAndEncode(decoded, format, quality);
-  } finally {
-    // Free the decoder only if we created it (never free a user-injected one).
-    if (ownsDecoder) {
-      try {
-        decoder.free();
-      } catch {
-        // Ignore errors from free() - decoder is still marked as freed
-      }
+    try {
+      return await renderAndEncode(decoded, format, quality);
+    } catch (error) {
+      throw new Error(
+        `Failed to render and encode image as ${format}: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error }
+      );
     }
+  } finally {
+    freeDecoder();
   }
 }

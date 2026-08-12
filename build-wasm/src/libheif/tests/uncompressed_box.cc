@@ -4,6 +4,7 @@
   MIT License
 
   Copyright (c) 2023 Brad Hards <bradh@frogmouth.net>
+  Copyright (c) 2026 Dirk Farin <dirk.farin@gmail.com>
 
   Permission is hereby granted, free of charge, to any person obtaining a copy
   of this software and associated documentation files (the "Software"), to deal
@@ -24,11 +25,11 @@
   SOFTWARE.
 */
 
-#include "catch.hpp"
+#include "catch_amalgamated.hpp"
 #include "box.h"
 #include "libheif/heif.h"
-#include "codecs/uncompressed.h"
-#include "codecs/uncompressed_box.h"
+#include "codecs/uncompressed/unc_types.h"
+#include "codecs/uncompressed/unc_boxes.h"
 #include <cstdint>
 #include <iostream>
 
@@ -214,7 +215,7 @@ TEST_CASE( "uncC" )
 
     Indent indent;
     std::string dump_output = uncC->dump(indent);
-    REQUIRE(dump_output == "Box: uncC -----\nsize: 0   (header size: 0)\nprofile: 1919378017 (rgba)\ncomponent_index: 0\ncomponent_bit_depth: 8\ncomponent_format: unsigned\ncomponent_align_size: 0\ncomponent_index: 1\ncomponent_bit_depth: 8\ncomponent_format: unsigned\ncomponent_align_size: 0\ncomponent_index: 2\ncomponent_bit_depth: 8\ncomponent_format: unsigned\ncomponent_align_size: 0\ncomponent_index: 3\ncomponent_bit_depth: 8\ncomponent_format: unsigned\ncomponent_align_size: 0\nsampling_type: no subsampling\ninterleave_type: pixel\nblock_size: 0\ncomponents_little_endian: 0\nblock_pad_lsb: 0\nblock_little_endian: 0\nblock_reversed: 0\npad_unknown: 0\npixel_size: 0\nrow_align_size: 0\ntile_align_size: 0\nnum_tile_cols: 1\nnum_tile_rows: 1\n");
+    REQUIRE(dump_output == "Box: uncC -----\nsize: 0   (header size: 0)\nprofile: 1919378017 (rgba)\ncomponent_index: 0\n| component_bit_depth: 8\n| component_format: unsigned\n| component_align_size: 0\ncomponent_index: 1\n| component_bit_depth: 8\n| component_format: unsigned\n| component_align_size: 0\ncomponent_index: 2\n| component_bit_depth: 8\n| component_format: unsigned\n| component_align_size: 0\ncomponent_index: 3\n| component_bit_depth: 8\n| component_format: unsigned\n| component_align_size: 0\nsampling_type: no subsampling\ninterleave_type: pixel\nblock_size: 0\ncomponents_little_endian: 0\nblock_pad_lsb: 0\nblock_little_endian: 0\nblock_reversed: 0\npad_unknown: 0\npixel_size: 0\nrow_align_size: 0\ntile_align_size: 0\nnum_tile_cols: 1\nnum_tile_rows: 1\n");
 }
 
 TEST_CASE("uncC_parse") {
@@ -234,7 +235,7 @@ TEST_CASE("uncC_parse") {
 
   BitstreamRange range(reader, byteArray.size());
   std::shared_ptr<Box> box;
-  Error error = Box::read(range, &box);
+  Error error = Box::read(range, &box, heif_get_global_security_limits());
   REQUIRE(error == Error::Ok);
   REQUIRE(range.error() == 0);
 
@@ -249,21 +250,21 @@ TEST_CASE("uncC_parse") {
                         "size: 64   (header size: 12)\n"
                         "profile: 1919378017 (rgba)\n"
                         "component_index: 0\n"
-                        "component_bit_depth: 8\n"
-                        "component_format: unsigned\n"
-                        "component_align_size: 0\n"
+                        "| component_bit_depth: 8\n"
+                        "| component_format: unsigned\n"
+                        "| component_align_size: 0\n"
                         "component_index: 1\n"
-                        "component_bit_depth: 8\n"
-                        "component_format: unsigned\n"
-                        "component_align_size: 0\n"
+                        "| component_bit_depth: 8\n"
+                        "| component_format: unsigned\n"
+                        "| component_align_size: 0\n"
                         "component_index: 2\n"
-                        "component_bit_depth: 8\n"
-                        "component_format: unsigned\n"
-                        "component_align_size: 0\n"
+                        "| component_bit_depth: 8\n"
+                        "| component_format: unsigned\n"
+                        "| component_align_size: 0\n"
                         "component_index: 3\n"
-                        "component_bit_depth: 8\n"
-                        "component_format: unsigned\n"
-                        "component_align_size: 0\n"
+                        "| component_bit_depth: 8\n"
+                        "| component_format: unsigned\n"
+                        "| component_align_size: 0\n"
                         "sampling_type: no subsampling\n"
                         "interleave_type: pixel\n"
                         "block_size: 0\n"
@@ -296,7 +297,7 @@ TEST_CASE("uncC_parse_no_overflow") {
 
   BitstreamRange range(reader, byteArray.size());
   std::shared_ptr<Box> box;
-  Error error = Box::read(range, &box);
+  Error error = Box::read(range, &box, heif_get_disabled_security_limits());
   REQUIRE(error == Error::Ok);
   REQUIRE(range.error() == 0);
 
@@ -323,11 +324,10 @@ TEST_CASE("uncC_parse_excess_tile_cols") {
                                                       byteArray.size(), false);
   BitstreamRange range(reader, byteArray.size());
   std::shared_ptr<Box> box;
-  Error error = Box::read(range, &box);
+  Error error = Box::read(range, &box, heif_get_global_security_limits());
   REQUIRE(range.error() == 0);
-  REQUIRE(error.error_code == 6);
-  REQUIRE(error.sub_error_code == 1000);
-  REQUIRE(error.message == "Tiling size 4294967296 x 32768 exceeds the maximum allowed size 4294967295 x 4294967295");
+  REQUIRE(error.error_code == heif_error_Unsupported_feature);
+  REQUIRE(error.sub_error_code == heif_suberror_Invalid_parameter_value);
 }
 
 TEST_CASE("uncC_parse_excess_tile_rows") {
@@ -346,11 +346,10 @@ TEST_CASE("uncC_parse_excess_tile_rows") {
                                                       byteArray.size(), false);
   BitstreamRange range(reader, byteArray.size());
   std::shared_ptr<Box> box;
-  Error error = Box::read(range, &box);
+  Error error = Box::read(range, &box, heif_get_global_security_limits());
   REQUIRE(range.error() == 0);
-  REQUIRE(error.error_code == 6);
-  REQUIRE(error.sub_error_code == 1000);
-  REQUIRE(error.message == "Tiling size 32768 x 4294967296 exceeds the maximum allowed size 4294967295 x 4294967295");
+  REQUIRE(error.error_code == heif_error_Unsupported_feature);
+  REQUIRE(error.sub_error_code == heif_suberror_Invalid_parameter_value);
 }
 
 TEST_CASE("cmpC_defl") {
@@ -365,7 +364,7 @@ TEST_CASE("cmpC_defl") {
 
     BitstreamRange range(reader, byteArray.size());
     std::shared_ptr<Box> box;
-    Error error = Box::read(range, &box);
+    Error error = Box::read(range, &box, heif_get_global_security_limits());
     REQUIRE(error == Error::Ok);
     REQUIRE(range.error() == 0);
 
@@ -374,8 +373,7 @@ TEST_CASE("cmpC_defl") {
     std::shared_ptr<Box_cmpC> cmpC = std::dynamic_pointer_cast<Box_cmpC>(box);
     REQUIRE(cmpC != nullptr);
     REQUIRE(cmpC->get_compression_type() == fourcc("defl"));
-    REQUIRE(cmpC->get_must_decompress_individual_entities() == false);
-    REQUIRE(cmpC->get_compressed_range_type() == 0);
+    REQUIRE(cmpC->get_compressed_unit_type() == 0);
 
     StreamWriter writer;
     Error err = cmpC->write(writer);
@@ -385,7 +383,7 @@ TEST_CASE("cmpC_defl") {
 
     Indent indent;
     std::string dump_output = cmpC->dump(indent);
-    REQUIRE(dump_output == "Box: cmpC -----\nsize: 17   (header size: 12)\ncompression_type: defl\nmust_decompress_individual_entities: 0\ncompressed_entity_type: 0\n");
+    REQUIRE(dump_output == "Box: cmpC -----\nsize: 17   (header size: 12)\ncompression_type: defl\ncompressed_entity_type: 0\n");
 
 }
 
@@ -394,7 +392,7 @@ TEST_CASE("cmpC_zlib") {
     std::vector<uint8_t> byteArray{
       0x00, 0x00, 0x00, 0x11, 'c', 'm', 'p', 'C',
       0x00, 0x00, 0x00, 0x00, 'z', 'l', 'i', 'b',
-      0x82
+      0x02
       };
 
     auto reader = std::make_shared<StreamReader_memory>(byteArray.data(),
@@ -402,7 +400,7 @@ TEST_CASE("cmpC_zlib") {
 
     BitstreamRange range(reader, byteArray.size());
     std::shared_ptr<Box> box;
-    Error error = Box::read(range, &box);
+    Error error = Box::read(range, &box, heif_get_global_security_limits());
     REQUIRE(error == Error::Ok);
     REQUIRE(range.error() == 0);
 
@@ -411,8 +409,7 @@ TEST_CASE("cmpC_zlib") {
     std::shared_ptr<Box_cmpC> cmpC = std::dynamic_pointer_cast<Box_cmpC>(box);
     REQUIRE(cmpC != nullptr);
     REQUIRE(cmpC->get_compression_type() == fourcc("zlib"));
-    REQUIRE(cmpC->get_must_decompress_individual_entities() == true);
-    REQUIRE(cmpC->get_compressed_range_type() == 2);
+    REQUIRE(cmpC->get_compressed_unit_type() == 2);
 
     StreamWriter writer;
     Error err = cmpC->write(writer);
@@ -422,7 +419,7 @@ TEST_CASE("cmpC_zlib") {
 
     Indent indent;
     std::string dump_output = cmpC->dump(indent);
-    REQUIRE(dump_output == "Box: cmpC -----\nsize: 17   (header size: 12)\ncompression_type: zlib\nmust_decompress_individual_entities: 1\ncompressed_entity_type: 2\n");
+    REQUIRE(dump_output == "Box: cmpC -----\nsize: 17   (header size: 12)\ncompression_type: zlib\ncompressed_entity_type: 2\n");
 
 }
 
@@ -430,7 +427,7 @@ TEST_CASE("cmpC_brot") {
     std::vector<uint8_t> byteArray{
       0x00, 0x00, 0x00, 0x11, 'c', 'm', 'p', 'C',
       0x00, 0x00, 0x00, 0x00, 'b', 'r', 'o', 't',
-      0x81
+      0x01
       };
 
     auto reader = std::make_shared<StreamReader_memory>(byteArray.data(),
@@ -438,7 +435,7 @@ TEST_CASE("cmpC_brot") {
 
     BitstreamRange range(reader, byteArray.size());
     std::shared_ptr<Box> box;
-    Error error = Box::read(range, &box);
+    Error error = Box::read(range, &box, heif_get_global_security_limits());
     REQUIRE(error == Error::Ok);
     REQUIRE(range.error() == 0);
 
@@ -447,8 +444,7 @@ TEST_CASE("cmpC_brot") {
     std::shared_ptr<Box_cmpC> cmpC = std::dynamic_pointer_cast<Box_cmpC>(box);
     REQUIRE(cmpC != nullptr);
     REQUIRE(cmpC->get_compression_type() == fourcc("brot"));
-    REQUIRE(cmpC->get_must_decompress_individual_entities() == true);
-    REQUIRE(cmpC->get_compressed_range_type() == 1);
+    REQUIRE(cmpC->get_compressed_unit_type() == 1);
 
     StreamWriter writer;
     Error err = cmpC->write(writer);
@@ -458,14 +454,19 @@ TEST_CASE("cmpC_brot") {
 
     Indent indent;
     std::string dump_output = cmpC->dump(indent);
-    REQUIRE(dump_output == "Box: cmpC -----\nsize: 17   (header size: 12)\ncompression_type: brot\nmust_decompress_individual_entities: 1\ncompressed_entity_type: 1\n");
+    REQUIRE(dump_output == "Box: cmpC -----\nsize: 17   (header size: 12)\ncompression_type: brot\ncompressed_entity_type: 1\n");
 
   }
 
-TEST_CASE("icbr_empty") {
+
+TEST_CASE("icef_24_8_bit") {
     std::vector<uint8_t> byteArray{
-      0x00, 0x00, 0x00, 0x10, 'i', 'c', 'b', 'r',
-      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+      0x00, 0x00, 0x00, 0x19, 'i', 'c', 'e', 'f',
+      0x00, 0x00, 0x00, 0x00,
+      0b01000000,
+      0x00, 0x00, 0x00, 0x02,
+      0x00, 0x0a, 0x03, 0x03,
+      0x02, 0x03, 0x0a, 0x07
       };
 
     auto reader = std::make_shared<StreamReader_memory>(byteArray.data(),
@@ -473,33 +474,37 @@ TEST_CASE("icbr_empty") {
 
     BitstreamRange range(reader, byteArray.size());
     std::shared_ptr<Box> box;
-    Error error = Box::read(range, &box);
+    Error error = Box::read(range, &box, heif_get_global_security_limits());
     REQUIRE(error == Error::Ok);
     REQUIRE(range.error() == 0);
 
-    REQUIRE(box->get_short_type() == fourcc("icbr"));
-    REQUIRE(box->get_type_string() == "icbr");
-    std::shared_ptr<Box_icbr> icbr = std::dynamic_pointer_cast<Box_icbr>(box);
-    REQUIRE(icbr != nullptr);
-    REQUIRE(icbr->get_ranges().size() == 0);
+    REQUIRE(box->get_short_type() == fourcc("icef"));
+    REQUIRE(box->get_type_string() == "icef");
+    std::shared_ptr<Box_icef> icef = std::dynamic_pointer_cast<Box_icef>(box);
+    REQUIRE(icef != nullptr);
+    REQUIRE(icef->get_units().size() == 2);
+    REQUIRE(icef->get_version() == 0);
 
     StreamWriter writer;
-    Error err = icbr->write(writer);
+    Error err = icef->write(writer);
     REQUIRE(err.error_code == heif_error_Ok);
     const std::vector<uint8_t> written = writer.get_data();
     REQUIRE(written == byteArray);
 
     Indent indent;
-    std::string dump_output = icbr->dump(indent);
-    REQUIRE(dump_output == "Box: icbr -----\nsize: 16   (header size: 12)\nnum_ranges: 0\n");
+    std::string dump_output = icef->dump(indent);
+    REQUIRE(dump_output == "Box: icef -----\nsize: 25   (header size: 12)\nnum_compressed_units: 2\nunit_offset: 2563, unit_size: 3\nunit_offset: 131850, unit_size: 7\n");
 }
 
-TEST_CASE("icbr_version0") {
+
+TEST_CASE("icef_0_16_bit") {
     std::vector<uint8_t> byteArray{
-      0x00, 0x00, 0x00, 0x20, 'i', 'c', 'b', 'r',
-      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02,
-      0x00, 0x00, 0x0a, 0x03, 0x00, 0x01, 0x02, 0x03,
-      0x00, 0x02, 0x03, 0x0a, 0x00, 0x04, 0x05, 0x07
+      0x00, 0x00, 0x00, 0x15, 'i', 'c', 'e', 'f',
+      0x00, 0x00, 0x00, 0x00,
+      0b00000100,
+      0x00, 0x00, 0x00, 0x02,
+      0x40, 0x03,
+      0x0a, 0x07
       };
 
     auto reader = std::make_shared<StreamReader_memory>(byteArray.data(),
@@ -507,36 +512,41 @@ TEST_CASE("icbr_version0") {
 
     BitstreamRange range(reader, byteArray.size());
     std::shared_ptr<Box> box;
-    Error error = Box::read(range, &box);
+    Error error = Box::read(range, &box, heif_get_global_security_limits());
     REQUIRE(error == Error::Ok);
     REQUIRE(range.error() == 0);
 
-    REQUIRE(box->get_short_type() == fourcc("icbr"));
-    REQUIRE(box->get_type_string() == "icbr");
-    std::shared_ptr<Box_icbr> icbr = std::dynamic_pointer_cast<Box_icbr>(box);
-    REQUIRE(icbr != nullptr);
-    REQUIRE(icbr->get_ranges().size() == 2);
-    REQUIRE(icbr->get_version() == 0);
+    REQUIRE(box->get_short_type() == fourcc("icef"));
+    REQUIRE(box->get_type_string() == "icef");
+    std::shared_ptr<Box_icef> icef = std::dynamic_pointer_cast<Box_icef>(box);
+    REQUIRE(icef != nullptr);
+    REQUIRE(icef->get_units().size() == 2);
+    REQUIRE(icef->get_units()[0].unit_offset == 0);
+    REQUIRE(icef->get_units()[0].unit_size == 16387);
+    REQUIRE(icef->get_units()[1].unit_offset == 16387);
+    REQUIRE(icef->get_units()[1].unit_size == 2567);
+    REQUIRE(icef->get_version() == 0);
 
     StreamWriter writer;
-    Error err = icbr->write(writer);
+    Error err = icef->write(writer);
     REQUIRE(err.error_code == heif_error_Ok);
     const std::vector<uint8_t> written = writer.get_data();
     REQUIRE(written == byteArray);
 
     Indent indent;
-    std::string dump_output = icbr->dump(indent);
-    REQUIRE(dump_output == "Box: icbr -----\nsize: 32   (header size: 12)\nnum_ranges: 2\nrange_offset: 2563, range_size: 66051\nrange_offset: 131850, range_size: 263431\n");
+    std::string dump_output = icef->dump(indent);
+    REQUIRE(dump_output == "Box: icef -----\nsize: 21   (header size: 12)\nnum_compressed_units: 2\nunit_offset: 0, unit_size: 16387\nunit_offset: 16387, unit_size: 2567\n");
 }
 
-TEST_CASE("icbr_version1") {
+
+TEST_CASE("icef_32bit") {
     std::vector<uint8_t> byteArray{
-      0x00, 0x00, 0x00, 0x30, 'i', 'c', 'b', 'r',
-      0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02,
-      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0a, 0x03,
-      0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02, 0x03,
-      0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x03, 0x0a,
-      0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x05, 0x07
+      0x00, 0x00, 0x00, 0x21, 'i', 'c', 'e', 'f',
+      0x00, 0x00, 0x00, 0x00,
+      0b01101100,
+      0x00, 0x00, 0x00, 0x02,
+      0x00, 0x00, 0x03, 0x04, 0x01, 0x01, 0x02, 0x03,
+      0x01, 0x02, 0x03, 0x0a, 0x00, 0x04, 0x05, 0x07
       };
 
     auto reader = std::make_shared<StreamReader_memory>(byteArray.data(),
@@ -544,24 +554,368 @@ TEST_CASE("icbr_version1") {
 
     BitstreamRange range(reader, byteArray.size());
     std::shared_ptr<Box> box;
-    Error error = Box::read(range, &box);
+    Error error = Box::read(range, &box, heif_get_global_security_limits());
     REQUIRE(error == Error::Ok);
     REQUIRE(range.error() == 0);
 
-    REQUIRE(box->get_short_type() == fourcc("icbr"));
-    REQUIRE(box->get_type_string() == "icbr");
-    std::shared_ptr<Box_icbr> icbr = std::dynamic_pointer_cast<Box_icbr>(box);
-    REQUIRE(icbr != nullptr);
-    REQUIRE(icbr->get_ranges().size() == 2);
-    REQUIRE(icbr->get_version() == 1);
+    REQUIRE(box->get_short_type() == fourcc("icef"));
+    REQUIRE(box->get_type_string() == "icef");
+    std::shared_ptr<Box_icef> icef = std::dynamic_pointer_cast<Box_icef>(box);
+    REQUIRE(icef != nullptr);
+    REQUIRE(icef->get_units().size() == 2);
+    REQUIRE(icef->get_units()[0].unit_offset == 772);
+    REQUIRE(icef->get_units()[0].unit_size == 16843267);
+    REQUIRE(icef->get_units()[1].unit_offset == 16909066);
+    REQUIRE(icef->get_units()[1].unit_size == 263431);
+    REQUIRE(icef->get_version() == 0);
 
     StreamWriter writer;
-    Error err = icbr->write(writer);
+    Error err = icef->write(writer);
     REQUIRE(err.error_code == heif_error_Ok);
     const std::vector<uint8_t> written = writer.get_data();
     REQUIRE(written == byteArray);
 
     Indent indent;
-    std::string dump_output = icbr->dump(indent);
-    REQUIRE(dump_output == "Box: icbr -----\nsize: 48   (header size: 12)\nnum_ranges: 2\nrange_offset: 2563, range_size: 66051\nrange_offset: 131850, range_size: 263431\n");
+    std::string dump_output = icef->dump(indent);
+    REQUIRE(dump_output == "Box: icef -----\nsize: 33   (header size: 12)\nnum_compressed_units: 2\nunit_offset: 772, unit_size: 16843267\nunit_offset: 16909066, unit_size: 263431\n");
+}
+
+
+TEST_CASE("icef_uint64") {
+    std::vector<uint8_t> byteArray{
+      0x00, 0x00, 0x00, 0x31, 'i', 'c', 'e', 'f',
+      0x00, 0x00, 0x00, 0x00,
+      0b10010000,
+      0x00, 0x00, 0x00, 0x02,
+      0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x0a, 0x03,
+      0x00, 0x00, 0x00, 0x02, 0x00, 0x01, 0x02, 0x03,
+      0x00, 0x00, 0x00, 0x02, 0x00, 0x02, 0x03, 0x0a,
+      0x00, 0x00, 0x00, 0x03, 0x00, 0x04, 0x05, 0x07
+      };
+
+    auto reader = std::make_shared<StreamReader_memory>(byteArray.data(),
+                                                        byteArray.size(), false);
+
+    BitstreamRange range(reader, byteArray.size());
+    std::shared_ptr<Box> box;
+    Error error = Box::read(range, &box, heif_get_global_security_limits());
+    REQUIRE(error == Error::Ok);
+    REQUIRE(range.error() == 0);
+
+    REQUIRE(box->get_short_type() == fourcc("icef"));
+    REQUIRE(box->get_type_string() == "icef");
+    std::shared_ptr<Box_icef> icef = std::dynamic_pointer_cast<Box_icef>(box);
+    REQUIRE(icef != nullptr);
+    REQUIRE(icef->get_units().size() == 2);
+    REQUIRE(icef->get_units()[0].unit_offset == 4294969859L);
+    REQUIRE(icef->get_units()[0].unit_size ==  8590000643L);
+    REQUIRE(icef->get_units()[1].unit_offset == 8590066442L);
+    REQUIRE(icef->get_units()[1].unit_size ==  12885165319L);
+    REQUIRE(icef->get_version() == 0);
+
+    StreamWriter writer;
+    Error err = icef->write(writer);
+    REQUIRE(err.error_code == heif_error_Ok);
+    const std::vector<uint8_t> written = writer.get_data();
+    REQUIRE(written == byteArray);
+
+    Indent indent;
+    std::string dump_output = icef->dump(indent);
+    REQUIRE(dump_output == "Box: icef -----\nsize: 49   (header size: 12)\nnum_compressed_units: 2\nunit_offset: 4294969859, unit_size: 8590000643\nunit_offset: 8590066442, unit_size: 12885165319\n");
+}
+
+
+TEST_CASE("icef_bad_version") {
+    std::vector<uint8_t> byteArray{
+      0x00, 0x00, 0x00, 0x19, 'i', 'c', 'e', 'f',
+      0x01, 0x00, 0x00, 0x00,
+      0b01000000,
+      0x00, 0x00, 0x00, 0x02,
+      0x00, 0x0a, 0x03, 0x03,
+      0x02, 0x03, 0x0a, 0x07
+      };
+
+    auto reader = std::make_shared<StreamReader_memory>(byteArray.data(),
+                                                        byteArray.size(), false);
+
+    BitstreamRange range(reader, byteArray.size());
+    std::shared_ptr<Box> box;
+    Error error = Box::read(range, &box, heif_get_global_security_limits());
+    REQUIRE(error.error_code == heif_error_Unsupported_feature);
+    REQUIRE(error.sub_error_code == heif_suberror_Unsupported_data_version);
+    REQUIRE(error.message == std::string("icef box data version 1 is not implemented yet"));
+}
+
+
+TEST_CASE("cloc")
+{
+  // Construct and set field
+  auto cloc = std::make_shared<Box_cloc>();
+  cloc->set_chroma_location(2);
+  REQUIRE(cloc->get_chroma_location() == 2);
+
+  // Write
+  StreamWriter writer;
+  Error err = cloc->write(writer);
+  REQUIRE(err.error_code == heif_error_Ok);
+  const std::vector<uint8_t> bytes = writer.get_data();
+
+  // FullBox header (12 bytes) + 1 byte payload = 13 bytes
+  std::vector<uint8_t> expected = {
+    0x00, 0x00, 0x00, 0x0D, 'c', 'l', 'o', 'c',
+    0x00, 0x00, 0x00, 0x00,
+    0x02
+  };
+  REQUIRE(bytes == expected);
+
+  // Parse back
+  auto reader = std::make_shared<StreamReader_memory>(bytes.data(), bytes.size(), false);
+  BitstreamRange range(reader, bytes.size());
+  std::shared_ptr<Box> box;
+  Error error = Box::read(range, &box, heif_get_global_security_limits());
+  REQUIRE(error == Error::Ok);
+  REQUIRE(range.error() == 0);
+
+  REQUIRE(box->get_short_type() == fourcc("cloc"));
+  auto parsed = std::dynamic_pointer_cast<Box_cloc>(box);
+  REQUIRE(parsed != nullptr);
+  REQUIRE(parsed->get_chroma_location() == 2);
+
+  // Dump
+  Indent indent;
+  std::string dump_output = parsed->dump(indent);
+  REQUIRE(dump_output == "Box: cloc -----\nsize: 13   (header size: 12)\nversion: 0\nflags: 0\nchroma_location: 2 (h=0,   v=0)\n");
+}
+
+
+TEST_CASE("cloc_bad_version")
+{
+  std::vector<uint8_t> byteArray = {
+    0x00, 0x00, 0x00, 0x0D, 'c', 'l', 'o', 'c',
+    0x01, 0x00, 0x00, 0x00,
+    0x02
+  };
+
+  auto reader = std::make_shared<StreamReader_memory>(byteArray.data(), byteArray.size(), false);
+  BitstreamRange range(reader, byteArray.size());
+  std::shared_ptr<Box> box;
+  Error error = Box::read(range, &box, heif_get_global_security_limits());
+  REQUIRE(error.error_code == heif_error_Unsupported_feature);
+  REQUIRE(error.sub_error_code == heif_suberror_Unsupported_data_version);
+  REQUIRE(error.message == std::string("cloc box data version 1 is not implemented yet"));
+}
+
+
+TEST_CASE("cloc_out_of_range")
+{
+  std::vector<uint8_t> byteArray = {
+    0x00, 0x00, 0x00, 0x0D, 'c', 'l', 'o', 'c',
+    0x00, 0x00, 0x00, 0x00,
+    0x07
+  };
+
+  auto reader = std::make_shared<StreamReader_memory>(byteArray.data(), byteArray.size(), false);
+  BitstreamRange range(reader, byteArray.size());
+  std::shared_ptr<Box> box;
+  Error error = Box::read(range, &box, heif_get_global_security_limits());
+  REQUIRE(error.error_code == heif_error_Invalid_input);
+  REQUIRE(error.sub_error_code == heif_suberror_Invalid_parameter_value);
+}
+
+
+TEST_CASE("splz")
+{
+  // Construct: 2 component indices, 2x1 pattern, angles 45.0 and 90.0
+  auto splz = std::make_shared<Box_splz>();
+  PolarizationPattern pattern;
+  pattern.component_ids = {0, 1};
+  pattern.pattern_width = 2;
+  pattern.pattern_height = 1;
+  pattern.polarization_angles = {45.0f, 90.0f};
+  splz->set_pattern(pattern);
+
+  // Write
+  StreamWriter writer;
+  Error err = splz->write(writer);
+  REQUIRE(err.error_code == heif_error_Ok);
+  const std::vector<uint8_t> bytes = writer.get_data();
+
+  // FullBox header (12) + 4 (count) + 8 (2×index) + 4 (w+h) + 8 (2×float) = 36
+  std::vector<uint8_t> expected = {
+    0x00, 0x00, 0x00, 0x24, 's', 'p', 'l', 'z',
+    0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x02,  // component_count = 2
+    0x00, 0x00, 0x00, 0x00,  // index[0] = 0
+    0x00, 0x00, 0x00, 0x01,  // index[1] = 1
+    0x00, 0x02,              // pattern_width = 2
+    0x00, 0x01,              // pattern_height = 1
+    0x42, 0x34, 0x00, 0x00,  // 45.0f
+    0x42, 0xB4, 0x00, 0x00   // 90.0f
+  };
+  REQUIRE(bytes == expected);
+
+  // Parse back
+  auto reader = std::make_shared<StreamReader_memory>(bytes.data(), bytes.size(), false);
+  BitstreamRange range(reader, bytes.size());
+  std::shared_ptr<Box> box;
+  Error error = Box::read(range, &box, heif_get_global_security_limits());
+  REQUIRE(error == Error::Ok);
+  REQUIRE(range.error() == 0);
+
+  REQUIRE(box->get_short_type() == fourcc("splz"));
+  auto parsed = std::dynamic_pointer_cast<Box_splz>(box);
+  REQUIRE(parsed != nullptr);
+
+  const auto& p = parsed->get_pattern();
+  REQUIRE(p.component_ids.size() == 2);
+  REQUIRE(p.component_ids[0] == 0);
+  REQUIRE(p.component_ids[1] == 1);
+  REQUIRE(p.pattern_width == 2);
+  REQUIRE(p.pattern_height == 1);
+  REQUIRE(p.polarization_angles.size() == 2);
+  REQUIRE(p.polarization_angles[0] == 45.0f);
+  REQUIRE(p.polarization_angles[1] == 90.0f);
+
+  // Dump
+  Indent indent;
+  std::string dump_output = parsed->dump(indent);
+  REQUIRE(dump_output == "Box: splz -----\n"
+                         "size: 36   (header size: 12)\n"
+                         "version: 0\n"
+                         "flags: 0\n"
+                         "component_count: 2\n"
+                         "  component_index[0]: 0\n"
+                         "  component_index[1]: 1\n"
+                         "pattern_width: 2\n"
+                         "pattern_height: 1\n"
+                         "  [0,0]: 45 degrees\n"
+                         "  [1,0]: 90 degrees\n");
+}
+
+
+TEST_CASE("splz_bad_version")
+{
+  std::vector<uint8_t> byteArray = {
+    0x00, 0x00, 0x00, 0x24, 's', 'p', 'l', 'z',
+    0x01, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x02,
+    0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x01,
+    0x00, 0x02,
+    0x00, 0x01,
+    0x42, 0x34, 0x00, 0x00,
+    0x42, 0xB4, 0x00, 0x00
+  };
+
+  auto reader = std::make_shared<StreamReader_memory>(byteArray.data(), byteArray.size(), false);
+  BitstreamRange range(reader, byteArray.size());
+  std::shared_ptr<Box> box;
+  Error error = Box::read(range, &box, heif_get_global_security_limits());
+  REQUIRE(error.error_code == heif_error_Unsupported_feature);
+  REQUIRE(error.sub_error_code == heif_suberror_Unsupported_data_version);
+  REQUIRE(error.message == std::string("splz box data version 1 is not implemented yet"));
+}
+
+
+TEST_CASE("snuc")
+{
+  // Construct: 1 component index, nuc_is_applied=true, 2x1 image, 2 gains + 2 offsets
+  auto snuc = std::make_shared<Box_snuc>();
+  SensorNonUniformityCorrection nuc;
+  nuc.component_ids = {0};
+  nuc.nuc_is_applied = true;
+  nuc.image_width = 2;
+  nuc.image_height = 1;
+  nuc.nuc_gains = {1.0f, 2.0f};
+  nuc.nuc_offsets = {0.0f, 3.0f};
+  snuc->set_nuc(nuc);
+
+  // Write
+  StreamWriter writer;
+  Error err = snuc->write(writer);
+  REQUIRE(err.error_code == heif_error_Ok);
+  const std::vector<uint8_t> bytes = writer.get_data();
+
+  // FullBox header (12) + 4 (count) + 4 (index) + 1 (flags) + 4 (width) + 4 (height)
+  // + 8 (2×gain) + 8 (2×offset) = 45
+  std::vector<uint8_t> expected = {
+    0x00, 0x00, 0x00, 0x2D, 's', 'n', 'u', 'c',
+    0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x01,  // component_count = 1
+    0x00, 0x00, 0x00, 0x00,  // index[0] = 0
+    0x80,                    // flags: nuc_is_applied = true
+    0x00, 0x00, 0x00, 0x02,  // image_width = 2
+    0x00, 0x00, 0x00, 0x01,  // image_height = 1
+    0x3F, 0x80, 0x00, 0x00,  // gain[0] = 1.0f
+    0x40, 0x00, 0x00, 0x00,  // gain[1] = 2.0f
+    0x00, 0x00, 0x00, 0x00,  // offset[0] = 0.0f
+    0x40, 0x40, 0x00, 0x00   // offset[1] = 3.0f
+  };
+  REQUIRE(bytes == expected);
+
+  // Parse back
+  auto reader = std::make_shared<StreamReader_memory>(bytes.data(), bytes.size(), false);
+  BitstreamRange range(reader, bytes.size());
+  std::shared_ptr<Box> box;
+  Error error = Box::read(range, &box, heif_get_global_security_limits());
+  REQUIRE(error == Error::Ok);
+  REQUIRE(range.error() == 0);
+
+  REQUIRE(box->get_short_type() == fourcc("snuc"));
+  auto parsed = std::dynamic_pointer_cast<Box_snuc>(box);
+  REQUIRE(parsed != nullptr);
+
+  const auto& n = parsed->get_nuc();
+  REQUIRE(n.component_ids.size() == 1);
+  REQUIRE(n.component_ids[0] == 0);
+  REQUIRE(n.nuc_is_applied == true);
+  REQUIRE(n.image_width == 2);
+  REQUIRE(n.image_height == 1);
+  REQUIRE(n.nuc_gains.size() == 2);
+  REQUIRE(n.nuc_gains[0] == 1.0f);
+  REQUIRE(n.nuc_gains[1] == 2.0f);
+  REQUIRE(n.nuc_offsets.size() == 2);
+  REQUIRE(n.nuc_offsets[0] == 0.0f);
+  REQUIRE(n.nuc_offsets[1] == 3.0f);
+
+  // Dump
+  Indent indent;
+  std::string dump_output = parsed->dump(indent);
+  REQUIRE(dump_output == "Box: snuc -----\n"
+                         "size: 45   (header size: 12)\n"
+                         "version: 0\n"
+                         "flags: 0\n"
+                         "component_count: 1\n"
+                         "  component_index[0]: 0\n"
+                         "nuc_is_applied: 1\n"
+                         "image_width: 2\n"
+                         "image_height: 1\n"
+                         "nuc_gains: 2 values\n"
+                         "nuc_offsets: 2 values\n");
+}
+
+
+TEST_CASE("snuc_bad_version")
+{
+  std::vector<uint8_t> byteArray = {
+    0x00, 0x00, 0x00, 0x2D, 's', 'n', 'u', 'c',
+    0x01, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x01,
+    0x00, 0x00, 0x00, 0x00,
+    0x80,
+    0x00, 0x00, 0x00, 0x02,
+    0x00, 0x00, 0x00, 0x01,
+    0x3F, 0x80, 0x00, 0x00,
+    0x40, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00,
+    0x40, 0x40, 0x00, 0x00
+  };
+
+  auto reader = std::make_shared<StreamReader_memory>(byteArray.data(), byteArray.size(), false);
+  BitstreamRange range(reader, byteArray.size());
+  std::shared_ptr<Box> box;
+  Error error = Box::read(range, &box, heif_get_global_security_limits());
+  REQUIRE(error.error_code == heif_error_Unsupported_feature);
+  REQUIRE(error.sub_error_code == heif_suberror_Unsupported_data_version);
+  REQUIRE(error.message == std::string("snuc box data version 1 is not implemented yet"));
 }

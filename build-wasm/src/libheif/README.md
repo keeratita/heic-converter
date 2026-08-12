@@ -2,48 +2,56 @@
 
 [![Build Status](https://github.com/strukturag/libheif/workflows/build/badge.svg)](https://github.com/strukturag/libheif/actions) [![Build Status](https://ci.appveyor.com/api/projects/status/github/strukturag/libheif?svg=true)](https://ci.appveyor.com/project/strukturag/libheif) [![Coverity Scan Build Status](https://scan.coverity.com/projects/16641/badge.svg)](https://scan.coverity.com/projects/strukturag-libheif)
 
-libheif is an ISO/IEC 23008-12:2017 HEIF and AVIF (AV1 Image File Format) file format decoder and encoder.
-There is partial support for ISO/IEC 23008-12:2022 (2nd Edition) capabilities.
-
-HEIF and AVIF are new image file formats employing HEVC (H.265) or AV1 image coding, respectively, for the
+libheif is an ISO/IEC 23008-12 HEIF and AVIF (AV1 Image File Format) file format decoder and encoder.
+HEIC and AVIF are new image file formats employing HEVC (H.265) or AV1 image coding, respectively, for the
 best compression ratios currently possible.
 
-libheif makes use of [libde265](https://github.com/strukturag/libde265) for HEIF image decoding and x265 for encoding.
+On top of HEIC and AVIF, libheif also supports HEIF images coded with VVC, AVC, JPEG, JPEG-2000, and ISO/IEC 23001-17.
+The ISO/IEC 23001-17 codec is built-in to libheif and allows to store lossless images and video in many different formats.
+
+libheif makes use of various codec libraries for implementing each compression format.
+For HEIC, [libde265](https://github.com/strukturag/libde265) is used by default for decoding and x265 for encoding.
 For AVIF, libaom, dav1d, svt-av1, or rav1e are used as codecs.
+libheif can be built with a subset of the supported codecs to keep the size and the number of dependencies low.
+Alternatively, the libheif codecs can also be built as separate plugins that can be installed and loaded dynamically when used.
 
 ## Supported features
 
 libheif has support for:
 
-* HEIC, AVIF, JPEG-in-HEIF, JPEG2000, uncompressed (ISO/IEC 23001-17:2023)
+* HEIC, AVIF, VVC, AVC, JPEG-in-HEIF, JPEG2000, uncompressed (ISO/IEC 23001-17:2024) codecs
 * alpha channels, depth maps, thumbnails, auxiliary images
 * multiple images in a file
+* HEIF image sequences and MP4 video, including alpha channels
+* tiled images with decoding individual tiles and encoding tiled images by adding tiles one after another
 * HDR images, correct color transform according to embedded color profiles
 * image transformations (crop, mirror, rotate), overlay images
 * plugin interface to add alternative codecs
 * reading EXIF and XMP metadata
 * region annotations and mask images
-* decoding of files while downloading (e.g. extract image size before file has been completely downloaded)
+* streaming of images and video by requesting data from the network through a data-reader interface
 
 Supported codecs:
 | Format       |  Decoders           |  Encoders                    |
 |:-------------|:-------------------:|:----------------------------:|
 | HEIC         | libde265, ffmpeg    | x265, kvazaar                |
-| AVIF         | AOM, dav1d          | AOM, rav1e, svt-av1          |
-| VVC          | vvdec (experimental)| vvenc, uvg266 (experimental) |
+| AVIF         | libaom, dav1d       | libaom, rav1e, svt-av1       |
+| VVC          | vvdec               | vvenc, uvg266                |
+| AVC          | openh264, ffmpeg    | x264                         |
 | JPEG         | libjpeg(-turbo)     | libjpeg(-turbo)              |
 | JPEG2000     | OpenJPEG            | OpenJPEG                     |
+| HTJ2K        | OpenJPEG            | OpenJPH                      |
 | uncompressed | built-in            | built-in                     |
 
-## API
+## Programming API
 
 The library has a C API for easy integration and wide language support.
 
-The decoder automatically supports both HEIF and AVIF through the same API. No changes are required to existing code to support AVIF.
+The decoder automatically supports both HEIF and AVIF (and the other compression formats) through the same API. The same decoding code can be used to decode any of them.
 The encoder can be switched between HEIF and AVIF simply by setting `heif_compression_HEVC` or `heif_compression_AV1`
-to `heif_context_get_encoder_for_format()`.
+to `heif_context_get_encoder_for_format()`, or using any of the other compression formats.
 
-Loading the primary image in an HEIF file is as easy as this:
+### Loading the primary image from a HEIF file
 
 ```C
 heif_context* ctx = heif_context_alloc();
@@ -68,7 +76,7 @@ heif_image_handle_release(handle);
 heif_context_free(ctx);
 ```
 
-Writing an HEIF file can be done like this:
+### Writing a HEIF file
 
 ```C
 heif_context* ctx = heif_context_alloc();
@@ -91,7 +99,7 @@ heif_context_write_to_file(ctx, "output.heic");
 heif_context_free(ctx);
 ```
 
-Get the EXIF data from an HEIF file:
+### Get the EXIF data from a HEIF file
 
 ```C
 heif_item_id exif_id;
@@ -104,13 +112,27 @@ if (n==1) {
 }
 ```
 
-See the header file `heif.h` for the complete C API.
+### Image sequences, MP4 video
+
+See the [image sequences API documentation](https://github.com/strukturag/libheif/wiki/Reading-and-Writing-Sequences).
+
+Since HEIF image sequences are very similar to MP4 video, libheif can also read and write MP4 video (without audio)
+with all supported codecs.
+
+### High-resolution tiled images
+
+For very large resolution images, it is not always feasible to process the whole image.
+In this case, `libheif` can process the image tile by tile.
+See the [image tiling API documentation](https://github.com/strukturag/libheif/wiki/Reading-and-Writing-Tiled-Images).
+
+### More documenation
+
+See the header files for the complete C API.
 
 There is also a C++ API which is a header-only wrapper to the C API.
 Hence, you can use the C++ API and still be binary compatible.
 Code using the C++ API is much less verbose than using the C API directly.
 
-There is also an experimental Go API, but this is not stable yet.
 
 ## Compiling
 
@@ -155,7 +177,7 @@ For each codec, there are two configuration variables:
 * `WITH_{codec}_PLUGIN`: when enabled, the codec is compiled as a separate plugin.
 
 In order to use dynamic plugins, also make sure that `ENABLE_PLUGIN_LOADING` is enabled.
-The placeholder `{codec}` can have these values: `LIBDE265`, `X265`, `AOM_DECODER`, `AOM_ENCODER`, `SvtEnc`, `DAV1D`, `FFMPEG_DECODER`, `JPEG_DECODER`, `JPEG_ENCODER`, `KVAZAAR`, `OpenJPEG_DECODER`, `OpenJPEG_ENCODER`, `OPENJPH_ENCODER`, `VVDEC`, `VVENC`, `UVG266`.
+The placeholder `{codec}` can have these values: `LIBDE265`, `X265`, `AOM_DECODER`, `AOM_ENCODER`, `SvtEnc`, `DAV1D`, `OpenH264`, `X264`, `FFMPEG_DECODER`, `JPEG_DECODER`, `JPEG_ENCODER`, `KVAZAAR`, `OpenJPEG_DECODER`, `OpenJPEG_ENCODER`, `OPENJPH_ENCODER`, `VVDEC`, `VVENC`, `UVG266`, `WEBCODECS`.
 
 Further options are:
 
@@ -165,6 +187,9 @@ Further options are:
    Note that header compression is not widely supported yet.
 * `WITH_LIBSHARPYUV`: enables high-quality YCbCr/RGB color space conversion algorithms (requires `libsharpyuv`,
    e.g. from the `third-party` directory).
+* `ENABLE_EXPERIMENTAL_FEATURES`: enables functions that are currently in development and for which the API is not stable yet
+   and may contain security risks. When this is enabled, a header `heif_experimental.h` will be installed that contains this
+   unstable API. Distributions should not enable this in release or production builds.
 * `ENABLE_MULTITHREADING_SUPPORT`: can be used to disable any multithreading support, e.g. for embedded platforms.
 * `ENABLE_PARALLEL_TILE_DECODING`: when enabled, libheif will decode tiled images in parallel to speed up compilation.
 * `PLUGIN_DIRECTORY`: the directory where libheif will search for dynamic plugins when the environment
@@ -244,16 +269,16 @@ If you want to compile SVT-AV1 yourself,
 * Run the `svt.cmd` script in the `third-party` directory to download SVT-AV1
   and compile it.
 
-When running `cmake` or `configure`, make sure that the environment variable
+You have to enable SVT-AV1 with CMake.
+
+When running `cmake`, make sure that the environment variable
 `PKG_CONFIG_PATH` includes the absolute path to `third-party/SVT-AV1/Build/linux/install/lib/pkgconfig`.
 You may have to replace `linux` in this path with your system's identifier.
 
-You have to enable SVT-AV1 with CMake.
-
 ## Codec plugins
 
-Starting with v1.14.0, each codec backend can be compiled statically into libheif or as a dynamically loaded plugin (currently Linux only).
-You can choose this individually for each codec backend in the CMake settings.
+Starting with v1.14.0, each codec backend can be compiled statically into libheif or as a dynamically loaded plugin.
+You can choose this individually for each codec backend in the CMake settings using `WITH_{codec}_PLUGIN` options.
 Compiling a codec backend as dynamic plugin will generate a shared library that is installed in the system together with libheif.
 The advantage is that only the required plugins have to be installed and libheif has fewer dependencies.
 
@@ -263,8 +288,30 @@ You can also add plugin directories programmatically.
 
 ### Codec specific notes
 
-* the FFMPEG decoding plugin can make use of h265 hardware decoders. However, it currently (v1.17.0, ffmpeg v4.4.2) does not work
+* The FFMPEG decoding plugin can make use of h265 hardware decoders. However, it currently (v1.17.0, ffmpeg v4.4.2) does not work
   correctly with all streams. Thus, libheif still prefers the libde265 decoder if it is available.
+
+* The "webcodecs" HEVC decoder can only be used in emscripten builds since it uses the web-browser's API. For the same reason, it is not available as a plugin.
+
+## Usage
+
+libheif comes with a set of command line tools:
+* `heif-dec` for decoding HEIF images to JPEG or PNG. It can also decode image sequences or MP4 video.
+* `heif-enc` for encoding JPEG, PNG, TIFF, or Y4M images to HEIF images, image sequences or MP4 video.
+* `heif-info` for getting some overview information about the HEIF file or (using the `-d` option) to dump the full box structure of the file.
+* `heif-view` for displaying HEIF image sequences
+
+### `heif-enc` command line tool
+
+You can find more documentation for the `heif-enc` tool on the [wiki page](https://github.com/strukturag/libheif/wiki/heif%E2%80%90enc-Command-Line-Tool).
+
+### Security limits
+
+Libheif defines some security limits that prevent that very large images exceed the available memory or malicious input files can be used for a denial-of-service attack.
+When you are programming against the libheif API and you need to process very large images, you can set the `heif_security_limits` individually.
+When using `heif-dec`, there is the option to switch off security limits with `--disable-limits`.
+In case a third-party software is using libheif, but does not give you a way to switch off the limits, you can set an environment variable `LIBHEIF_SECURITY_LIMITS=off` to switch it off globally.
+Clearly, only do this if you know what you are doing and you are sure not to process malicious files.
 
 ## Encoder benchmark
 
@@ -275,12 +322,13 @@ A current benchmark of the AVIF encoders (as of 14 Oct 2022) can be found on the
 
 * .NET Platform (C#, F#, and other languages): [libheif-sharp](https://github.com/0xC0000054/libheif-sharp)
 * C++: part of libheif
-* Go: part of libheif
+* Go: [libheif-go](https://github.com/strukturag/libheif-go), the wrapper distributed with libheif is deprecated
 * JavaScript: by compilation with emscripten (see below)
 * NodeJS module: [libheif-js](https://www.npmjs.com/package/libheif-js)
 * Python: [pyheif](https://pypi.org/project/pyheif/), [pillow_heif](https://pypi.org/project/pillow-heif/)
 * Rust: [libheif-sys](https://github.com/Cykooz/libheif-sys)
 * Swift: [libheif-Xcode](https://swiftpackageregistry.com/SDWebImage/libheif-Xcode)
+* JavaFX: [LibHeifFx](https://github.com/lanthale/LibHeifFX)
 
 Languages that can directly interface with C libraries (e.g., Swift, C#) should work out of the box.
 
@@ -347,6 +395,7 @@ to update the gdk-pixbuf loader database.
 * [darktable](https://www.darktable.org)
 * [digiKam 7.0.0](https://www.digikam.org/)
 * [libvips](https://github.com/libvips/libvips)
+* [kImageFormats](https://api.kde.org/frameworks/kimageformats/html/index.html)
 * [libGD](https://libgd.github.io/)
 * [Kodi HEIF image decoder plugin](https://kodi.wiki/view/Add-on:HEIF_image_decoder)
 * [bimg](https://github.com/h2non/bimg)
@@ -365,6 +414,8 @@ You can [sponsor](https://github.com/sponsors/farindk) the development using the
 
 A big thank you goes to these major sponsors for supporting the development of libheif:
 
+* AOMedia
+* OGC (Open Geospatial Consortium)
 * Pinterest
 * Shopify <img src="logos/sponsors/shopify.svg" alt="shopify-logo" height="20"/>
 * StrukturAG
@@ -377,5 +428,5 @@ The sample applications are distributed under the terms of the MIT License.
 See COPYING for more details.
 
 Copyright (c) 2017-2020 Struktur AG</br>
-Copyright (c) 2017-2024 Dirk Farin</br>
+Copyright (c) 2017-2026 Dirk Farin</br>
 Contact: Dirk Farin <dirk.farin@gmail.com>

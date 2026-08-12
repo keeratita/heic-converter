@@ -1,6 +1,6 @@
 cmake_minimum_required (VERSION 3.16.3) # Oldest Ubuntu LTS (20.04 currently)
 
-project(libheif LANGUAGES C CXX VERSION 1.18.2)
+project(libheif LANGUAGES C CXX VERSION 1.23.1)
 
 # compatibility_version is never allowed to be decreased for any specific SONAME.
 # Libtool in the libheif-1.15.1 release had set it to 17.0.0, so we have to use this for the v1.x.y versions.
@@ -15,33 +15,43 @@ include(GNUInstallDirs)
 # The version number.
 set (PACKAGE_VERSION ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}.${PROJECT_VERSION_PATCH})
 
-# Check for unistd.h
+# Check for header files.
+include (${CMAKE_ROOT}/Modules/CheckIncludeFileCXX.cmake)
 
-include (${CMAKE_ROOT}/Modules/CheckIncludeFile.cmake)
+CHECK_INCLUDE_FILE_CXX(bit HAVE_BIT)
+if (HAVE_BIT)
+  add_definitions(-DHAVE_BIT)
+endif()
 
-CHECK_INCLUDE_FILE(unistd.h HAVE_UNISTD_H)
-
+CHECK_INCLUDE_FILE_CXX(unistd.h HAVE_UNISTD_H)
 if (HAVE_UNISTD_H)
   add_definitions(-DHAVE_UNISTD_H)
 endif()
 
+if (APPLE)
+  option(BUILD_FRAMEWORK "Build as Apple Frameworks" OFF)
+endif()
 
 if(NOT MSVC)
-  add_definitions(-Wall)
-  add_definitions(-Werror)
-  add_definitions(-Wsign-compare)
-  add_definitions(-Wconversion)
-  add_definitions(-Wno-sign-conversion)
-  add_definitions(-Wno-error=conversion)
-  add_definitions(-Wno-error=unused-parameter)
-  add_definitions(-Wno-error=deprecated-declarations)
+  # cmake 3.24 introduces this variable, but for backward compatibility, we set it explicitly
+  if (CMAKE_COMPILE_WARNING_AS_ERROR)
+      add_compile_options(-Werror)
+  endif ()
+
+  add_compile_options(-Wall)
+  add_compile_options(-Wsign-compare)
+  add_compile_options(-Wconversion)
+  add_compile_options(-Wno-sign-conversion)
+  add_compile_options(-Wno-error=conversion)
+  add_compile_options(-Wno-error=unused-parameter)
+  add_compile_options(-Wno-error=deprecated-declarations)
   if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-      add_definitions(-Wno-error=tautological-compare)
-      add_definitions(-Wno-error=tautological-constant-out-of-range-compare)
+      add_compile_options(-Wno-error=tautological-compare)
+      add_compile_options(-Wno-error=tautological-constant-out-of-range-compare)
   endif ()
 endif()
 
-set(CMAKE_CXX_STANDARD 11)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -57,20 +67,32 @@ option(BUILD_SHARED_LIBS "Build shared libraries" ON)
 include(CheckCXXCompilerFlag)
 CHECK_CXX_COMPILER_FLAG(-Wno-error=potentially-evaluated-expression has_potentially_evaluated_expression)
 if (has_potentially_evaluated_expression)
-  add_definitions(-Wno-error=potentially-evaluated-expression)
+  add_compile_options(-Wno-error=potentially-evaluated-expression)
 endif()
 
 LIST (APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake/modules")
 
+# TODO: when our minimum CMake reaches 3.20, replace this with "CMAKE_<LANG>_BYTE_ORDER"
+include (TestBigEndian)
+TEST_BIG_ENDIAN(IS_BIG_ENDIAN)
+add_compile_definitions(IS_BIG_ENDIAN=${IS_BIG_ENDIAN})
 
 # --- codec plugins
 
 option(ENABLE_PLUGIN_LOADING "Support loading of plugins" ON)
-set(PLUGIN_DIRECTORY "${CMAKE_INSTALL_FULL_LIBDIR}/libheif" CACHE STRING "Plugin install directory")
+set(PLUGIN_DIRECTORY "${CMAKE_INSTALL_FULL_LIBDIR}/libheif" CACHE STRING "Plugin directory")
+set(PLUGIN_INSTALL_DIRECTORY "" CACHE STRING "Plugin install directory (leaving it empty will use PLUGIN_DIRECTORY)")
 
 if (ENABLE_PLUGIN_LOADING)
     set(PLUGIN_LOADING_SUPPORTED_AND_ENABLED TRUE)
-    install(DIRECTORY DESTINATION ${PLUGIN_DIRECTORY} DIRECTORY_PERMISSIONS
+
+    if (PLUGIN_INSTALL_DIRECTORY STREQUAL "")
+        set(COMPUTED_PLUGIN_INSTALL_DIRECTORY ${PLUGIN_DIRECTORY})
+    else ()
+        set(COMPUTED_PLUGIN_INSTALL_DIRECTORY ${PLUGIN_INSTALL_DIRECTORY})
+    endif ()
+
+    install(DIRECTORY DESTINATION ${COMPUTED_PLUGIN_INSTALL_DIRECTORY} DIRECTORY_PERMISSIONS
         OWNER_WRITE OWNER_READ OWNER_EXECUTE
         GROUP_READ GROUP_EXECUTE
         WORLD_READ WORLD_EXECUTE)
@@ -93,7 +115,7 @@ macro(plugin_compilation_info optionVariableName detectionVariable displayName)
     endif ()
 
     string(LENGTH "${displayName}" len)
-    math(EXPR fill "32 - ${len}")
+    math(EXPR fill "38 - ${len}")
     string(SUBSTRING "                                                   " 0 ${fill} filler)
     message("${displayName}${filler}: ${msg}")
     unset(msg)
@@ -123,11 +145,16 @@ if (WITH_KVAZAAR)
     else ()
         add_definitions(-DHAVE_KVAZAAR_ENABLE_LOGGING=0)
     endif ()
+    if (HAVE_KVAZAAR_VERSION_STRING)
+        add_definitions(-DHAVE_KVAZAAR_VERSION_STRING=1)
+    else ()
+        add_definitions(-DHAVE_KVAZAAR_VERSION_STRING=0)
+    endif ()
 endif ()
 
 # uvg266
 
-plugin_option(UVG266 "uvg266 VVC encoder (experimental)" OFF OFF)
+plugin_option(UVG266 "uvg266 VVC encoder" OFF OFF)
 if (WITH_UVG266)
     find_package(UVG266)
     if ("${HAVE_UVG266_ENABLE_LOGGING}")
@@ -139,11 +166,11 @@ endif ()
 
 # vvdec
 
-plugin_option(VVDEC "vvdec VVC decoder (experimental)" OFF OFF)
+plugin_option(VVDEC "vvdec VVC decoder" OFF OFF)
 if (WITH_VVDEC)
     # TODO: how to do configure vvdec cleanly?
     find_package(Threads REQUIRED)
-    find_package(vvdec 2.3.0)
+    find_package(vvdec 3.0.0)
     if (vvdec_FOUND)
         set(vvdec_LIBRARIES vvdec::vvdec)
     endif()
@@ -151,7 +178,7 @@ endif ()
 
 # vvenc
 
-plugin_option(VVENC "vvenc VVC encoder (experimental)" OFF OFF)
+plugin_option(VVENC "vvenc VVC encoder" OFF OFF)
 if (WITH_VVENC)
     # TODO: how to do configure vvenc cleanly?
     find_package(Threads REQUIRED)
@@ -160,6 +187,32 @@ if (WITH_VVENC)
         set(vvenc_LIBRARIES vvenc::vvenc)
     endif()
 endif ()
+
+# x264
+
+plugin_option(X264 "x264 AVC encoder" ON OFF)
+if (WITH_X264)
+    find_package(X264)
+endif()
+
+# openh264 decoder
+
+plugin_option(OpenH264_DECODER "OpenH264 decoder" ON OFF)
+# plugin_option(OpenH264_ENCODER "OpenH264 encoder" ON OFF)
+if (WITH_OpenH264_ENCODER OR WITH_OpenH264_DECODER)
+    find_package(OpenH264)
+
+    # When decoding/encoding is disabled, overwrite the *_FOUND variables, because they are used to ultimately decide what to build.
+    # TODO
+    if (OpenH264_FOUND AND WITH_OpenH264_DECODER)
+        set(OpenH264_DECODER_FOUND TRUE)
+    endif()
+#    if (OpenH264_FOUND AND WITH_OpenH264_ENCODER)
+#        set(OpenH264_ENCODER_FOUND TRUE)
+#    endif()
+endif()
+
+
 
 # dav1d
 
@@ -212,6 +265,16 @@ plugin_option(OpenJPEG_ENCODER "OpenJPEG J2K encoder" OFF ON)
 plugin_option(OpenJPEG_DECODER "OpenJPEG J2K decoder" OFF ON)
 if (WITH_OpenJPEG_ENCODER OR WITH_OpenJPEG_DECODER)
     find_package(OpenJPEG 2)
+
+    # Since the above does not work with Ubuntu 22.04 and Ubuntu 24.04, check again without version number
+    if (NOT OpenJPEG_FOUND)
+      find_package(OpenJPEG)
+
+      if (OpenJPEG_FOUND AND NOT OPENJPEG_MAJOR_VERSION STREQUAL "2")
+          message("OpenJPEG found, but we need version 2.x.x")
+          set(OpenJPEG_FOUND FALSE)
+      endif()
+    endif()
 endif()
 
 # ffmpeg
@@ -219,6 +282,26 @@ endif()
 plugin_option(FFMPEG_DECODER "FFMPEG HEVC decoder (HW accelerated)" OFF OFF)
 if (WITH_FFMPEG_DECODER)
     find_package(FFMPEG COMPONENTS avcodec avutil)
+
+    if (FFMPEG_avcodec_FOUND)
+        # The set of formats the FFmpeg decoder plugin can handle depends on the
+        # FFmpeg version. HT-J2K (High-Throughput JPEG 2000) decoding was added in
+        # FFmpeg 7.0 (libavcodec 61) and a native VVC decoder in FFmpeg 7.1
+        # (libavcodec 61.19); earlier versions only provide the formats listed below.
+        message(STATUS "FFmpeg decoder (libavcodec ${FFMPEG_avcodec_VERSION}) can decode: HEVC, AVC, AV1, JPEG, JPEG 2000")
+        if (FFMPEG_avcodec_VERSION VERSION_GREATER_EQUAL "61.19")
+            message(STATUS "  FFmpeg also supports VVC and HT-J2K (High-Throughput JPEG 2000) decoding")
+        elseif (FFMPEG_avcodec_VERSION VERSION_GREATER_EQUAL "61")
+            message(STATUS "  FFmpeg also supports HT-J2K (High-Throughput JPEG 2000) decoding")
+            # VVC is detected at runtime (avcodec_find_decoder), not at compile time, and
+            # 7.1 is ABI-compatible with this 7.0 build, so VVC works once the FFmpeg
+            # loaded at runtime is 7.1+ -- no rebuild required.
+            message(STATUS "  VVC decoding additionally needs the FFmpeg at runtime to be 7.1 (libavcodec 61.19) or later")
+        else ()
+            message(STATUS "  HT-J2K decoding needs FFmpeg 7.0 (libavcodec 61) or later")
+            message(STATUS "  VVC decoding needs FFmpeg 7.1 (libavcodec 61.19) or later")
+        endif ()
+    endif ()
 endif ()
 
 # openjph
@@ -233,12 +316,20 @@ endif()
 
 option(WITH_UNCOMPRESSED_CODEC " Support internal ISO/IEC 23001-17 uncompressed codec (experimental) " OFF)
 
+# Web codecs
+
+option(WITH_WEBCODECS "Support HEVC decoding through browser web codecs API (experimental)" OFF)
+
+if (WITH_WEBCODECS)
+   set(WEBCODECS_FOUND TRUE) # There is no library for web-codecs. Always mark as found.
+endif()
 
 # --- show codec compilation summary
 
 message("\n=== Summary of compiled codecs ===")
 plugin_compilation_info(LIBDE265 LIBDE265 "libde265 HEVC decoder")
 plugin_compilation_info(FFMPEG_DECODER FFMPEG_avcodec "FFMPEG HEVC decoder (HW acc)")
+plugin_compilation_info(WEBCODECS WEBCODECS "WebCodecs HEVC decoder (experimental)")
 plugin_compilation_info(X265 X265 "x265 HEVC encoder")
 plugin_compilation_info(KVAZAAR KVAZAAR "Kvazaar HEVC encoder")
 plugin_compilation_info(AOM_DECODER AOM_DECODER "AOM AV1 decoder")
@@ -248,13 +339,16 @@ plugin_compilation_info(SvtEnc SvtEnc "SVT AV1 encoder")
 plugin_compilation_info(RAV1E RAV1E "Rav1e AV1 encoder")
 plugin_compilation_info(JPEG_DECODER JPEG "JPEG decoder")
 plugin_compilation_info(JPEG_ENCODER JPEG "JPEG encoder")
+plugin_compilation_info(X264 X264 "x264 AVC encoder")
+plugin_compilation_info(OpenH264_DECODER OpenH264_DECODER "OpenH264 decoder")
+# plugin_compilation_info(OpenH264_ENCODER OpenH264_ENCODER "OpenH264 encoder")
 plugin_compilation_info(OpenJPEG_DECODER OpenJPEG "OpenJPEG J2K decoder")
 plugin_compilation_info(OpenJPEG_ENCODER OpenJPEG "OpenJPEG J2K encoder")
 # plugin_compilation_info(OPENJPH_DECODER OPENJPH "OpenJPH HT-J2K decoder")
 plugin_compilation_info(OPENJPH_ENCODER OPENJPH "OpenJPH HT-J2K encoder")
-plugin_compilation_info(UVG266_ENCODER UVG266 "uvg266 VVC enc. (experimental)")
-plugin_compilation_info(VVENC vvenc "vvenc VVC enc. (experimental)")
-plugin_compilation_info(VVDEC vvdec "vvdec VVC dec. (experimental)")
+plugin_compilation_info(UVG266_ENCODER UVG266 "uvg266 VVC encoder")
+plugin_compilation_info(VVENC vvenc "vvenc VVC encoder")
+plugin_compilation_info(VVDEC vvdec "vvdec VVC decoder")
 
 # --- show summary which formats are supported
 
@@ -279,7 +373,7 @@ macro(format_compilation_info formatName decoding_supported encoding_supported)
 endmacro()
 
 
-if (LIBDE265_FOUND OR FFMPEG_avcodec_FOUND)
+if (LIBDE265_FOUND OR FFMPEG_avcodec_FOUND OR WITH_WEBCODECS)
     set(SUPPORTS_HEIC_DECODING TRUE)
 endif()
 if (X265_FOUND OR KVAZAAR_FOUND)
@@ -316,28 +410,61 @@ endif()
 if (vvdec_FOUND AND WITH_VVDEC)
     set(SUPPORTS_VVC_DECODING TRUE)
 endif()
+if (OpenH264_DECODER_FOUND)
+    set(SUPPORTS_AVC_DECODING TRUE)
+endif()
+if (X264_FOUND)
+    set(SUPPORTS_AVC_ENCODING TRUE)
+endif()
 
 if (WITH_UNCOMPRESSED_CODEC)
     set(SUPPORTS_UNCOMPRESSED_DECODING TRUE)
     set(SUPPORTS_UNCOMPRESSED_ENCODING TRUE)
 endif()
 
+# The FFmpeg decoder plugin can decode several formats (in addition to the HEIC
+# decoding accounted for above). HEVC/AVC/AV1/JPEG/JPEG2000 work with any supported
+# FFmpeg; HT-J2K needs FFmpeg 7.0 (libavcodec 61) and the native VVC decoder
+# FFmpeg 7.1 (libavcodec 61.19). FFmpeg's SONAME is per-major, so the build-time
+# major version is also the runtime major version.
+if (FFMPEG_avcodec_FOUND)
+    set(SUPPORTS_AVC_DECODING TRUE)
+    set(SUPPORTS_AVIF_DECODING TRUE)
+    set(SUPPORTS_JPEG_DECODING TRUE)
+    set(SUPPORTS_J2K_DECODING TRUE)
+    if (FFMPEG_avcodec_VERSION VERSION_GREATER_EQUAL "61")
+        set(SUPPORTS_J2K_HT_DECODING TRUE)
+    endif()
+    if (FFMPEG_avcodec_VERSION VERSION_GREATER_EQUAL "61.19")
+        set(SUPPORTS_VVC_DECODING TRUE)
+    endif()
+endif()
+
 message("\n=== Supported formats ===")
 message("format        decoding   encoding")
-format_compilation_info("HEIC" SUPPORTS_HEIC_DECODING SUPPORTS_HEIC_ENCODING)
+format_compilation_info("AVC"  SUPPORTS_AVC_DECODING SUPPORTS_AVC_ENCODING)
 format_compilation_info("AVIF" SUPPORTS_AVIF_DECODING SUPPORTS_AVIF_ENCODING)
-format_compilation_info("VVC"  SUPPORTS_VVC_DECODING SUPPORTS_VVC_ENCODING)
+format_compilation_info("HEIC" SUPPORTS_HEIC_DECODING SUPPORTS_HEIC_ENCODING)
 format_compilation_info("JPEG" SUPPORTS_JPEG_DECODING SUPPORTS_JPEG_ENCODING)
 format_compilation_info("JPEG2000" SUPPORTS_J2K_DECODING SUPPORTS_J2K_ENCODING)
 format_compilation_info("JPEG2000-HT" SUPPORTS_J2K_HT_DECODING SUPPORTS_J2K_HT_ENCODING)
 format_compilation_info("Uncompressed" SUPPORTS_UNCOMPRESSED_DECODING SUPPORTS_UNCOMPRESSED_ENCODING)
+format_compilation_info("VVC"  SUPPORTS_VVC_DECODING SUPPORTS_VVC_ENCODING)
+
 message("")
 
 # --- Libsharpyuv color space transforms
 
 option(WITH_LIBSHARPYUV "Build libsharpyuv" ON)
+option(WITH_LIBSHARPYUV_INTERNAL "Use the libsharpyuv build in the 'third-party' directory" OFF)
 if (WITH_LIBSHARPYUV)
-    find_package(libsharpyuv)
+   if (WITH_LIBSHARPYUV_INTERNAL)
+       set(LIBSHARPYUV_INCLUDE_DIRS ${PROJECT_SOURCE_DIR}/third-party/libwebp)
+       set(LIBSHARPYUV_LIBRARIES ${PROJECT_SOURCE_DIR}/third-party/libwebp/build/libsharpyuv.a)
+       set(LIBSHARPYUV_FOUND YES)
+   else()
+       find_package(libsharpyuv)
+   endif()
 endif ()
 if (LIBSHARPYUV_FOUND)
     message("libsharpyuv: found")
@@ -370,6 +497,12 @@ endif()
 if (KVAZAAR_FOUND AND NOT (PLUGIN_LOADING_SUPPORTED_AND_ENABLED AND WITH_KVAZAAR_PLUGIN))
     list(APPEND REQUIRES_PRIVATE "kvazaar")
 endif()
+if (OpenH264_FOUND AND (WITH_OpenH264_DECODER AND NOT (PLUGIN_LOADING_SUPPORTED_AND_ENABLED AND WITH_OpenH264_DECODER_PLUGIN)))
+    list(APPEND REQUIRES_PRIVATE "openh264")
+endif()
+if (X264_FOUND AND (WITH_X264 AND NOT (PLUGIN_LOADING_SUPPORTED_AND_ENABLED AND WITH_X264_PLUGIN)))
+    list(APPEND REQUIRES_PRIVATE "x264")
+endif()
 if ((AOM_DECODER_FOUND AND NOT (PLUGIN_LOADING_SUPPORTED_AND_ENABLED AND WITH_AOM_DECODER_PLUGIN))
         OR (AOM_ENCODER_FOUND AND NOT (PLUGIN_LOADING_SUPPORTED_AND_ENABLED AND WITH_AOM_ENCODER_PLUGIN)))
     list(APPEND REQUIRES_PRIVATE "aom")
@@ -392,6 +525,9 @@ endif()
 if (OpenJPEG_FOUND AND ((WITH_OpenJPEG_DECODER AND NOT (PLUGIN_LOADING_SUPPORTED_AND_ENABLED AND WITH_OpenJPEG_DECODER_PLUGIN)) OR (WITH_OpenJPEG_ENCODER AND NOT (PLUGIN_LOADING_SUPPORTED_AND_ENABLED AND WITH_OpenJPEG_ENCODER_PLUGIN))))
     list(APPEND REQUIRES_PRIVATE "libopenjp2")
 endif()
+if (OPENJPH_FOUND AND (WITH_OPENJPH_ENCODER AND NOT (PLUGIN_LOADING_SUPPORTED_AND_ENABLED AND WITH_OPENJPH_ENCODER_PLUGIN)))
+    list(APPEND REQUIRES_PRIVATE "openjph")
+endif()
 if (LIBSHARPYUV_FOUND)
     list(APPEND REQUIRES_PRIVATE "libsharpyuv")
 endif()
@@ -412,6 +548,15 @@ if (WITH_HEADER_COMPRESSION OR WITH_UNCOMPRESSED_CODEC)
         message("Brotli not found")
     endif()
 endif()
+if (UVG266_FOUND AND (WITH_UVG266 AND NOT (PLUGIN_LOADING_SUPPORTED_AND_ENABLED AND WITH_UVG266_PLUGIN)))
+    list(APPEND REQUIRES_PRIVATE "uvg266")
+endif()
+if (VVDEC_FOUND AND (WITH_VVDEC AND NOT (PLUGIN_LOADING_SUPPORTED_AND_ENABLED AND WITH_VVDEC_PLUGIN)))
+    list(APPEND REQUIRES_PRIVATE "libvvdec")
+endif()
+if (VVENC_FOUND AND (WITH_VVENC AND NOT (PLUGIN_LOADING_SUPPORTED_AND_ENABLED AND WITH_VVENC_PLUGIN)))
+    list(APPEND REQUIRES_PRIVATE "libvvenc")
+endif()
 
 list(JOIN REQUIRES_PRIVATE " " REQUIRES_PRIVATE)
 
@@ -431,7 +576,11 @@ install(FILES ${CMAKE_CURRENT_BINARY_DIR}/libheif.pc
 # ---
 
 option(WITH_EXAMPLES "Build examples" ON)
+option(WITH_EXAMPLE_HEIF_THUMB "Build heif-thumbnailer tool" ON)
+option(WITH_EXAMPLE_HEIF_VIEW "Build heif-view tool" ON)
 option(WITH_GDK_PIXBUF "Build gdk-pixbuf plugin" ON)
+
+option(BUILD_DEVELOPMENT_TOOLS "Build development tools (heif-gen-bayer, etc.)" OFF)
 
 option(WITH_REDUCED_VISIBILITY "Reduced symbol visibility in library" ON)
 
@@ -445,6 +594,8 @@ else ()
     set(CMAKE_CXX_VISIBILITY_PRESET default)
 endif ()
 
+add_subdirectory(heifio)
+
 if(WITH_EXAMPLES)
     add_subdirectory (examples)
 endif()
@@ -452,8 +603,10 @@ endif()
 # --- API documentation
 
 # check if Doxygen is installed
-find_package(Doxygen)
-if (DOXYGEN_FOUND)
+option(BUILD_DOCUMENTATION "Build doxygen documentation" ON)
+if (BUILD_DOCUMENTATION)
+  find_package(Doxygen)
+  if (DOXYGEN_FOUND)
     # set input and output files
     set(DOXYGEN_IN ${CMAKE_CURRENT_SOURCE_DIR}/libheif/Doxyfile.in)
     set(DOXYGEN_OUT ${CMAKE_CURRENT_BINARY_DIR}/Doxyfile)
@@ -468,9 +621,10 @@ if (DOXYGEN_FOUND)
         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
         COMMENT "Generating API documentation with Doxygen"
         VERBATIM )
-else (DOXYGEN_FOUND)
-  message("Doxygen tool needs to be installed to generate the API documentation")
-endif (DOXYGEN_FOUND)
+  else (DOXYGEN_FOUND)
+    message("Doxygen tool needs to be installed to generate the API documentation")
+  endif (DOXYGEN_FOUND)
+endif(BUILD_DOCUMENTATION)
 
 # --- Testing
 
@@ -493,6 +647,7 @@ if(ENABLE_COVERAGE)
 endif()
 
 option(BUILD_TESTING "" ON)
+set(CMAKE_CTEST_ARGUMENTS "--output-on-failure")
 include(CTest)
 if(BUILD_TESTING)
     # TODO: fix tests on windows.
@@ -515,6 +670,7 @@ if (WITH_FUZZERS)
     separate_arguments(FUZZING_COMPILE_OPTIONS UNIX_COMMAND "${FUZZING_COMPILE_OPTIONS}")
     separate_arguments(FUZZING_LINKER UNIX_COMMAND "${FUZZING_LINKER_OPTIONS}")
     add_compile_options(${FUZZING_COMPILE_OPTIONS})
+    add_definitions(-DAVOID_FUZZER_FALSE_POSITIVE=1)
     add_link_options(${FUZZING_COMPILE_OPTIONS} ${FUZZING_LINKER_OPTIONS})
 
     add_subdirectory(fuzzing)

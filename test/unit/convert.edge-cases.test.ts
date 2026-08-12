@@ -210,10 +210,11 @@ describe('convertHeic - Error Propagation', () => {
       .rejects.toThrow('Wrapped error');
   });
 
-  it('should handle non-Error rejections', async () => {
+  it('should normalize non-Error rejections from renderAndEncode', async () => {
     mockState.renderAndEncodeMock.mockRejectedValueOnce('String error');
 
-    await expect(convertHeic(new Uint8Array([1])))
-      .rejects.toBe('String error');
+    await expect(convertHeic(new Uint8Array([1]))).rejects.toThrow(
+      'String error'
+    );
   });
 });

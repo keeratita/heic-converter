@@ -72,6 +72,25 @@ describe('LibheifDecoder Unit Tests', () => {
 
       expect(mockState.mockModuleFactory).toHaveBeenCalledTimes(1);
     });
+
+    it('should not instantiate the module twice for concurrent initialize calls', async () => {
+      const decoder = new LibheifDecoder();
+      await Promise.all([decoder.initialize(), decoder.initialize()]);
+
+      expect(mockState.mockModuleFactory).toHaveBeenCalledTimes(1);
+    });
+
+    it('should allow retrying after module initialization fails', async () => {
+      mockState.mockModuleFactory
+        .mockRejectedValueOnce(new Error('fetch failed'))
+        .mockResolvedValueOnce(mockState.mockModule);
+
+      const decoder = new LibheifDecoder();
+      await expect(decoder.initialize()).rejects.toThrow('fetch failed');
+
+      await decoder.initialize();
+      expect(mockState.mockModuleFactory).toHaveBeenCalledTimes(2);
+    });
   });
 
   describe('Decoding', () => {
@@ -172,6 +191,25 @@ describe('LibheifDecoder Unit Tests', () => {
       expect(result.data[1]).toBe(0);
       expect(result.data[2]).toBe(0);
       expect(result.data[3]).toBe(255);
+    });
+
+    it('should return an independent copy of decoded data, not a WASM view', async () => {
+      const mockData = new Uint8Array([1, 2, 3, 4]);
+      const rawData = new Uint8Array([9, 8, 7, 6]);
+      mockState.mockDecoderInstance.decode.mockReturnValue({
+        width: 1,
+        height: 1,
+        data: rawData,
+      });
+
+      const decoder = new LibheifDecoder();
+      await decoder.initialize();
+      const result = await decoder.decode(mockData);
+
+      expect(result.data).not.toBe(rawData);
+      // Mutating the raw WASM-side buffer must not affect the returned copy.
+      rawData[0] = 255;
+      expect(result.data[0]).toBe(9);
     });
   });
 

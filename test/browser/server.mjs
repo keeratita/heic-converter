@@ -38,6 +38,14 @@ const server = http.createServer((req, res) => {
     filePath = path.join(__dirname, 'index.html');
   } else if (reqUrl === '/sandbox.js') {
     filePath = path.join(__dirname, 'sandbox.js');
+  } else if (reqUrl === '/demo' || reqUrl === '/demo/') {
+    // GitHub Pages demo (docs/) — served with ./dist/ next to it, like the
+    // deployed site artifact.
+    filePath = path.join(ROOT_DIR, 'docs/index.html');
+  } else if (reqUrl === '/demo/demo.js') {
+    filePath = path.join(ROOT_DIR, 'docs/demo.js');
+  } else if (reqUrl.startsWith('/demo/dist/')) {
+    filePath = path.join(ROOT_DIR, reqUrl.slice('/demo'.length));
   } else if (reqUrl.startsWith('/dist/')) {
     filePath = path.join(ROOT_DIR, reqUrl);
   } else if (reqUrl.startsWith('/test/fixtures/')) {

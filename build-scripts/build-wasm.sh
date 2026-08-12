@@ -2,8 +2,8 @@
 set -e
 
 # Configuration
-LIBDE265_VERSION="1.0.15"
-LIBHEIF_VERSION="1.18.2"
+LIBDE265_VERSION="1.1.1"
+LIBHEIF_VERSION="1.23.1"
 BUILD_DIR="$(pwd)/build-wasm"
 OUT_DIR="$(pwd)/src/wasm/public"
 WASM_JS_OUT="$(pwd)/src/wasm/wrapper/heic-decoder.js"
@@ -26,29 +26,56 @@ apt-get update && apt-get install -y autoconf automake libtool pkg-config
 mkdir -p build-wasm/src
 cd build-wasm/src
 
-# 1. Download and build libde265
-if [ ! -d libde265 ]; then
+# 1. Download and build libde265 (CMake-only since v1.1.0; no autotools)
+# A .version marker tracks which version the cached source dir contains so
+# bumping LIBDE265_VERSION forces a fresh download instead of silently
+# rebuilding the wrapper against the old library.
+if [ ! -f libde265/.version ] || [ \"\$(cat libde265/.version 2>/dev/null)\" != \"\${LIBDE265_VERSION}\" ]; then
   echo 'Downloading libde265...'
+  rm -rf libde265
   curl -L https://github.com/strukturag/libde265/releases/download/v\${LIBDE265_VERSION}/libde265-\${LIBDE265_VERSION}.tar.gz | tar xz
   mv libde265-\${LIBDE265_VERSION} libde265
+  echo \"\${LIBDE265_VERSION}\" > libde265/.version
 fi
 
 cd libde265
-if [ ! -f build/libde265/.libs/libde265.a ]; then
+if [ ! -f build/libde265/libde265.a ]; then
   echo 'Building libde265...'
+  rm -rf build
   mkdir -p build
   cd build
-  emconfigure ../configure --disable-shared --enable-static
-  emmake make -j\$(nproc)
+  emcmake cmake .. \
+    -DBUILD_SHARED_LIBS=OFF \
+    -DENABLE_SDL=OFF \
+    -DENABLE_SIMD=OFF \
+    -DENABLE_AVX2=OFF \
+    -DENABLE_AVX512=OFF \
+    -DENABLE_DECODER=ON \
+    -DENABLE_ENCODER=OFF \
+    -DENABLE_SHERLOCK265=OFF \
+    -DENABLE_INTERNAL_DEVELOPMENT_TOOLS=OFF \
+    -DWITH_FUZZERS=OFF \
+    -DCMAKE_C_FLAGS=\"-O3\" \
+    -DCMAKE_CXX_FLAGS=\"-O3\"
+  emmake make -j\$(nproc) de265
   cd ..
+fi
+# libde265 >= 1.1.0: de265.h includes <libde265/de265-version.h>, which CMake
+# generates into the build dir. Expose it via the source tree so libheif can
+# find it through LIBDE265_INCLUDE_DIR.
+if [ -f build/libde265/de265-version.h ]; then
+  cp build/libde265/de265-version.h libde265/de265-version.h
 fi
 cd ..
 
 # 2. Download and build libheif
-if [ ! -d libheif ]; then
+# Same .version-marker caching as libde265 above.
+if [ ! -f libheif/.version ] || [ \"\$(cat libheif/.version 2>/dev/null)\" != \"\${LIBHEIF_VERSION}\" ]; then
   echo 'Downloading libheif...'
+  rm -rf libheif
   curl -L https://github.com/strukturag/libheif/releases/download/v\${LIBHEIF_VERSION}/libheif-\${LIBHEIF_VERSION}.tar.gz | tar xz
   mv libheif-\${LIBHEIF_VERSION} libheif
+  echo \"\${LIBHEIF_VERSION}\" > libheif/.version
 fi
 
 python3 /src/build-scripts/patch-libheif.py
@@ -60,8 +87,8 @@ if [ ! -f build/libheif/libheif.a ]; then
   mkdir -p build
   cd build
   # Note: Need to point PKG_CONFIG to libde265
-  export PKG_CONFIG_PATH=\"/src/build-wasm/src/libde265/build/libde265:\$PKG_CONFIG_PATH\"
-  
+  export PKG_CONFIG_PATH="/src/build-wasm/src/libde265/build/libde265:\$PKG_CONFIG_PATH"
+
   emcmake cmake .. \
     -DBUILD_SHARED_LIBS=OFF \
     -DBUILD_TESTING=OFF \
@@ -70,7 +97,7 @@ if [ ! -f build/libheif/libheif.a ]; then
     -DENABLE_PARALLEL_TILE_DECODING=OFF \
     -DWITH_LIBDE265=ON \
     -DLIBDE265_INCLUDE_DIR=/src/build-wasm/src/libde265 \\
-    -DLIBDE265_LIBRARY=/src/build-wasm/src/libde265/build/libde265/.libs/libde265.a \\
+    -DLIBDE265_LIBRARY=/src/build-wasm/src/libde265/build/libde265/libde265.a \\
     -DWITH_X265=OFF \\
     -DWITH_AOM=OFF \\
     -DWITH_DAV1D=OFF \\
@@ -115,10 +142,10 @@ public:
 
         heif_error err = heif_context_read_from_memory_without_copy(
             ctx, data.data(), data.size(), nullptr);
-        
+
         if (err.code != heif_error_Ok) {
             heif_context_free(ctx);
-            std::string msg = \"Error code \" + std::to_string(err.code) + 
+            std::string msg = \"Error code \" + std::to_string(err.code) +
                               \" (subcode \" + std::to_string(err.subcode) + \"): \";
             if (err.message) {
                 msg += err.message;
@@ -132,7 +159,7 @@ public:
         err = heif_context_get_primary_image_handle(ctx, &handle);
         if (err.code != heif_error_Ok) {
             heif_context_free(ctx);
-            std::string msg = \"Error code \" + std::to_string(err.code) + 
+            std::string msg = \"Error code \" + std::to_string(err.code) +
                               \" (subcode \" + std::to_string(err.subcode) + \"): \";
             if (err.message) {
                 msg += err.message;
@@ -172,14 +199,14 @@ public:
         err = heif_decode_image(handle, &img, heif_colorspace_RGB, heif_chroma_interleaved_RGBA, options);
         heif_image_handle_release(handle);
         heif_decoding_options_free(options);
-        
+
         if (err.code == heif_error_Ok && !progress_callback.isUndefined() && !progress_callback.isNull()) {
             progress_callback(100.0);
         }
 
         if (err.code != heif_error_Ok) {
             heif_context_free(ctx);
-            std::string msg = \"Error code \" + std::to_string(err.code) + 
+            std::string msg = \"Error code \" + std::to_string(err.code) +
                               \" (subcode \" + std::to_string(err.subcode) + \"): \";
             if (err.message) {
                 msg += err.message;
@@ -191,10 +218,10 @@ public:
 
         int width = heif_image_get_width(img, heif_channel_interleaved);
         int height = heif_image_get_height(img, heif_channel_interleaved);
-        
+
         int stride;
         const uint8_t* p = heif_image_get_plane_readonly(img, heif_channel_interleaved, &stride);
-        
+
         // Copy data to a JS Uint8Array
         val resultData = val::global(\"Uint8Array\").new_(width * height * 4);
         for (int y = 0; y < height; ++y) {
@@ -226,7 +253,7 @@ emcc /src/build-wasm/wrapper/main.cpp \\
     -I/src/build-wasm/src/libheif/libheif/api \\
     -I/src/build-wasm/src/libheif/build \\
     /src/build-wasm/src/libheif/build/libheif/libheif.a \\
-    /src/build-wasm/src/libde265/build/libde265/.libs/libde265.a \\
+    /src/build-wasm/src/libde265/build/libde265/libde265.a \\
     -s WASM=1 \\
     -s ALLOW_MEMORY_GROWTH=1 \\
     -s DYNAMIC_EXECUTION=0 \\

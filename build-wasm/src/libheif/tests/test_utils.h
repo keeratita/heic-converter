@@ -27,15 +27,27 @@
 #include <string>
 #include "libheif/heif.h"
 
-struct heif_context * get_context_for_test_file(std::string filename);
-struct heif_context * get_context_for_local_file(std::string filename);
+#include <filesystem>
 
-struct heif_image_handle * get_primary_image_handle(heif_context *context);
+namespace fs = std::filesystem;
 
-struct heif_image * get_primary_image(heif_image_handle * handle);
-struct heif_image * get_primary_image_mono(heif_image_handle * handle);
-struct heif_image * get_primary_image_ycbcr(heif_image_handle * handle, heif_chroma chroma);
+heif_context * get_context_for_test_file(std::string filename);
+heif_context * get_context_for_local_file(std::string filename);
+
+heif_image_handle * get_primary_image_handle(heif_context *context);
+
+heif_image * get_primary_image(heif_image_handle * handle);
+heif_image * get_primary_image_mono(heif_image_handle * handle);
+heif_image * get_primary_image_ycbcr(heif_image_handle * handle, heif_chroma chroma);
 
 void fill_new_plane(heif_image* img, heif_channel channel, int w, int h);
 
-struct heif_image * createImage_RGB_planar();
+heif_image * createImage_RGB_planar();
+
+std::string get_path_for_heifio_test_file(std::string filename);
+
+heif_encoder* get_encoder_or_skip_test(heif_compression_format format);
+
+fs::path get_tests_output_dir();
+
+std::string get_tests_output_file_path(const char* filename);

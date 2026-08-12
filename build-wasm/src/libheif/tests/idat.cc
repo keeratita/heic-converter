@@ -24,7 +24,7 @@
   SOFTWARE.
 */
 
-#include "catch.hpp"
+#include "catch_amalgamated.hpp"
 #include "box.h"
 #include <cstdint>
 #include <iostream>
@@ -38,7 +38,7 @@ TEST_CASE("idat bad") {
   BitstreamRange range(reader, testData.size());
   for (;;) {
     std::shared_ptr<Box> box;
-    Error error = Box::read(range, &box);
+    Error error = Box::read(range, &box, heif_get_global_security_limits());
     if (error != Error::Ok || range.error()) {
       break;
     }

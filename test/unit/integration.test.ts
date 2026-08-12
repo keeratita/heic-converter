@@ -1,102 +1,84 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
-import { convertHeic, freeSharedDecoder } from '../../src/index';
+import { describe, it, expect, beforeAll } from 'vitest';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { convertHeic, LibheifDecoder } from '../../src/index';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const WASM_PATH = path.resolve(__dirname, '../../dist/heic-decoder.wasm');
+const FIXTURE_PATH = path.resolve(__dirname, '../fixtures/example.heic');
+
+const hasWasm = fs.existsSync(WASM_PATH);
+const hasFixture = fs.existsSync(FIXTURE_PATH);
 
 /**
- * Integration tests for the full HEIC conversion pipeline.
+ * Integration tests exercising the real WASM decoder with a real HEIC fixture.
  *
- * All tests are skipped by default because they require the actual WASM binary
- * loaded from the build artifacts. Run manually with:
- *
- *   npx vitest run test/unit/integration.test.ts
- *
- * Or unskip the tests to run them in CI with the WASM binary available.
+ * These run in Node, which can decode but not canvas-encode (see the last
+ * test). They are skipped automatically when the build artifacts or fixtures
+ * are missing — run `npm run build` first.
  */
-describe.skip('Integration Tests - Full Conversion Flow', () => {
+describe.skipIf(!hasWasm || !hasFixture)('Integration Tests - Real WASM Pipeline', () => {
+  let heicBytes: Uint8Array;
+  let wasmBinary: ArrayBuffer;
+
   beforeAll(() => {
-    freeSharedDecoder();
+    heicBytes = new Uint8Array(fs.readFileSync(FIXTURE_PATH));
+    // In Node the WASM must be provided explicitly (no fetch); the browser
+    // loads it via locateFile/fetch instead.
+    wasmBinary = fs.readFileSync(WASM_PATH).buffer;
   });
 
-  afterAll(() => {
-    freeSharedDecoder();
+  it('should decode a real HEIC fixture with the real WASM decoder', async () => {
+    const decoder = new LibheifDecoder({ wasmBinary });
+    await decoder.initialize();
+    const decoded = await decoder.decode(heicBytes);
+
+    expect(decoded).toBeDefined();
+    expect(decoded.width).toBeGreaterThan(0);
+    expect(decoded.height).toBeGreaterThan(0);
+    expect(decoded.data).toBeInstanceOf(Uint8ClampedArray);
+    expect(decoded.data.length).toBe(decoded.width * decoded.height * 4);
   });
 
-  it('should complete a full conversion pipeline with real WASM', async () => {
-    const input = new Uint8Array([
-      // Minimal HEIC header (this would need a real fixture in practice)
-    ]);
+  it('should return pixel data that outlives the decoder (owned copy, not a WASM view)', async () => {
+    const decoder = new LibheifDecoder({ wasmBinary });
+    await decoder.initialize();
+    const decoded = await decoder.decode(heicBytes);
 
-    const result = await convertHeic(input, { to: 'png' });
+    decoder.free();
 
-    expect(result).toBeInstanceOf(Blob);
-    expect(result.type).toBe('image/png');
+    // The data must stay fully readable after the decoder (and its WASM heap) is freed.
+    expect(decoded.data.length).toBe(decoded.width * decoded.height * 4);
+    expect(decoded.data.every((byte) => byte >= 0 && byte <= 255)).toBe(true);
   });
 
-  it('should not leak memory across multiple conversions', async () => {
-    const iterations = 50;
-    for (let i = 0; i < iterations; i++) {
-      await convertHeic(new Uint8Array([0]));
-      freeSharedDecoder();
-    }
-  });
+  it('should report progress callbacks during a real decode', async () => {
+    const decoder = new LibheifDecoder({ wasmBinary });
+    await decoder.initialize();
 
-  it('should track progress accurately through the conversion pipeline', async () => {
     const progressValues: number[] = [];
-    const input = new Uint8Array([0]);
+    await decoder.decode(heicBytes, (percent) => progressValues.push(percent));
 
-    await convertHeic(input, {
-      onProgress: (percent) => {
-        progressValues.push(percent);
-      }
-    });
-
-    expect(progressValues.length).toBeGreaterThanOrEqual(1);
+    expect(progressValues.length).toBeGreaterThan(0);
+    expect(progressValues[0]).toBeGreaterThanOrEqual(0);
     expect(progressValues[progressValues.length - 1]).toBe(100);
+    progressValues.forEach((value) => {
+      expect(Number.isFinite(value)).toBe(true);
+    });
   });
 
-  it('should use custom decoder throughout the pipeline', async () => {
-    const customDecoder = {
-      initialize: vi.fn(async () => undefined),
-      decode: vi.fn(async () => ({
-        width: 2,
-        height: 2,
-        data: new Uint8ClampedArray(16),
-      })),
-      free: vi.fn(() => undefined),
-    };
+  it('should reject convertHeic in Node.js environments (no canvas) with a clear error', async () => {
+    // convertHeic needs canvas APIs for encoding, which Node.js lacks — this is
+    // documented behavior: Node users decode raw RGBA and encode externally.
+    // The decoder is injected (with the WASM binary) so the failure comes from
+    // the missing canvas, not from module loading.
+    const decoder = new LibheifDecoder({ wasmBinary });
 
-    const input = new Uint8Array([0]);
-    const result = await convertHeic(input, { decoder: customDecoder });
-
-    expect(customDecoder.initialize).toHaveBeenCalledTimes(1);
-    expect(customDecoder.decode).toHaveBeenCalledTimes(1);
-    expect(customDecoder.free).not.toHaveBeenCalled();
-    expect(result).toBeInstanceOf(Blob);
-  });
-
-  it('should handle error propagation correctly through the pipeline', async () => {
-    const errorDecoder = {
-      initialize: vi.fn(async () => undefined),
-      decode: vi.fn(async () => { throw new Error('Decoding failed'); }),
-      free: vi.fn(() => undefined),
-    };
-
-    await expect(convertHeic(new Uint8Array([0]), { decoder: errorDecoder }))
-      .rejects
-      .toThrow('Decoding failed');
-  });
-
-  it('should validate input types before attempting conversion', async () => {
-    // @ts-expect-error - intentionally testing invalid input type
-    await expect(convertHeic({ invalid: true })).rejects.toThrow();
-  });
-
-  it('should perform end-to-end conversion within reasonable time', async () => {
-    const start = performance.now();
-    const input = new Uint8Array([0]);
-
-    await convertHeic(input);
-
-    const elapsed = performance.now() - start;
-    expect(elapsed).toBeLessThan(5000); // 5 second timeout
+    await expect(convertHeic(heicBytes, { to: 'png', decoder })).rejects.toThrow(
+      'Canvas is not supported'
+    );
   });
 });

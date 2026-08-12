@@ -23,9 +23,9 @@
   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
   SOFTWARE.
 */
-#include "catch.hpp"
+#include "catch_amalgamated.hpp"
 #include "libheif/heif.h"
-#include "libheif/api_structs.h"
+#include "api_structs.h"
 #include <cstdint>
 #include <stdio.h>
 #include "test_utils.h"

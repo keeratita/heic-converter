@@ -48,6 +48,11 @@ export class LibheifDecoder implements IHeicDecoder {
   private options?: LibheifDecoderOptions;
   private module: HeicDecoderModule | null = null;
   private decoderInstance: HeicDecoderInstance | null = null;
+  /**
+   * Memoized module-loading promise so concurrent initialize()/decode() calls
+   * on the same instance never instantiate (or mutate) the module twice.
+   */
+  private initPromise: Promise<HeicDecoderModule> | null = null;
 
   constructor(options?: LibheifDecoderOptions) {
     this.options = options;
@@ -55,22 +60,32 @@ export class LibheifDecoder implements IHeicDecoder {
 
   /**
    * Initializes the WebAssembly module and instantiates the HEIC decoder.
+   * Safe to call concurrently: the module is loaded at most once per instance.
    */
   async initialize(): Promise<void> {
-    if (this.module) {
-      return;
+    if (!this.initPromise) {
+      const moduleArgs: ModuleInitOptions = {};
+      if (this.options?.locateFile) {
+        moduleArgs.locateFile = this.options.locateFile;
+      }
+      if (this.options?.wasmBinary) {
+        moduleArgs.wasmBinary = this.options.wasmBinary;
+      }
+
+      this.initPromise = createHeicDecoderModule(moduleArgs)
+        .then((module) => {
+          this.module = module;
+          this.decoderInstance = new module.HeicDecoder();
+          return module;
+        })
+        .catch((error) => {
+          // Reset so a failed load (e.g. transient WASM fetch failure) can be retried.
+          this.initPromise = null;
+          throw error;
+        });
     }
 
-    const moduleArgs: ModuleInitOptions = {};
-    if (this.options?.locateFile) {
-      moduleArgs.locateFile = this.options.locateFile;
-    }
-    if (this.options?.wasmBinary) {
-      moduleArgs.wasmBinary = this.options.wasmBinary;
-    }
-
-    this.module = await createHeicDecoderModule(moduleArgs);
-    this.decoderInstance = new this.module.HeicDecoder();
+    await this.initPromise;
   }
 
   /**
@@ -97,12 +112,10 @@ export class LibheifDecoder implements IHeicDecoder {
     const width = result.width;
     const height = result.height;
 
-    // Result.data is a Uint8Array. We wrap it in a Uint8ClampedArray to match DecodedImage type.
-    const clampedData = new Uint8ClampedArray(
-      result.data.buffer,
-      result.data.byteOffset,
-      result.data.byteLength
-    );
+    // Copy the pixels out of the WASM heap: the returned DecodedImage owns its
+    // data, so it stays valid after free() and is never corrupted by a later
+    // decode on the same (or any other) decoder instance.
+    const clampedData = new Uint8ClampedArray(result.data);
 
     return {
       width,

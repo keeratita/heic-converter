@@ -63,7 +63,7 @@ export function canvasToBlob(
         if (blob) {
           resolve(blob);
         } else {
-          reject(new Error('Failed to convert canvas to blob'));
+          reject(new Error(`Failed to convert canvas to blob (type: ${type})`));
         }
       },
       type,
@@ -81,6 +81,14 @@ export async function renderAndEncode(
   quality: number
 ): Promise<Blob> {
   const { width, height, data } = decoded;
+
+  // Dimensions must be positive integers before they are used for buffer
+  // sizing, canvas allocation, and SVG serialization.
+  if (!Number.isInteger(width) || width <= 0 || !Number.isInteger(height) || height <= 0) {
+    throw new Error(
+      `Invalid image dimensions: ${width}x${height}. Width and height must be positive integers.`
+    );
+  }
 
   // Validate data length matches expected dimensions
   const expectedLength = width * height * 4;

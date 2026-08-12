@@ -50,7 +50,15 @@ HeifImage.prototype.get_height = function() {
 };
 
 HeifImage.prototype.is_primary = function() {
-    return !!heif_image_handle_is_primary_image(this.handle);
+    return !!Module.heif_image_handle_is_primary_image(this.handle);
+}
+
+HeifImage.prototype.has_alpha_channel = function() {
+    return !!Module.heif_image_handle_has_alpha_channel(this.handle);
+}
+
+HeifImage.prototype.is_premultiplied_alpha = function() {
+    return !!Module.heif_image_handle_is_premultiplied_alpha(this.handle);
 }
 
 HeifImage.prototype.display = function(image_data, callback) {
@@ -58,12 +66,12 @@ HeifImage.prototype.display = function(image_data, callback) {
     var w = this.get_width();
     var h = this.get_height();
 
-    setTimeout(function() {
+    setTimeout(async function() {
 
         // If image hasn't been loaded yet, decode the image
 
         if (!this.img) {
-            var img = Module.heif_js_decode_image2(this.handle,
+            var img = await Module.heif_js_decode_image2(this.handle,
               Module.heif_colorspace.heif_colorspace_RGB, Module.heif_chroma.heif_chroma_interleaved_RGBA);
             if (!img || img.code) {
                 console.log("Decoding image failed", this.handle, img);

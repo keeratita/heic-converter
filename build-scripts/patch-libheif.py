@@ -1,14 +1,38 @@
 import os
 import sys
 
+# libheif >= 1.21 moved grid tile decoding from context.cc to
+# image-items/grid.cc and added native start/on/end progress callbacks
+# there, so those versions need no patching. Libs pinned by build-wasm.sh
+# since 1.23.1 ship this, so the patch normally no-ops.
+NATIVE_GRID_CANDIDATES = [
+    'build-wasm/src/libheif/libheif/image-items/grid.cc',
+    'libheif/libheif/image-items/grid.cc',
+    'src/libheif/libheif/image-items/grid.cc',
+]
+
+CONTEXT_CC_CANDIDATES = [
+    'build-wasm/src/libheif/libheif/context.cc',
+    'libheif/libheif/context.cc',
+    'src/libheif/libheif/context.cc',
+]
+
+
+def has_native_progress_callbacks():
+    for path in NATIVE_GRID_CANDIDATES:
+        if os.path.exists(path):
+            with open(path, 'r') as f:
+                return 'options.start_progress' in f.read()
+    return False
+
+
 def main():
-    candidate_paths = [
-        'build-wasm/src/libheif/libheif/context.cc',
-        'libheif/libheif/context.cc',
-        'src/libheif/libheif/context.cc'
-    ]
+    if has_native_progress_callbacks():
+        print("libheif grid.cc already provides native progress callbacks; no patch needed.")
+        return
+
     filepath = None
-    for path in candidate_paths:
+    for path in CONTEXT_CC_CANDIDATES:
         if os.path.exists(path):
             filepath = path
             break
@@ -35,6 +59,7 @@ def main():
     )
     if target_start not in content:
         print("Error: Could not find target_start signature in context.cc", file=sys.stderr)
+        print("Hint: libheif >= 1.21 provides progress callbacks natively in image-items/grid.cc", file=sys.stderr)
         sys.exit(1)
     content = content.replace(target_start, replacement_start, 1)
 

@@ -31,13 +31,13 @@
 #include <string>
 #include <iostream>
 #include <cassert>
+#include <memory>
 #include <libheif/heif.h>
-#include "encoder.h"
+#include "heifio/encoder.h"
 
 #if HAVE_LIBPNG
-#  include "encoder_png.h"
+#  include "heifio/encoder_png.h"
 #include "common.h"
-
 #endif
 
 #if defined(_MSC_VER)
@@ -78,7 +78,7 @@ int main(int argc, char** argv)
         thumbnail_from_primary_image_only = true;
         break;
       case 'v':
-        show_version();
+        heif_examples::show_version();
         return 0;
       case 'h':
       default:
@@ -183,6 +183,11 @@ int main(int argc, char** argv)
     }
     else {
       thumbnail_width = thumbnail_height = 0;
+    }
+
+    if (thumbnail_width == 0 || thumbnail_height == 0) {
+      std::cerr << "Zero thumbnail output size\n";
+      return 1;
     }
 
 

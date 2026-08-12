@@ -511,61 +511,52 @@ describe('renderAndEncode Unit Tests', () => {
   });
 
   describe('Image dimension edge cases', () => {
-    it('should handle zero width image', async () => {
+    it('should reject zero width image', async () => {
       const decoded: DecodedImage = {
         width: 0,
         height: 100,
         data: new Uint8ClampedArray(0),
       };
-      const mockBlob = new Blob(['jpeg-data'], { type: 'image/jpeg' });
 
-      mockCanvas.toBlob = vi.fn((callback: (blob: Blob | null) => void) => {
-        callback(mockBlob);
-      });
-
-      const result = await renderAndEncode(decoded, 'jpeg', 0.92);
-
-      expect(result).toBeInstanceOf(Blob);
-      expect(mockCanvas.width).toBe(0);
-      expect(mockCanvas.height).toBe(100);
+      await expect(renderAndEncode(decoded, 'jpeg', 0.92)).rejects.toThrow(
+        'Invalid image dimensions'
+      );
     });
 
-    it('should handle zero height image', async () => {
+    it('should reject zero height image', async () => {
       const decoded: DecodedImage = {
         width: 100,
         height: 0,
         data: new Uint8ClampedArray(0),
       };
-      const mockBlob = new Blob(['jpeg-data'], { type: 'image/jpeg' });
 
-      mockCanvas.toBlob = vi.fn((callback: (blob: Blob | null) => void) => {
-        callback(mockBlob);
-      });
-
-      const result = await renderAndEncode(decoded, 'jpeg', 0.92);
-
-      expect(result).toBeInstanceOf(Blob);
-      expect(mockCanvas.width).toBe(100);
-      expect(mockCanvas.height).toBe(0);
+      await expect(renderAndEncode(decoded, 'jpeg', 0.92)).rejects.toThrow(
+        'Invalid image dimensions'
+      );
     });
 
-    it('should handle both zero width and height', async () => {
+    it('should reject negative dimensions', async () => {
       const decoded: DecodedImage = {
-        width: 0,
-        height: 0,
+        width: -1,
+        height: 100,
         data: new Uint8ClampedArray(0),
       };
-      const mockBlob = new Blob(['jpeg-data'], { type: 'image/jpeg' });
 
-      mockCanvas.toBlob = vi.fn((callback: (blob: Blob | null) => void) => {
-        callback(mockBlob);
-      });
+      await expect(renderAndEncode(decoded, 'jpeg', 0.92)).rejects.toThrow(
+        'Invalid image dimensions'
+      );
+    });
 
-      const result = await renderAndEncode(decoded, 'jpeg', 0.92);
+    it('should reject non-integer dimensions', async () => {
+      const decoded: DecodedImage = {
+        width: 100.5,
+        height: 100,
+        data: new Uint8ClampedArray(0),
+      };
 
-      expect(result).toBeInstanceOf(Blob);
-      expect(mockCanvas.width).toBe(0);
-      expect(mockCanvas.height).toBe(0);
+      await expect(renderAndEncode(decoded, 'jpeg', 0.92)).rejects.toThrow(
+        'Invalid image dimensions'
+      );
     });
 
     it('should handle 1x1 pixel image', async () => {

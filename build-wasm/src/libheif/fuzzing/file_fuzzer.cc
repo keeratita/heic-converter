@@ -37,6 +37,7 @@ static void TestDecodeImage(struct heif_context* ctx,
   (void) primary;
   int width = heif_image_handle_get_width(handle);
   int height = heif_image_handle_get_height(handle);
+  (void)width; (void)height;
   assert(width >= 0);
   assert(height >= 0);
   int metadata_count = heif_image_handle_get_number_of_metadata_blocks(handle, nullptr);
@@ -47,11 +48,16 @@ static void TestDecodeImage(struct heif_context* ctx,
   int metadata_ids_count = heif_image_handle_get_list_of_metadata_block_IDs(handle, nullptr, metadata_ids,
                                                                             metadata_count);
   assert(metadata_count == metadata_ids_count);
+  (void)metadata_ids_count;
   for (int i = 0; i < metadata_count; i++) {
     heif_image_handle_get_metadata_type(handle, metadata_ids[i]);
     heif_image_handle_get_metadata_content_type(handle, metadata_ids[i]);
     size_t metadata_size = heif_image_handle_get_metadata_size(handle, metadata_ids[i]);
-    assert(metadata_size < filesize);
+
+    // This assertion is invalid. Metadata can in fact be larger than the file if there are several
+    // overlapping iloc extents. Does not make much sense, but it is technically valid.
+    //assert(metadata_size < filesize);
+
     uint8_t* metadata_data = static_cast<uint8_t*>(malloc(metadata_size));
     assert(metadata_data);
     heif_image_handle_get_metadata(handle, metadata_ids[i], metadata_data);
@@ -96,7 +102,12 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size)
   heif_get_file_mime_type(data, clip_int(size));
 
   ctx = heif_context_alloc();
+  heif_context_get_security_limits(ctx)->max_total_memory = UINT64_C(2) * 1024 * 1024 * 1024;
   assert(ctx);
+
+  auto* limits = heif_context_get_security_limits(ctx);
+  limits->max_memory_block_size = 128 * 1024 * 1024; // 128 MB
+
   err = heif_context_read_from_memory(ctx, data, size, nullptr);
   if (err.code != heif_error_Ok) {
     // Not a valid HEIF file passed (which is most likely while fuzzing).

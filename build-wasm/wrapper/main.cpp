@@ -24,10 +24,10 @@ public:
 
         heif_error err = heif_context_read_from_memory_without_copy(
             ctx, data.data(), data.size(), nullptr);
-        
+
         if (err.code != heif_error_Ok) {
             heif_context_free(ctx);
-            std::string msg = "Error code " + std::to_string(err.code) + 
+            std::string msg = "Error code " + std::to_string(err.code) +
                               " (subcode " + std::to_string(err.subcode) + "): ";
             if (err.message) {
                 msg += err.message;
@@ -41,7 +41,7 @@ public:
         err = heif_context_get_primary_image_handle(ctx, &handle);
         if (err.code != heif_error_Ok) {
             heif_context_free(ctx);
-            std::string msg = "Error code " + std::to_string(err.code) + 
+            std::string msg = "Error code " + std::to_string(err.code) +
                               " (subcode " + std::to_string(err.subcode) + "): ";
             if (err.message) {
                 msg += err.message;
@@ -81,14 +81,14 @@ public:
         err = heif_decode_image(handle, &img, heif_colorspace_RGB, heif_chroma_interleaved_RGBA, options);
         heif_image_handle_release(handle);
         heif_decoding_options_free(options);
-        
+
         if (err.code == heif_error_Ok && !progress_callback.isUndefined() && !progress_callback.isNull()) {
             progress_callback(100.0);
         }
 
         if (err.code != heif_error_Ok) {
             heif_context_free(ctx);
-            std::string msg = "Error code " + std::to_string(err.code) + 
+            std::string msg = "Error code " + std::to_string(err.code) +
                               " (subcode " + std::to_string(err.subcode) + "): ";
             if (err.message) {
                 msg += err.message;
@@ -100,10 +100,10 @@ public:
 
         int width = heif_image_get_width(img, heif_channel_interleaved);
         int height = heif_image_get_height(img, heif_channel_interleaved);
-        
+
         int stride;
         const uint8_t* p = heif_image_get_plane_readonly(img, heif_channel_interleaved, &stride);
-        
+
         // Copy data to a JS Uint8Array
         val resultData = val::global("Uint8Array").new_(width * height * 4);
         for (int y = 0; y < height; ++y) {

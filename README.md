@@ -10,7 +10,7 @@ Designed specifically for environments with strict **Content Security Policy (CS
 
 - 🔒 **CSP Compliant**: Emscripten glue code is compiled with `-s DYNAMIC_EXECUTION=0`. Safe to run without `'unsafe-eval'`.
 - 🧩 **Dependency Injection Architecture**: Swap the decoder module easily by implementing a simple `IHeicDecoder` interface.
-- ⚡ **Optimized Performance**: Reuses a single shared WASM instance across calls by default. Decodes an image in milliseconds.
+- ⚡ **Optimized Performance**: A fresh decoder instance is created and released per conversion — memory is reclaimed promptly and concurrent conversions never share mutable WASM state.
 - 🌐 **Isomorphic / Universal**: Runs in Node.js (decoding) and browser (decoding & canvas-based encoding).
 - 📦 **No Bloat**: Zero external production dependencies. Small footprint.
 - 🎨 **Format Support**: Convert to `jpeg` (with quality configuration), `png`, `webp`, and `svg` (embedded lossless vector).
@@ -118,7 +118,7 @@ const jpegBlob = await convertHeic(heicBlob, {
 });
 ```
 
-### 3. Node.js: Decoding Raw Pixel Data
+### 5. Node.js: Decoding Raw Pixel Data
 
 Since Node.js lacks the native browser Canvas API, `convertHeic` (which relies on Canvas to encode raster formats) will throw an error on the backend.
 
@@ -135,11 +135,12 @@ async function convertNode() {
   const decoder = new LibheifDecoder();
   await decoder.initialize();
 
-  // Decodes to { width, height, data: Uint8ClampedArray (RGBA) }
+  // Decodes to { width, height, data: Uint8ClampedArray (RGBA) }.
+  // data is an independent copy — safe to use after decoder.free().
   const { width, height, data } = await decoder.decode(heicData);
 
   // Process raw pixels using sharp
-  await sharp(Buffer.from(data.buffer), {
+  await sharp(Buffer.from(data), {
     raw: { width, height, channels: 4 },
   })
     .toFormat('jpeg')
@@ -150,7 +151,7 @@ async function convertNode() {
 }
 ```
 
-### 4. Progress Tracking (e.g. for Large Images)
+### 6. Progress Tracking (e.g. for Large Images)
 
 For large images, you can pass an `onProgress` callback to track the conversion progress (0% to 100%):
 
@@ -207,13 +208,13 @@ The default WASM-based implementation of `IHeicDecoder`.
   - `locateFile`: `(path: string, prefix: string) => string`
   - `wasmBinary`: `ArrayBuffer`
 - **Methods**:
-  - `initialize(): Promise<void>`: Loads and initializes the WASM wrapper.
-  - `decode(data: Uint8Array, onProgress?: (percent: number) => void): Promise<DecodedImage>`: Decodes the HEIC bytes to raw RGBA, with optional progress callback.
-  - `free(): void`: Releases allocated WebAssembly heap memory.
+  - `initialize(): Promise<void>`: Loads and initializes the WASM wrapper. Safe to call concurrently; the module loads at most once per instance.
+  - `decode(data: Uint8Array, onProgress?: (percent: number) => void): Promise<DecodedImage>`: Decodes the HEIC bytes to raw RGBA, with optional progress callback. Returns an independent copy of the pixel data — safe to use after `free()`.
+  - `free(): void`: Releases allocated WebAssembly heap memory. Idempotent.
 
 ### `freeSharedDecoder()`
 
-The library keeps a shared instance of `LibheifDecoder` to speed up subsequent calls. Call `freeSharedDecoder()` when your application is done converting images to release memory.
+Kept for **API compatibility**. Decoders are now created and released per conversion, so there is no shared instance to release — calling this function is a no-op.
 
 ```typescript
 import { freeSharedDecoder } from '@keeratita/heic-converter';

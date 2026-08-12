@@ -28,3 +28,9 @@ jobs:
 
     - name: Run Unit Tests
       run: npm run test
+
+    - name: Install Playwright Chromium
+      run: npx playwright install chromium
+
+    - name: Run Browser E2E Tests (CSP Sandbox + GitHub Pages Demo)
+      run: node test/browser/test-playwright.mjs
