@@ -1,6 +1,6 @@
 {
   "name": "@keeratita/heic-converter",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Convert HEIC images to standard web formats (JPG, PNG, SVG) without breaking CSP",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
