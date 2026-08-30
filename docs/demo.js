@@ -1,4 +1,4 @@
-import { convertHeic } from './dist/index.mjs';
+import { convertHeic, convertHeicInWorker } from './dist/index.mjs';
 
 const dropzone = document.getElementById('dropzone');
 const fileInput = document.getElementById('fileInput');
@@ -9,6 +9,8 @@ const formatEl = document.getElementById('format');
 const qualityWrap = document.getElementById('qualityWrap');
 const qualityEl = document.getElementById('quality');
 const qualityVal = document.getElementById('qualityVal');
+const maxWidthEl = document.getElementById('maxWidth');
+const workerEl = document.getElementById('worker');
 const convertBtn = document.getElementById('convert');
 const progressEl = document.getElementById('progress');
 const statusEl = document.getElementById('status');
@@ -132,19 +134,30 @@ convertBtn.addEventListener('click', async () => {
 
   const format = formatEl.value;
   const quality = Number(qualityEl.value);
+  const maxWidth = Number(maxWidthEl.value);
+  const useWorker = workerEl.value === 'worker';
+
+  const options = {
+    to: format,
+    quality,
+    ...(maxWidth > 0 ? { maxWidth } : {}),
+    onProgress: (percent) => {
+      // A stale conversion must not keep writing to the progress bar.
+      if (id !== conversionId) {
+        return;
+      }
+      progressEl.style.width = `${Math.max(0, Math.min(100, percent)).toFixed(0)}%`;
+    },
+  };
 
   try {
-    const result = await convertHeic(selectedFile, {
-      to: format,
-      quality,
-      onProgress: (percent) => {
-        // A stale conversion must not keep writing to the progress bar.
-        if (id !== conversionId) {
-          return;
-        }
-        progressEl.style.width = `${Math.max(0, Math.min(100, percent)).toFixed(0)}%`;
-      },
-    });
+    const result = useWorker
+      ? await convertHeicInWorker(selectedFile, {
+          workerUrl: new URL('./worker.js', import.meta.url),
+          workerType: 'module',
+          ...options,
+        })
+      : await convertHeic(selectedFile, options);
 
     // Ignore completions from stale conversions (file/settings changed mid-flight).
     if (id !== conversionId) {

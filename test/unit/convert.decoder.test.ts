@@ -15,15 +15,23 @@ const mockState = vi.hoisted(() => ({
     free: ReturnType<typeof vi.fn>;
   }>,
   initializeShouldThrow: false,
+  initializeThrowValue: null as unknown,
 }));
 
-vi.mock('../../src/render/canvas', () => ({
-  renderAndEncode: mockState.renderAndEncodeMock,
-}));
+vi.mock('../../src/render/canvas', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/render/canvas')>();
+  return {
+    ...actual,
+    renderAndEncode: mockState.renderAndEncodeMock,
+  };
+});
 
 vi.mock('../../src/wasm', () => {
   class MockLibheifDecoder {
     initialize = vi.fn(async () => {
+      if (mockState.initializeThrowValue !== null) {
+        throw mockState.initializeThrowValue;
+      }
       if (mockState.initializeShouldThrow) {
         throw new Error('Init failed');
       }
@@ -58,6 +66,7 @@ describe('convertHeic - Decoder Lifecycle', () => {
     mockState.renderAndEncodeMock.mockClear();
     mockState.decoderInstances.length = 0;
     mockState.initializeShouldThrow = false;
+    mockState.initializeThrowValue = null;
   });
 
   it('should use injected decoder instead of creating shared default decoder', async () => {
@@ -256,6 +265,15 @@ describe('convertHeic - Decoder Lifecycle', () => {
       mockState.initializeShouldThrow = true;
 
       await expect(convertHeic(new Uint8Array([1]))).rejects.toThrow('Init failed');
+      expect(mockState.decoderInstances[0].free).toHaveBeenCalledTimes(1);
+    });
+
+    it('should wrap a non-Error value thrown by initialize', async () => {
+      mockState.initializeThrowValue = 'boom';
+
+      await expect(convertHeic(new Uint8Array([1]))).rejects.toThrow(
+        'Failed to initialize HEIC decoder: boom'
+      );
       expect(mockState.decoderInstances[0].free).toHaveBeenCalledTimes(1);
     });
 

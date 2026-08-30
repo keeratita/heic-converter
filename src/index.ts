@@ -1,9 +1,12 @@
 import { LibheifDecoder } from './wasm';
-import { renderAndEncode } from './render/canvas';
-import type { ConvertOptions } from './types';
+import { renderAndEncode, validateResize } from './render/canvas';
+import { Messages } from './messages';
+import type { ConvertManyOptions, ConvertOptions, HeicInput } from './types';
 
 export * from './types';
 export { LibheifDecoder, LibheifDecoderOptions } from './wasm';
+export { convertHeicInWorker } from './worker';
+export type { WorkerConvertOptions } from './worker';
 
 /**
  * Releases any cached decoder resources.
@@ -22,7 +25,7 @@ export function freeSharedDecoder(): void {
  */
 function validateQuality(quality: number): void {
   if (typeof quality !== 'number' || Number.isNaN(quality) || quality < 0 || quality > 1) {
-    throw new Error(`Quality must be a number between 0.0 and 1.0, got: ${quality}`);
+    throw new Error(Messages.QualityInvalid(quality));
   }
 }
 
@@ -34,10 +37,21 @@ function validateQuality(quality: number): void {
  * @returns A Promise resolving to the converted image as a Blob.
  */
 export async function convertHeic(
-  input: Blob | File | ArrayBuffer | Uint8Array,
+  input: HeicInput,
   options?: ConvertOptions
 ): Promise<Blob> {
-  // 1. Resolve input to a Uint8Array
+  // 1. Validate options before touching the input so invalid values fail
+  // fast without reading the (potentially large) file into memory.
+  if (options?.quality !== undefined) {
+    validateQuality(options.quality);
+  }
+  const resize =
+    options?.maxWidth !== undefined || options?.maxHeight !== undefined || options?.scale !== undefined
+      ? options
+      : undefined;
+  validateResize(resize);
+
+  // 2. Resolve input to a Uint8Array
   let buffer: Uint8Array;
   if (input instanceof Uint8Array) {
     buffer = input;
@@ -47,14 +61,7 @@ export async function convertHeic(
     const arrayBuffer = await input.arrayBuffer();
     buffer = new Uint8Array(arrayBuffer);
   } else {
-    throw new Error(
-      `Unsupported input type. Expected Blob, File, ArrayBuffer, or Uint8Array. Got: ${Object.prototype.toString.call(input)}`
-    );
-  }
-
-  // 2. Validate quality parameter if provided
-  if (options?.quality !== undefined) {
-    validateQuality(options.quality);
+    throw new Error(Messages.UnsupportedInputType(Object.prototype.toString.call(input)));
   }
 
   // 3. Select decoder (user-injected or a fresh default instance).
@@ -86,7 +93,7 @@ export async function convertHeic(
       await decoder.initialize();
     } catch (error) {
       throw new Error(
-        `Failed to initialize HEIC decoder: ${error instanceof Error ? error.message : String(error)}`,
+        Messages.DecoderInitFailed(error instanceof Error ? error.message : String(error)),
         { cause: error }
       );
     }
@@ -102,14 +109,99 @@ export async function convertHeic(
     const quality = options?.quality !== undefined ? options.quality : 0.92;
 
     try {
+      if (resize) {
+        return await renderAndEncode(decoded, format, quality, resize);
+      }
       return await renderAndEncode(decoded, format, quality);
     } catch (error) {
       throw new Error(
-        `Failed to render and encode image as ${format}: ${error instanceof Error ? error.message : String(error)}`,
+        Messages.RenderEncodeFailed(
+          format,
+          error instanceof Error ? error.message : String(error)
+        ),
         { cause: error }
       );
     }
   } finally {
     freeDecoder();
   }
+}
+
+/**
+ * Converts multiple HEIC images to a standard web format.
+ *
+ * Conversions run with a bounded concurrency (default 4) and results are
+ * returned in the same order as the inputs. If any conversion fails, the
+ * returned promise rejects as soon as the failure is known (in-flight
+ * conversions are allowed to finish in the background) with an error that
+ * identifies the failing item index.
+ *
+ * @param inputs HEIC images as Blobs, Files, ArrayBuffers, or Uint8Arrays.
+ * @param options Batch conversion options.
+ * @returns A Promise resolving to the converted images as Blobs, in input order.
+ */
+export async function convertMany(
+  inputs: HeicInput[],
+  options?: ConvertManyOptions
+): Promise<Blob[]> {
+  if (!Array.isArray(inputs)) {
+    throw new Error(Messages.InputsMustBeArray);
+  }
+
+  const concurrency = options?.concurrency ?? 4;
+  if (!Number.isInteger(concurrency) || concurrency < 1) {
+    throw new Error(Messages.ConcurrencyInvalid(concurrency));
+  }
+
+  const results: Blob[] = new Array(inputs.length);
+  const onProgress = options?.onProgress;
+  let nextIndex = 0;
+  let failed = false;
+  let firstError: unknown = null;
+  let firstErrorIndex = -1;
+  let notifyError: (() => void) | undefined;
+  const errorNotifier = new Promise<void>((resolve) => {
+    notifyError = resolve;
+  });
+
+  const runItem = async (): Promise<void> => {
+    while (!failed) {
+      const index = nextIndex;
+      nextIndex += 1;
+      if (index >= inputs.length) {
+        return;
+      }
+      try {
+        results[index] = await convertHeic(inputs[index], {
+          ...options,
+          onProgress:
+            onProgress !== undefined ? (percent: number) => onProgress(index, percent) : undefined,
+        });
+      } catch (error) {
+        if (!failed) {
+          failed = true;
+          firstError = error;
+          firstErrorIndex = index;
+          notifyError?.();
+        }
+      }
+    }
+  };
+
+  const runnerCount = Math.min(concurrency, inputs.length);
+  const runners = Array.from({ length: runnerCount }, () => runItem());
+
+  // Reject as soon as the first failure is known instead of waiting for
+  // in-flight conversions to complete; they settle in the background and
+  // each releases its own decoder.
+  await Promise.race([Promise.all(runners), errorNotifier]);
+
+  if (failed) {
+    const message = firstError instanceof Error ? firstError.message : String(firstError);
+    throw new Error(
+      Messages.ConvertManyItemFailed(firstErrorIndex + 1, inputs.length, message),
+      { cause: firstError }
+    );
+  }
+  return results;
 }

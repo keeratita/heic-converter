@@ -14,6 +14,9 @@ Designed specifically for environments with strict **Content Security Policy (CS
 - 🌐 **Isomorphic / Universal**: Runs in Node.js (decoding) and browser (decoding & canvas-based encoding).
 - 📦 **No Bloat**: Zero external production dependencies. Small footprint.
 - 🎨 **Format Support**: Convert to `jpeg` (with quality configuration), `png`, `webp`, and `svg` (embedded lossless vector).
+- 📐 **Resize Support**: Downscale with `maxWidth`/`maxHeight` or apply a uniform `scale` factor during conversion.
+- 📚 **Batch Conversion**: Convert many images at once with bounded concurrency via `convertMany`.
+- 🧵 **Web Worker Helper**: Offload conversions to a Web Worker with `convertHeicInWorker` to keep the UI thread responsive.
 
 ---
 
@@ -171,6 +174,89 @@ const jpegBlob = await convertHeic(heicBlob, {
 > [!TIP]
 > Since the WebAssembly module runs on the main browser thread, the UI thread will be occupied during conversion. For maximum responsiveness when converting large images, it is highly recommended to run this library inside a standard JS **Web Worker** and communicate progress back to the main thread.
 
+### 7. Resizing Images
+
+Downscale to fit within maximum dimensions (aspect ratio is preserved, images smaller than the bounds are never upscaled):
+
+```typescript
+import { convertHeic } from '@keeratita/heic-converter';
+
+const thumbnailBlob = await convertHeic(heicBlob, {
+  to: 'jpeg',
+  maxWidth: 800,
+  maxHeight: 600,
+});
+```
+
+Or apply a uniform scale factor (can also upscale):
+
+```typescript
+const halfSizeBlob = await convertHeic(heicBlob, {
+  to: 'webp',
+  scale: 0.5,
+});
+```
+
+### 8. Batch Conversion
+
+Convert many images at once with bounded concurrency (default `4`). Results are returned in input order; if any conversion fails, the promise rejects as soon as the failure is known with an error that identifies the failing item:
+
+```typescript
+import { convertMany } from '@keeratita/heic-converter';
+
+const blobs = await convertMany(heicFiles, {
+  to: 'png',
+  concurrency: 3,
+  onProgress: (index, percent) => {
+    console.log(`Image ${index}: ${Math.round(percent)}%`);
+  },
+});
+```
+
+### 9. Web Worker Conversion
+
+Run the conversion inside a Web Worker so the main thread stays responsive. Create a worker script that uses this library:
+
+```js
+// converter.worker.js
+import { convertHeic } from '@keeratita/heic-converter';
+
+self.onmessage = async (event) => {
+  const { input, options } = event.data;
+  try {
+    const blob = await convertHeic(input, {
+      ...options,
+      onProgress: (percent) => self.postMessage({ type: 'progress', percent }),
+    });
+    self.postMessage({ type: 'result', ok: true, blob });
+  } catch (error) {
+    self.postMessage({ type: 'result', ok: false, error: error?.stack ?? error?.message ?? String(error) });
+  }
+};
+```
+
+Then convert from the main thread:
+
+```typescript
+import { convertHeicInWorker } from '@keeratita/heic-converter';
+
+const jpegBlob = await convertHeicInWorker(heicBlob, {
+  workerUrl: new URL('./converter.worker.js', import.meta.url),
+  workerType: 'module',
+  to: 'jpeg',
+  quality: 0.9,
+  onProgress: (percent) => console.log(`${Math.round(percent)}%`),
+});
+```
+
+> [!NOTE]
+> - Use `workerType: 'module'` when the worker script uses ES module imports (as in the example above). The default is `'classic'`, which requires the script to be pre-bundled (e.g. by Vite or webpack) — static ES imports are not supported in classic workers.
+> - `workerUrl` should be a compile-time constant; the script runs with the page's privileges.
+> - Only `progress` and `result` messages are understood; any other message type is ignored.
+> - `decoder`, `onProgress`, and `workerUrl` are not structured-cloneable, so they are not sent to the worker. Progress is forwarded through `{ type: 'progress', percent }` messages instead.
+> - `timeoutMs` (default `60000`) bounds how long the promise waits for a result; set `0` to disable.
+> - This helper is **browser-only**: it rejects in Node.js, where there is no global `Worker`.
+
 ---
 
 ## 🔒 Content Security Policy (CSP)
@@ -198,6 +284,31 @@ Converts a HEIC image file to a standard web format.
   - `quality`: `number` (0.0 to 1.0, applicable to JPEG and WebP. Default: `0.92`)
   - `decoder`: `IHeicDecoder` (Inject custom decoder instance)
   - `onProgress`: `(percent: number) => void` (Optional callback, receives progress percentage from `0` to `100` during decoding)
+  - `maxWidth`: `number` (Downscale to fit within this width, preserving aspect ratio. Never upscales)
+  - `maxHeight`: `number` (Downscale to fit within this height, preserving aspect ratio. Never upscales)
+  - `scale`: `number` (Uniform scale factor, e.g. `0.5` halves the image. Takes precedence over `maxWidth`/`maxHeight`)
+- **Returns**: `Promise<Blob>`
+
+### `convertMany(inputs, options?)`
+
+Converts multiple HEIC images with bounded concurrency. Results are returned in input order; rejects as soon as a conversion fails, with an error identifying the failing item index.
+
+- **`inputs`**: `Array<Blob | File | ArrayBuffer | Uint8Array>`
+- **`options`**: (optional) `ConvertManyOptions` — same as `ConvertOptions`, except `onProgress` uses the batch signature below; plus:
+  - `concurrency`: `number` (Maximum concurrent conversions. Default: `4`)
+  - `onProgress`: `(index: number, percent: number) => void` (Per-item progress callback)
+  - `decoder`: `IHeicDecoder` (Optional. When provided, the same instance is shared by all concurrent conversions and must be safe for concurrent `decode()` calls)
+- **Returns**: `Promise<Blob[]>`
+
+### `convertHeicInWorker(input, options)`
+
+Converts a HEIC image inside a Web Worker. The worker script must implement the message protocol shown in [Usage section 9](#9-web-worker-conversion). Browser-only; rejects in Node.js.
+
+- **`input`**: `Blob | File | ArrayBuffer | Uint8Array`
+- **`options`**: `WorkerConvertOptions` — same as `ConvertOptions`, plus:
+  - `workerUrl`: `string | URL` (URL of the worker script; should be a compile-time constant)
+  - `workerType`: `'classic' | 'module'` (Worker script type. Default: `'classic'`; use `'module'` for scripts with ES imports)
+  - `timeoutMs`: `number` (Maximum wait for the result in milliseconds. Default: `60000`; `0` disables)
 - **Returns**: `Promise<Blob>`
 
 ### `LibheifDecoder(options?)`

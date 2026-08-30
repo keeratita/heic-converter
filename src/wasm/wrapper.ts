@@ -1,4 +1,5 @@
 import { IHeicDecoder, DecodedImage } from '../types';
+import { Messages } from '../messages';
 import createHeicDecoderModule from './wrapper/heic-decoder.js';
 
 export interface LibheifDecoderOptions {
@@ -103,10 +104,10 @@ export class LibheifDecoder implements IHeicDecoder {
 
     const result = this.decoderInstance!.decode(data, onProgress ?? null);
     if (!result) {
-      throw new Error('HEIC decoding failed');
+      throw new Error(Messages.DecodeFailed);
     }
     if (typeof result === 'string') {
-      throw new Error(`HEIC decoding failed: ${result}`);
+      throw new Error(Messages.DecodeFailedWithDetail(result));
     }
 
     const width = result.width;
