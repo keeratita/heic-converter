@@ -14,9 +14,13 @@ const mockState = vi.hoisted(() => ({
   }>,
 }));
 
-vi.mock('../../src/render/canvas', () => ({
-  renderAndEncode: mockState.renderAndEncodeMock,
-}));
+vi.mock('../../src/render/canvas', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/render/canvas')>();
+  return {
+    ...actual,
+    renderAndEncode: mockState.renderAndEncodeMock,
+  };
+});
 
 vi.mock('../../src/wasm', () => {
   class MockLibheifDecoder {

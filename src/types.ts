@@ -28,7 +28,31 @@ export interface IHeicDecoder {
 
 export type ImageFormat = 'jpeg' | 'jpg' | 'png' | 'svg' | 'webp';
 
-export interface ConvertOptions {
+export type HeicInput = Blob | File | ArrayBuffer | Uint8Array;
+
+export interface ResizeOptions {
+  /**
+   * Maximum width in pixels. The image is downscaled to fit within this
+   * bound while preserving the aspect ratio. Images smaller than the bound
+   * are never upscaled.
+   */
+  maxWidth?: number;
+
+  /**
+   * Maximum height in pixels. The image is downscaled to fit within this
+   * bound while preserving the aspect ratio. Images smaller than the bound
+   * are never upscaled.
+   */
+  maxHeight?: number;
+
+  /**
+   * Uniform scale factor applied to both dimensions (e.g. 0.5 halves the
+   * image). Takes precedence over `maxWidth` and `maxHeight` when set.
+   */
+  scale?: number;
+}
+
+export interface ConvertOptions extends ResizeOptions {
   /**
    * Target format for the conversion.
    * @default 'jpeg'
@@ -52,4 +76,26 @@ export interface ConvertOptions {
    * Optional progress callback that receives the progress percentage (0 to 100) during decoding.
    */
   onProgress?: (percent: number) => void;
+}
+
+export interface ConvertManyOptions extends Omit<ConvertOptions, 'onProgress'> {
+  /**
+   * Maximum number of conversions running concurrently.
+   * @default 4
+   */
+  concurrency?: number;
+
+  /**
+   * Optional progress callback that receives the item index and its
+   * progress percentage (0 to 100) during decoding.
+   */
+  onProgress?: (index: number, percent: number) => void;
+
+  /**
+   * Optional custom decoder implementation to inject. When provided, the
+   * same instance is shared by all concurrent conversions, so it must be
+   * safe for concurrent `decode()` calls. If not provided, a fresh
+   * default LibheifDecoder is created per item.
+   */
+  decoder?: IHeicDecoder;
 }

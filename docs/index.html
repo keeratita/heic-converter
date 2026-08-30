@@ -312,6 +312,26 @@
                 </div>
             </div>
 
+            <div class="row">
+                <div>
+                    <label for="maxWidth">Max width</label>
+                    <select id="maxWidth">
+                        <option value="0">Original</option>
+                        <option value="1920">1920 px</option>
+                        <option value="1280">1280 px</option>
+                        <option value="800">800 px</option>
+                        <option value="400">400 px</option>
+                    </select>
+                </div>
+                <div>
+                    <label for="worker">Execution</label>
+                    <select id="worker">
+                        <option value="main">Main thread</option>
+                        <option value="worker">Web Worker</option>
+                    </select>
+                </div>
+            </div>
+
             <div class="row single-col">
                 <button id="convert" disabled>Convert image</button>
             </div>
@@ -322,7 +342,8 @@
             <p id="status" class="status" aria-live="polite"></p>
 
             <p class="foot">
-                Note: conversion runs locally in your browser. Large files can take several seconds.
+                Note: conversion runs locally in your browser. Large files can take several seconds; the Web Worker
+                option keeps the page responsive.
             </p>
         </section>
 

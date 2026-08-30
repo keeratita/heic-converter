@@ -176,6 +176,76 @@ async function runDemoConversions(page) {
     fail(`webp output meta format: expected WEBP, got ${webpOutFormat}`);
   }
   console.log('✅ Demo WebP conversion OK');
+
+  // Resize: convert with maxWidth 400 and assert the output is bounded.
+  await page.selectOption('#format', 'png');
+  await page.selectOption('#maxWidth', '400');
+  await page.click('#convert');
+  await page.waitForFunction(() =>
+    document.querySelector('#status')?.textContent?.includes('Conversion complete.'), { timeout: 30000 });
+  await page.waitForFunction(() => {
+    const img = document.querySelector('#previewImg');
+    return img && img.naturalWidth > 0;
+  }, { timeout: 10000 });
+  const resizedWidth = await page.locator('#previewImg').evaluate((img) => img.naturalWidth);
+  if (resizedWidth <= 0 || resizedWidth > 400) {
+    fail(`resize: expected width <= 400, got ${resizedWidth}`);
+  }
+  console.log(`✅ Demo resize OK: output width ${resizedWidth}`);
+
+  // Worker: convert with the Web Worker execution option.
+  await page.selectOption('#worker', 'worker');
+  await page.click('#convert');
+  await page.waitForFunction(() =>
+    document.querySelector('#status')?.textContent?.includes('Conversion complete.'), { timeout: 30000 });
+  await page.waitForFunction(() => {
+    const img = document.querySelector('#previewImg');
+    return img && img.naturalWidth > 0;
+  }, { timeout: 10000 });
+  const workerWidth = await page.locator('#previewImg').evaluate((img) => img.naturalWidth);
+  if (workerWidth <= 0 || workerWidth > 400) {
+    fail(`worker: expected width <= 400, got ${workerWidth}`);
+  }
+  console.log(`✅ Demo worker conversion OK: output width ${workerWidth}`);
+}
+
+/**
+ * API tests (test/browser/api-test.html): exercises the new APIs against a
+ * real browser — resize bounds, batch conversion, and the full worker
+ * message protocol with a real module worker.
+ */
+async function runApiTests(page) {
+  console.log('\n--- API tests: resize, batch, worker ---');
+
+  await page.goto(`${BASE_URL}/api-test.html`);
+
+  await page.waitForFunction(() => {
+    const text = document.querySelector('#results')?.textContent;
+    return text && text !== 'pending';
+  }, { timeout: 60000 });
+
+  const text = (await page.locator('#results').textContent())?.trim();
+  let results;
+  try {
+    results = JSON.parse(text);
+  } catch {
+    fail(`api tests: unparseable results: ${text}`);
+  }
+
+  if (results.error) {
+    fail(`api tests: ${results.error}`);
+  }
+  if (!results.resize || results.resize.width <= 0 || results.resize.width > 100) {
+    fail(`resize: expected width <= 100, got ${JSON.stringify(results.resize)}`);
+  }
+  if (results.batch !== 2) {
+    fail(`batch: expected 2 results, got ${results.batch}`);
+  }
+  if (!results.worker) {
+    fail('worker: conversion did not produce output');
+  }
+
+  console.log(`✅ API tests OK: resize ${results.resize.width}x${results.resize.height}, batch ${results.batch}, worker ok`);
 }
 
 async function runTest() {
@@ -215,6 +285,7 @@ async function runTest() {
 
     await runSandboxConversions(page);
     await runDemoConversions(page);
+    await runApiTests(page);
 
     const screenshotPath = path.join(__dirname, 'e2e-success.png');
     await page.screenshot({ path: screenshotPath });

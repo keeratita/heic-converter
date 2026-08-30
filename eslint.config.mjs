@@ -11,6 +11,7 @@ export default tseslint.config(
       'node_modules/',
       'build-wasm/',
       'build-scripts/',
+      'coverage/',
       'src/wasm/wrapper/heic-decoder.js'
     ],
   },
@@ -23,7 +24,7 @@ export default tseslint.config(
     },
     rules: {
       '@typescript-eslint/no-explicit-any': 'off',
-      '@typescript-eslint/no-unused-vars': 'error',
+      '@typescript-eslint/no-unused-vars': ['error', { ignoreRestSiblings: true }],
     }
   }
 );

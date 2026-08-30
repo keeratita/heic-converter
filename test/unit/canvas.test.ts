@@ -438,6 +438,23 @@ describe('renderAndEncode Unit Tests', () => {
 
       await expect(renderAndEncode(decoded, 'svg', 1)).rejects.toThrow('FileReader error');
     });
+
+    it('should wrap a non-Error value thrown by the Node fallback', async () => {
+      const decoded = createMockDecodedImage(100, 100);
+      const mockBlob = new Blob(['test-data'], { type: 'image/png' });
+
+      mockCanvas.toBlob = vi.fn((callback: (blob: Blob | null) => void) => {
+        callback(mockBlob);
+      });
+
+      // Remove FileReader to trigger the Node.js fallback path.
+      global.FileReader = undefined as unknown as typeof FileReader;
+      mockBlob.arrayBuffer = vi.fn().mockRejectedValue('boom');
+
+      await expect(renderAndEncode(decoded, 'svg', 1)).rejects.toThrow(
+        'Failed to convert Blob to base64 string: boom'
+      );
+    });
   });
 
   describe('canvasToBlob error handling', () => {
