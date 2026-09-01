@@ -14,7 +14,24 @@ mkdir -p "$(dirname "$WASM_JS_OUT")"
 
 echo "Starting Docker-based Emscripten build..."
 
-# Use emscripten docker image
+# Ensure submodules are checked out at the pinned versions
+git submodule update --init --recursive
+
+# The submodule commit is the version marker; verify it matches the pinned tags
+LIBHEIF_CHECKOUT="$(git -C "$BUILD_DIR/src/libheif" describe --tags --exact-match 2>/dev/null || echo 'unknown')"
+LIBDE265_CHECKOUT="$(git -C "$BUILD_DIR/src/libde265" describe --tags --exact-match 2>/dev/null || echo 'unknown')"
+if [ "$LIBHEIF_CHECKOUT" != "v${LIBHEIF_VERSION}" ]; then
+  echo "Error: libheif submodule is at '$LIBHEIF_CHECKOUT', expected 'v${LIBHEIF_VERSION}'" >&2
+  echo "Fix: cd build-wasm/src/libheif && git checkout v${LIBHEIF_VERSION}" >&2
+  exit 1
+fi
+if [ "$LIBDE265_CHECKOUT" != "v${LIBDE265_VERSION}" ]; then
+  echo "Error: libde265 submodule is at '$LIBDE265_CHECKOUT', expected 'v${LIBDE265_VERSION}'" >&2
+  echo "Fix: cd build-wasm/src/libde265 && git checkout v${LIBDE265_VERSION}" >&2
+  exit 1
+fi
+
+# Use the Docker image
 docker run --rm \
   -e LIBDE265_VERSION="${LIBDE265_VERSION}" \
   -e LIBHEIF_VERSION="${LIBHEIF_VERSION}" \
@@ -26,18 +43,7 @@ apt-get update && apt-get install -y autoconf automake libtool pkg-config
 mkdir -p build-wasm/src
 cd build-wasm/src
 
-# 1. Download and build libde265 (CMake-only since v1.1.0; no autotools)
-# A .version marker tracks which version the cached source dir contains so
-# bumping LIBDE265_VERSION forces a fresh download instead of silently
-# rebuilding the wrapper against the old library.
-if [ ! -f libde265/.version ] || [ \"\$(cat libde265/.version 2>/dev/null)\" != \"\${LIBDE265_VERSION}\" ]; then
-  echo 'Downloading libde265...'
-  rm -rf libde265
-  curl -L https://github.com/strukturag/libde265/releases/download/v\${LIBDE265_VERSION}/libde265-\${LIBDE265_VERSION}.tar.gz | tar xz
-  mv libde265-\${LIBDE265_VERSION} libde265
-  echo \"\${LIBDE265_VERSION}\" > libde265/.version
-fi
-
+# 1. Build libde265 (CMake-only since v1.1.0; no autotools)
 cd libde265
 if [ ! -f build/libde265/libde265.a ]; then
   echo 'Building libde265...'
@@ -68,16 +74,7 @@ if [ -f build/libde265/de265-version.h ]; then
 fi
 cd ..
 
-# 2. Download and build libheif
-# Same .version-marker caching as libde265 above.
-if [ ! -f libheif/.version ] || [ \"\$(cat libheif/.version 2>/dev/null)\" != \"\${LIBHEIF_VERSION}\" ]; then
-  echo 'Downloading libheif...'
-  rm -rf libheif
-  curl -L https://github.com/strukturag/libheif/releases/download/v\${LIBHEIF_VERSION}/libheif-\${LIBHEIF_VERSION}.tar.gz | tar xz
-  mv libheif-\${LIBHEIF_VERSION} libheif
-  echo \"\${LIBHEIF_VERSION}\" > libheif/.version
-fi
-
+# 2. Build libheif
 python3 /src/build-scripts/patch-libheif.py
 
 cd libheif

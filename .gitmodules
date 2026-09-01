@@ -1,0 +1,6 @@
+[submodule "build-wasm/src/libheif"]
+	path = build-wasm/src/libheif
+	url = https://github.com/strukturag/libheif
+[submodule "build-wasm/src/libde265"]
+	path = build-wasm/src/libde265
+	url = https://github.com/strukturag/libde265
