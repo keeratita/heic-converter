@@ -342,11 +342,13 @@ If you want to build or modify the WASM wrapper, you will need **Docker** instal
 
 ### Build WebAssembly
 
-To compile the underlying `libheif` and `libde265` libraries from source using Emscripten:
+To compile the underlying [`libheif`](https://github.com/strukturag/libheif) and [`libde265`](https://github.com/strukturag/libde265) libraries from source using Emscripten:
 
 ```bash
 npm run build:wasm
 ```
+
+See [WASM_DEPENDENCIES.md](WASM_DEPENDENCIES.md) for the pinned upstream library versions.
 
 ### Build JS & TS Typings
 

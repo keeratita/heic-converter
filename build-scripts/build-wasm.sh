@@ -3,7 +3,7 @@ set -e
 
 # Configuration
 LIBDE265_VERSION="1.1.1"
-LIBHEIF_VERSION="1.23.1"
+LIBHEIF_VERSION="1.23.2"
 BUILD_DIR="$(pwd)/build-wasm"
 OUT_DIR="$(pwd)/src/wasm/public"
 WASM_JS_OUT="$(pwd)/src/wasm/wrapper/heic-decoder.js"
