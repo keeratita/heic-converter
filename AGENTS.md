@@ -42,7 +42,7 @@ src/
     wrapper/heic-decoder.js # GENERATED Emscripten glue — do not edit
     public/heic-decoder.wasm # GENERATED WASM binary — do not edit
 build-wasm/
-  src/libheif/ src/libde265/ # Vendored C++ sources (downloaded by build-wasm.sh)
+  src/libheif/ src/libde265/ # Git submodules (pinned to release tags) — do not edit
   wrapper/main.cpp           # C++ wrapper: embind class HeicDecoder exposing decode()
 build-scripts/
   build-wasm.sh             # Docker + Emscripten build pipeline
@@ -59,8 +59,8 @@ test/
 - **Conversion flow** (`convertHeic` in `src/index.ts`): normalize input → validate `quality` (0.0–1.0) → pick decoder (user-injected `options.decoder` or a fresh `LibheifDecoder`) → `initialize()` → `decode()` → **free a library-owned decoder immediately (before `renderAndEncode`, since decoded pixels are a standalone copy) and again in `finally` as a safety net** — `free()` is idempotent and never called on a user-injected decoder.
 - **Decoder instance lifecycle**: A fresh `LibheifDecoder` is created *per conversion* so concurrent calls never share mutable WASM state. `freeSharedDecoder()` is a **no-op kept for API compatibility** — do not reintroduce a shared instance without discussion.
 - **WASM wrapper** (`build-wasm/wrapper/main.cpp`): uses embind to expose `HeicDecoder.decode(string, progressCb)`, returning `{ width, height, data }` where `data` is a `Uint8Array` (RGBA, interleaved). Errors are returned as strings. In `src/wasm/wrapper.ts`, `LibheifDecoder.decode()` **copies the pixels out of the WASM heap** (owned `Uint8ClampedArray`), so results stay valid after `free()` and concurrent decodes can never corrupt each other's output; `initialize()` memoizes its module-loading promise so concurrent calls load the module once.
-- **Progress callbacks**: For libheif < 1.21, `build-scripts/patch-libheif.py` patches `context.cc` with start/on/end progress hooks around tile decoding. libheif ≥ 1.21 ships these natively in `image-items/grid.cc` (grid decoding moved there), which the patch script detects and skips. `build-wasm.sh` pins 1.23.1, so the patch normally no-ops.
-- **WASM build**: `build-wasm.sh` pins `libde265 1.1.1`, `libheif 1.23.1`, and the `emscripten/emsdk:3.1.56` Docker image. libde265 ≥ 1.1.0 is CMake-only (no autotools), so it is built with `emcmake cmake`. Artifacts are copied into `src/wasm/`. Build flags that must be preserved: `-s DYNAMIC_EXECUTION=0`, `-s ALLOW_MEMORY_GROWTH=1`, `-s EXPORT_ES6=1`, `-s MODULARIZE=1`, `-s ENVIRONMENT="web,worker,node"`, `--bind`, `-O3`.
+- **Progress callbacks**: For libheif < 1.21, `build-scripts/patch-libheif.py` patches `context.cc` with start/on/end progress hooks around tile decoding. libheif ≥ 1.21 ships these natively in `image-items/grid.cc` (grid decoding moved there), which the patch script detects and skips. `build-wasm.sh` pins 1.23.2, so the patch normally no-ops.
+- **WASM build**: `build-wasm.sh` pins `libde265 1.1.1`, `libheif 1.23.2`, and the `emscripten/emsdk:3.1.56` Docker image. libde265 ≥ 1.1.0 is CMake-only (no autotools), so it is built with `emcmake cmake`. Sources come from git submodules (`build-wasm/src/`), verified against the pinned tags before building. Artifacts are copied into `src/wasm/`. Build flags that must be preserved: `-s DYNAMIC_EXECUTION=0`, `-s ALLOW_MEMORY_GROWTH=1`, `-s EXPORT_ES6=1`, `-s MODULARIZE=1`, `-s ENVIRONMENT="web,worker,node"`, `--bind`, `-O3`.
 - **Env detection**: `render/canvas.ts` supports `OffscreenCanvas` first, then `HTMLCanvasElement`, and throws a clear error in environments with neither. Node users decode raw RGBA via `LibheifDecoder` and encode externally (e.g. `sharp`).
 
 ## Conventions
@@ -72,9 +72,9 @@ test/
 
 ## Gotchas
 
-- **Never edit generated files**: `src/wasm/wrapper/heic-decoder.js`, `src/wasm/public/heic-decoder.wasm`, or anything in `dist/` / `build-wasm/src/` (vendored C++). Regenerate via `npm run build:wasm` instead.
-- **Stale WASM source cache**: `build-wasm.sh` caches downloaded sources in `build-wasm/src/` and records each library's version in a `.version` marker. Bumping `LIBDE265_VERSION`/`LIBHEIF_VERSION` re-downloads and rebuilds automatically; if the `src/wasm` artifacts look unchanged after a bump, check those markers.
-- **`npm run build:wasm` requires Docker and network access** (downloads libheif/libde265 tarballs). It takes a long time; only run it when changing `main.cpp`, the build script, or lib versions.
+- **Never edit generated files**: `src/wasm/wrapper/heic-decoder.js`, `src/wasm/public/heic-decoder.wasm`, or anything in `dist/` / `build-wasm/src/` (submodule C++). Regenerate via `npm run build:wasm` instead.
+- **Submodule drift**: `build-wasm.sh` verifies the `build-wasm/src/` submodules are checked out at the pinned tags and fails with a hint if they drift. Bump `LIBDE265_VERSION`/`LIBHEIF_VERSION` **and** `git checkout` the new tag in the submodule; if the `src/wasm` artifacts look unchanged after a bump, check the submodule commit.
+- **`npm run build:wasm` requires Docker and network access** (fetches submodules on first checkout). It takes a long time; only run it when changing `main.cpp`, the build script, or lib versions.
 - **Two separate "builds"**: `build` (TS → `dist/`) and `build:wasm` (C++ → WASM). Most frontend work only needs `npm run build`.
 - `.wasm` is externalized from the main bundle (`tsup.config.ts` `external`) and served separately; changing how it's located/loaded must stay compatible with `locateFile` and `wasmBinary` options.
 - Tests that decode real HEIC files require the built WASM artifact — run `npm run build:wasm` (or ensure `src/wasm/public/heic-decoder.wasm` exists) before running integration tests.
