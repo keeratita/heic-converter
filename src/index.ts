@@ -40,10 +40,8 @@ function validateQuality(quality: number): void {
 }
 
 /**
- * Resolves any supported input form to a Uint8Array. Besides the typed
- * union (Uint8Array/ArrayBuffer/Blob), accepts cross-realm Blob-likes
- * (iframes, Electron, polyfills — detected via `arrayBuffer()`) and other
- * ArrayBufferViews (DataView, SharedArrayBuffer-backed views).
+ * Resolves any supported input form to a Uint8Array, including cross-realm
+ * Blob-likes (detected via `arrayBuffer()`) and other ArrayBufferViews.
  */
 async function resolveInputBytes(input: HeicInput): Promise<Uint8Array> {
   if (input instanceof Uint8Array) {
@@ -55,8 +53,7 @@ async function resolveInputBytes(input: HeicInput): Promise<Uint8Array> {
   if (typeof Blob !== 'undefined' && input instanceof Blob) {
     return new Uint8Array(await input.arrayBuffer());
   }
-  // Duck-typed Blob/File from another realm: instanceof fails but the
-  // arrayBuffer() method is present and behaves identically.
+  // Cross-realm Blob/File: instanceof fails, so duck-type on arrayBuffer().
   if (
     input !== null &&
     typeof input === 'object' &&
@@ -79,16 +76,13 @@ async function resolveInputBytes(input: HeicInput): Promise<Uint8Array> {
 }
 
 /**
- * Wraps a host onProgress callback so the documented contract holds on every
- * execution path: values are normalized to finite numbers clamped to 0-100,
- * and a throwing callback can never break the conversion plumbing.
+ * Normalizes host onProgress values to finite numbers clamped to 0-100 and
+ * contains a throwing callback so it cannot break the conversion.
  */
 function normalizeProgressCallback(
   onProgress?: (percent: number) => void
 ): ((percent: number) => void) | undefined {
-  // Tolerate non-function values (e.g. null) by treating them as absent,
-  // matching the pre-normalization behavior where the decoder probed
-  // typeof before invoking.
+  // Non-function values (e.g. null) are treated as absent.
   if (typeof onProgress !== 'function') {
     return undefined;
   }
@@ -116,8 +110,7 @@ export async function convertHeic(
   input: HeicInput,
   options?: ConvertOptions
 ): Promise<Blob> {
-  // 1. Validate options before touching the input so invalid values fail
-  // fast without reading (or decoding) the potentially large file.
+  // 1. Validate options first so invalid values fail before any I/O or decode.
   if (options?.quality !== undefined) {
     validateQuality(options.quality);
   }
@@ -128,24 +121,21 @@ export async function convertHeic(
       ? options
       : undefined;
   validateResize(resizeOptions);
-  // Fail before the (expensive) WASM download + decode when the environment
-  // cannot encode — the top-level error names the real cause (no canvas)
-  // instead of a wrapped decode-stage failure.
+  // Probe the environment before the expensive WASM load so the error names
+  // the real cause (no canvas) instead of a decode-stage failure.
   assertEncodeEnvironment();
 
   // 2. Resolve input to a Uint8Array
   const buffer = await resolveInputBytes(input);
 
-  // 3. Select decoder (user-injected or a fresh default instance).
-  // A fresh instance is created per call so concurrent conversions never share
-  // mutable WASM state, and it is always released when this call completes.
+  // 3. Select decoder (user-injected or a fresh per-call instance, so
+  // concurrent conversions never share mutable WASM state).
   const decoder = options?.decoder ?? new LibheifDecoder();
   const ownsDecoder = !options?.decoder;
 
-  // Free the decoder at most once, and only if we created it (never free a
-  // user-injected decoder). It is released right after decode() to free WASM
-  // memory before the memory-hungry render/encode stage, and again in finally
-  // as a safety net for early failures (free() is idempotent).
+  // Release the owned decoder right after decode() (before the memory-hungry
+  // render/encode stage) and again in finally; never free a user-injected one.
+  // free() is idempotent.
   let decoderFreed = false;
   const freeDecoder = (): void => {
     if (!ownsDecoder || decoderFreed) {
@@ -173,8 +163,8 @@ export async function convertHeic(
 
     const decoded = await decoder.decode(buffer, normalizeProgressCallback(options?.onProgress));
 
-    // Decoded pixel data is independent of the WASM heap (see LibheifDecoder),
-    // so the decoder can be released before the render/encode stage.
+    // Pixel data is heap-independent (see LibheifDecoder), so freeing the
+    // decoder here is safe.
     freeDecoder();
 
     // 5. Render to canvas and encode to target format
@@ -182,9 +172,7 @@ export async function convertHeic(
 
     try {
       if (resizeOptions) {
-        // Pass the original options through: computeTargetSize re-validates
-        // resize fields for direct callers; validating here (step 1) makes
-        // invalid values fail before the input is read.
+
         return await renderAndEncode(decoded, format, quality, resizeOptions);
       }
       return await renderAndEncode(decoded, format, quality);
@@ -233,8 +221,7 @@ export async function convertMany(
   }
 
   const results: Blob[] = new Array(inputs.length);
-  // Destructure once so batch-only knobs (concurrency) never leak into the
-  // per-item ConvertOptions spread.
+  // Keep batch-only knobs out of the per-item options spread.
   const { concurrency: _concurrency, onProgress, ...itemOptions } = options ?? {};
   let nextIndex = 0;
   let failed = false;
@@ -268,8 +255,8 @@ export async function convertMany(
           firstErrorIndex = index;
           notifyError?.();
         } else if (otherErrorMessages.length < 2) {
-          // Keep a couple of extra messages so "one bad file" is
-          // distinguishable from "a systemic problem" without dumping all.
+          // Cap at two extra messages: distinguishes one bad file from a
+          // systemic failure without dumping the whole batch.
           otherErrorMessages.push(error instanceof Error ? error.message : String(error));
         }
       }
@@ -279,9 +266,8 @@ export async function convertMany(
   const runnerCount = Math.min(concurrency, inputs.length);
   const runners = Array.from({ length: runnerCount }, () => runItem());
 
-  // Reject as soon as the first failure is known instead of waiting for
-  // in-flight conversions to complete; they settle in the background and
-  // each releases its own decoder.
+  // Reject on the first failure; in-flight items settle in the background
+  // and release their own decoders.
   await Promise.race([Promise.all(runners), errorNotifier]);
 
   if (failed) {

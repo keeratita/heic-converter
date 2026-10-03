@@ -21,8 +21,7 @@ try {
   process.exit(1);
 }
 
-// Get current branch. A wrong branch here means pushing a release commit and
-// tag to the wrong ref, so an undetectable branch is fatal, not a warning.
+// Releasing from the wrong branch is unrecoverable once pushed: fail hard.
 let currentBranch = '';
 try {
   currentBranch = execSync('git branch --show-current').toString().trim();

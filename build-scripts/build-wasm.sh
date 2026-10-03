@@ -14,8 +14,7 @@ mkdir -p "$BUILD_DIR"
 mkdir -p "$OUT_DIR"
 mkdir -p "$(dirname "$WASM_JS_OUT")"
 
-# The tracked C++ wrapper is the single source of truth — this script must
-# never regenerate it from an embedded copy (that created two sources of truth).
+# Compile the tracked C++ wrapper directly; never regenerate it here.
 if [ ! -f "$BUILD_DIR/wrapper/main.cpp" ]; then
   echo "Error: $BUILD_DIR/wrapper/main.cpp is missing." >&2
   echo "It is a tracked first-party file; restore it with: git checkout -- build-wasm/wrapper/main.cpp" >&2
@@ -127,8 +126,7 @@ else
 fi
 cd ..
 
-# 3. Compile the WASM wrapper (tracked source of truth: build-wasm/wrapper/main.cpp;
-# existence already verified by the outer script before starting Docker)
+# 3. Compile the WASM wrapper (source: build-wasm/wrapper/main.cpp)
 echo 'Compiling WebAssembly wrapper...'
 
 # Compile to WASM with strict CSP (-s DYNAMIC_EXECUTION=0).

@@ -404,11 +404,13 @@ All errors thrown by this library are `HeicConverterError` instances (`extends E
 | `invalid_quality` | `convertHeic`, `convertMany` | `quality` outside `0.0`–`1.0` or not a finite number |
 | `invalid_resize` | `convertHeic`, `convertMany` | `scale`/`maxWidth`/`maxHeight` not positive finite numbers, or target size exceeds 16384 px |
 | `invalid_format` | `convertHeic`, `convertMany` | Unknown `to` value |
+| `invalid_concurrency` | `convertMany` | `concurrency` not a positive integer |
 | `decoder_init_failed` | `convertHeic`, `convertMany` | WASM module could not be loaded (missing asset, CSP block) |
 | `decode_failed` | `convertHeic`, `convertMany` | Invalid/corrupt HEIC bytes |
 | `unsupported_environment` | `convertHeic`, `convertMany`, `convertHeicInWorker` | No canvas APIs (e.g. Node.js) or no `Worker` global; decode raw RGBA via `LibheifDecoder` instead |
 | `render_encode_failed` | `convertHeic`, `convertMany` | Canvas render/encode failure (bad dimensions, `toBlob` returned null) |
 | `progress_callback_failed` | all conversion APIs | The host `onProgress` callback threw; message attributes the failure |
+| `worker_unsupported` | `convertHeicInWorker` | No global `Worker` (e.g. Node.js) |
 | `worker_create_failed` | `convertHeicInWorker` | `new Worker(...)` threw (wrong URL, MIME type) |
 | `worker_post_failed` | `convertHeicInWorker` | `postMessage` threw (non-cloneable option) |
 | `worker_timeout` | `convertHeicInWorker` | No result within `timeoutMs`; message includes progress/protocol diagnostics |

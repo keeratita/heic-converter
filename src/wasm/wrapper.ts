@@ -108,8 +108,7 @@ export class LibheifDecoder implements IHeicDecoder {
         moduleArgs.wasmBinary = this.options.wasmBinary;
       }
 
-      // Lazy-load the Emscripten glue so it stays out of the main bundle and
-      // is only fetched on the first actual decode (not on import).
+      // Lazy-load the glue so it is fetched on first decode, not on import.
       const promise = import('./wrapper/heic-decoder.js')
         .then(({ default: createHeicDecoderModule }) =>
           createHeicDecoderModule(moduleArgs)
@@ -117,8 +116,7 @@ export class LibheifDecoder implements IHeicDecoder {
         .then((module) => {
           const instance = new module.HeicDecoder();
           if (generation !== this.initGeneration) {
-            // free() ran while the module was loading: do not resurrect this
-            // instance; drop it so a later initialize() starts a fresh load.
+            // free() ran during the load: drop it instead of resurrecting.
             instance.delete();
             return null;
           }
@@ -127,8 +125,7 @@ export class LibheifDecoder implements IHeicDecoder {
           return module;
         })
         .catch((error) => {
-          // Reset so a failed load (e.g. transient WASM fetch failure) can be
-          // retried — but never clobber a newer init started after free().
+          // Allow a failed load to retry — but never clobber a newer init.
           if (this.initPromise === promise) {
             this.initPromise = null;
           }
@@ -161,10 +158,8 @@ export class LibheifDecoder implements IHeicDecoder {
       );
     }
 
-    // Wrap the host progress callback so it (a) can never leak an exception
-    // into WASM code — unwinding through the embind call would abort the
-    // module or leak the libheif context — and (b) always receives a value
-    // normalized to [0, 100], the documented onProgress contract.
+    // Contain host progress exceptions (unwinding through embind would abort
+    // the module) and normalize values to the documented [0, 100] range.
     let progressError: unknown;
     const wrappedProgress = onProgress
       ? (percent: number): void => {
@@ -181,9 +176,8 @@ export class LibheifDecoder implements IHeicDecoder {
     const instance = this.decoderInstance;
     let result: HeicDecoderResult | string | null;
 
-    // Bulk-load the input into the WASM heap when the newer glue exposes the
-    // pointer API: one HEAPU8.set instead of embind's per-byte std::string
-    // loop. Fall back to the std::string path on older glue builds.
+    // Fast path when the glue exports the pointer API: one HEAPU8.set instead
+    // of embind's per-byte marshalling; otherwise use the std::string path.
     if (
       typeof instance.decodeFromPointer === 'function' &&
       typeof module._malloc === 'function' &&
@@ -213,8 +207,7 @@ export class LibheifDecoder implements IHeicDecoder {
     }
 
     if (progressError !== undefined) {
-      // The decode itself succeeded, but the host callback violated its side
-      // of the contract — surface it with attribution instead of swallowing.
+      // Decode succeeded but the host callback threw — report it with cause.
       throw new HeicConverterError(
         'progress_callback_failed',
         Messages.ProgressCallbackThrew(
@@ -227,11 +220,9 @@ export class LibheifDecoder implements IHeicDecoder {
     const width = result.width;
     const height = result.height;
 
-    // DecodedImage.data must be independent of the WASM heap so results stay
-    // valid after free() and after a later decode on the same instance. The
-    // C++ wrapper builds the pixel buffer with a JS `new Uint8Array(...)`, so
-    // when we can prove it is not a heap view (newer glue exports HEAPU8) we
-    // wrap it without copying; otherwise (older glue) copy defensively.
+    // DecodedImage.data must outlive free(): the C++ wrapper allocates pixels
+    // as a JS array, so wrap without copying when HEAPU8 proves it is not a
+    // heap view; otherwise copy.
     const heapBuffer = module.HEAPU8 instanceof Uint8Array ? module.HEAPU8.buffer : undefined;
     const clampedData =
       heapBuffer !== undefined && result.data.buffer !== heapBuffer
@@ -254,16 +245,14 @@ export class LibheifDecoder implements IHeicDecoder {
    * completes after free() discards its fresh instance instead of leaking it.
    */
   free(): void {
-    // Invalidate any in-flight initialization so its .then() cannot
-    // resurrect module/decoderInstance after this free.
+    // Invalidate any in-flight initialization so it cannot resurrect state.
     this.initGeneration += 1;
     if (this.decoderInstance) {
       this.decoderInstance.delete();
       this.decoderInstance = null;
     }
     this.module = null;
-    // Drop the module reference so the WASM instance/heap can be garbage
-    // collected, and allow a later initialize() to load a fresh module.
+    // Release the module so a later initialize() loads a fresh one.
     this.initPromise = null;
   }
 }
