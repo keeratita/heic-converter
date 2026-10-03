@@ -1,59 +1,26 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-
-const mockState = vi.hoisted(() => ({
-  renderAndEncodeMock: vi.fn(async () => new Blob(['converted'], { type: 'image/png' })),
-  defaultDecodedImage: {
-    width: 1,
-    height: 1,
-    data: new Uint8ClampedArray([0, 0, 0, 255]),
-  },
-  decoderInstances: [] as Array<{
-    initialize: ReturnType<typeof vi.fn>;
-    decode: ReturnType<typeof vi.fn>;
-    free: ReturnType<typeof vi.fn>;
-  }>,
-}));
+import { mockState, resetConvertMocks } from './helpers/convert-mocks';
 
 vi.mock('../../src/render/canvas', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/render/canvas')>();
+  const { mockState } = await import('./helpers/convert-mocks');
   return {
     ...actual,
     renderAndEncode: mockState.renderAndEncodeMock,
+    assertEncodeEnvironment: mockState.assertEncodeEnvironmentMock,
   };
 });
 
-vi.mock('../../src/wasm', () => {
-  class MockLibheifDecoder {
-    initialize = vi.fn(async () => undefined);
-    decode = vi.fn(
-      async (data: Uint8Array, onProgress?: (percent: number) => void) => {
-        onProgress?.(100);
-        return {
-          ...mockState.defaultDecodedImage,
-          data: new Uint8ClampedArray(mockState.defaultDecodedImage.data),
-        };
-      },
-    );
-    free = vi.fn(() => undefined);
-
-    constructor() {
-      mockState.decoderInstances.push(this);
-    }
-  }
-
-  return {
-    LibheifDecoder: MockLibheifDecoder,
-    LibheifDecoderOptions: {},
-  };
+vi.mock('../../src/wasm', async () => {
+  const { MockLibheifDecoder } = await import('./helpers/convert-mocks');
+  return { LibheifDecoder: MockLibheifDecoder };
 });
 
-import { convertHeic, freeSharedDecoder } from '../../src/index';
+import { convertHeic } from '../../src/index';
 
 describe('convertHeic - Options', () => {
   beforeEach(() => {
-    freeSharedDecoder();
-    mockState.renderAndEncodeMock.mockClear();
-    mockState.decoderInstances.length = 0;
+    resetConvertMocks();
   });
 
   describe('Quality validation', () => {
@@ -79,6 +46,20 @@ describe('convertHeic - Options', () => {
       await expect(convertHeic(new Uint8Array([1]), { quality: '0.5' as any })).rejects.toThrow(
         'Quality must be a number between 0.0 and 1.0'
       );
+    });
+
+    it('should tag invalid quality with the invalid_quality code', async () => {
+      await expect(convertHeic(new Uint8Array([1]), { quality: 2 })).rejects.toMatchObject({
+        code: 'invalid_quality',
+      });
+    });
+
+    it('should validate quality even for formats that ignore it (png)', async () => {
+      // A 0-100 scale value like `quality: 90` is fatal regardless of format,
+      // so mistakes surface instead of silently producing default output.
+      await expect(
+        convertHeic(new Uint8Array([1]), { to: 'png', quality: 90 })
+      ).rejects.toThrow('Quality must be a number between 0.0 and 1.0');
     });
 
     it('should accept quality of exactly 0', async () => {
@@ -138,7 +119,13 @@ describe('convertHeic - Options', () => {
 
   describe('Format handling', () => {
     it('should pass through all output formats correctly', async () => {
-      const formats: Array<'jpeg' | 'jpg' | 'png' | 'svg'> = ['jpeg', 'jpg', 'png', 'svg'];
+      const formats: Array<'jpeg' | 'jpg' | 'png' | 'svg' | 'webp'> = [
+        'jpeg',
+        'jpg',
+        'png',
+        'svg',
+        'webp',
+      ];
 
       for (const format of formats) {
         mockState.renderAndEncodeMock.mockClear();
@@ -149,6 +136,18 @@ describe('convertHeic - Options', () => {
           0.92
         );
       }
+    });
+
+    it('should reject unknown formats before decoding', async () => {
+      await expect(
+        convertHeic(new Uint8Array([1]), { to: 'gif' as any })
+      ).rejects.toMatchObject({
+        code: 'invalid_format',
+        message: expect.stringContaining('Unsupported output format: gif'),
+      });
+      // Failed fast: neither the decoder nor the encoder were touched.
+      expect(mockState.decoderInstances).toHaveLength(0);
+      expect(mockState.renderAndEncodeMock).not.toHaveBeenCalled();
     });
 
     it('should use default quality when not specified', async () => {
@@ -169,6 +168,22 @@ describe('convertHeic - Options', () => {
     it('should apply quality to SVG (though ignored by encoder)', async () => {
       const result = await convertHeic(new Uint8Array([1]), { to: 'svg', quality: 0.5 });
       expect(result).toBeInstanceOf(Blob);
+    });
+  });
+
+  describe('Environment pre-check', () => {
+    it('should fail before decoding when the environment cannot encode', async () => {
+      // assertEncodeEnvironment is spied through the shared harness; make it
+      // behave like plain Node (no canvas) and verify nothing else runs.
+      mockState.assertEncodeEnvironmentMock.mockImplementationOnce(() => {
+        throw new Error('Canvas is not supported in the current environment.');
+      });
+
+      await expect(convertHeic(new Uint8Array([1]))).rejects.toThrow(
+        'Canvas is not supported in the current environment'
+      );
+      expect(mockState.decoderInstances).toHaveLength(0);
+      expect(mockState.renderAndEncodeMock).not.toHaveBeenCalled();
     });
   });
 

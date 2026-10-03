@@ -326,14 +326,15 @@
                 <div>
                     <label for="worker">Execution</label>
                     <select id="worker">
+                        <option value="worker" selected>Web Worker</option>
                         <option value="main">Main thread</option>
-                        <option value="worker">Web Worker</option>
                     </select>
                 </div>
             </div>
 
             <div class="row single-col">
                 <button id="convert" disabled>Convert image</button>
+                <button id="cancel" hidden>Cancel</button>
             </div>
 
             <div class="meter" aria-hidden="true">

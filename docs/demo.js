@@ -12,6 +12,7 @@ const qualityVal = document.getElementById('qualityVal');
 const maxWidthEl = document.getElementById('maxWidth');
 const workerEl = document.getElementById('worker');
 const convertBtn = document.getElementById('convert');
+const cancelBtn = document.getElementById('cancel');
 const progressEl = document.getElementById('progress');
 const statusEl = document.getElementById('status');
 const previewHint = document.getElementById('previewHint');
@@ -54,26 +55,81 @@ function resetOutput() {
   outputMeta.hidden = true;
   download.classList.remove('enabled');
   download.removeAttribute('download');
+  download.setAttribute('aria-disabled', 'true');
   download.setAttribute('href', '#');
   progressEl.style.width = '0%';
 }
 
-function setFile(file) {
+/** Lock the form (and show Cancel) while a conversion is in flight. */
+function setControlsEnabled(enabled) {
+  convertBtn.disabled = !enabled || !selectedFile;
+  formatEl.disabled = !enabled;
+  qualityEl.disabled = !enabled;
+  maxWidthEl.disabled = !enabled;
+  workerEl.disabled = !enabled;
+  cancelBtn.hidden = enabled;
+}
+
+// Brands that identify a HEIF/HEIC container's ftyp box (ISO-BMFF). The
+// decoder build handles the HEVC-based family plus the generic containers.
+const HEIF_BRANDS = ['heic', 'heix', 'heim', 'heis', 'hevc', 'hevm', 'hevs', 'mif1', 'msf1'];
+
+/** Content-level sniff: a .heic file name alone is not enough. */
+async function looksLikeHeicContainer(file) {
+  if (file.size < 12) {
+    return false;
+  }
+  const head = new Uint8Array(await file.slice(0, 64).arrayBuffer());
+  const fourcc = (offset) => String.fromCharCode(...head.subarray(offset, offset + 4));
+  if (fourcc(4) !== 'ftyp') {
+    return false;
+  }
+  // Scan the ftyp box: major brand at 8, compatible brands until box end.
+  const boxLength = ((head[0] << 24) | (head[1] << 16) | (head[2] << 8) | head[3]) >>> 0;
+  const end = Math.min(head.length, boxLength < 12 ? head.length : boxLength);
+  for (let offset = 8; offset + 4 <= end; offset += 4) {
+    if (HEIF_BRANDS.includes(fourcc(offset))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+async function setFile(file) {
   // Invalidate any conversion still in flight from a previous selection —
   // including when the new file is rejected, so stale completions can never
   // repopulate cleared UI state.
   conversionId++;
+  const id = conversionId;
 
-  const name = file.name.toLowerCase();
-  const isHeic = name.endsWith('.heic') || name.endsWith('.heif');
-  if (!isHeic) {
+  const reject = (message) => {
     // Clear any previous selection so the UI cannot keep acting on a stale file.
     selectedFile = null;
     fileMeta.hidden = true;
     convertBtn.disabled = true;
     fileInput.value = ''; // Allow re-selecting the same file later.
     resetOutput();
-    setStatus('Please select a .heic or .heif file.', 'error');
+    setStatus(message, 'error');
+  };
+
+  const name = file.name.toLowerCase();
+  const isHeic = name.endsWith('.heic') || name.endsWith('.heif');
+  if (!isHeic) {
+    reject('Please select a .heic or .heif file.');
+    return;
+  }
+
+  let looksLikeHeic;
+  try {
+    looksLikeHeic = await looksLikeHeicContainer(file);
+  } catch {
+    looksLikeHeic = false;
+  }
+  if (id !== conversionId) {
+    return; // Superseded while the header was being read.
+  }
+  if (!looksLikeHeic) {
+    reject('That file does not look like a HEIC/HEIF image (no HEIF ftyp header).');
     return;
   }
 
@@ -81,8 +137,8 @@ function setFile(file) {
   metaName.textContent = file.name;
   metaSize.textContent = formatBytes(file.size);
   fileMeta.hidden = false;
-  convertBtn.disabled = false;
   resetOutput();
+  setControlsEnabled(true);
   setStatus('File ready. Choose output settings and convert.');
 }
 
@@ -129,7 +185,7 @@ convertBtn.addEventListener('click', async () => {
 
   const id = ++conversionId;
   resetOutput();
-  convertBtn.disabled = true;
+  setControlsEnabled(false);
   setStatus('Converting...', '');
 
   const format = formatEl.value;
@@ -186,6 +242,7 @@ convertBtn.addEventListener('click', async () => {
     download.href = objectUrl;
     download.download = `${baseName}.${ext}`;
     download.classList.add('enabled');
+    download.removeAttribute('aria-disabled');
 
     setStatus('Conversion complete.', 'ok');
     progressEl.style.width = '100%';
@@ -202,9 +259,20 @@ convertBtn.addEventListener('click', async () => {
     progressEl.style.width = '0%';
   } finally {
     if (id === conversionId) {
-      convertBtn.disabled = false;
+      setControlsEnabled(true);
     }
   }
+});
+
+cancelBtn.addEventListener('click', () => {
+  // Cooperative cancellation: bumping conversionId makes the in-flight
+  // conversion's progress and result ignored when it eventually settles
+  // (a WASM decode cannot be aborted mid-run, so the job is left to finish
+  // harmlessly in the background).
+  conversionId++;
+  progressEl.style.width = '0%';
+  setControlsEnabled(true);
+  setStatus('Conversion cancelled.', '');
 });
 
 setStatus('Select a HEIC file to begin.');

@@ -19,6 +19,8 @@ Key design constraints:
 | --- | --- |
 | `npm run build` | Build the TS library to `dist/` (CJS + ESM + `.d.ts`) via tsup, then gzip/brotli-compress the WASM (`build-scripts/compress-wasm.mjs`) |
 | `npm run build:wasm` | Rebuild the WASM decoder (`build-scripts/build-wasm.sh`) — **requires Docker** |
+| `npm run verify:wasm` | Verify the committed Emscripten glue + WASM binary against the pinned SHA-256 hashes in `build-scripts/wasm-artifacts.json` and scan the glue for `eval`/`new Function` (runs in CI) |
+| `npm run wasm:hashes` | Regenerate `build-scripts/wasm-artifacts.json` — **must be run and committed after every `npm run build:wasm`**, or CI verification fails |
 | `npm test` / `npm run test` | Run unit tests (Vitest, Node environment) |
 | `npm run test:watch` | Run unit tests in watch mode |
 | `npm run test:e2e` | Run browser E2E tests (real conversions in the CSP sandbox + GitHub Pages demo) via Playwright — requires `npx playwright install chromium` once |
@@ -26,7 +28,7 @@ Key design constraints:
 | `npm run sandbox` | Start the interactive CSP sandbox server at `http://localhost:3000` (`test/browser/server.mjs`) |
 | `npm run lint` | ESLint over the whole repo (also runs via the `pre-commit` husky hook) |
 | `npm run sonar` | Run SonarQube scanner (`sonar-project.properties`) |
-| `npm run release [patch\|minor\|major\|current]` | Lint → build → test, then bump version, commit (`chore(release): X.Y.Z`), tag (`vX.Y.Z`), and push. Requires a clean working tree |
+| `npm run release [patch\|minor\|major\|current]` | Lint → build → test, then bump version, commit (`chore(release): X.Y.Z`), tag (`vX.Y.Z`), and push (`build-scripts/release.mjs`). Requires a clean working tree |
 
 Node `>=20` is required (see `engines`).
 

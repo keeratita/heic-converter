@@ -1,6 +1,13 @@
-const { execSync } = require('child_process');
-const readline = require('readline');
-const path = require('path');
+// Release automation (ESM). Run via `npm run release [patch|minor|major|current]`.
+import { execSync } from 'node:child_process';
+import readline from 'node:readline';
+import { createRequire } from 'node:module';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const require = createRequire(import.meta.url);
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const PKG_PATH = path.join(__dirname, '../package.json');
 
 // Check if git directory is clean
 try {
@@ -14,12 +21,25 @@ try {
   process.exit(1);
 }
 
-// Get current branch
-let currentBranch = 'main';
+// Get current branch. A wrong branch here means pushing a release commit and
+// tag to the wrong ref, so an undetectable branch is fatal, not a warning.
+let currentBranch = '';
 try {
   currentBranch = execSync('git branch --show-current').toString().trim();
-} catch (err) {
-  console.warn('⚠️ Warning: Could not detect current git branch, defaulting to "main".');
+} catch {
+  currentBranch = '';
+}
+if (!currentBranch) {
+  console.error(
+    '❌ Error: Could not detect the current git branch (detached HEAD?).\n' +
+      'Check out the branch you want to release from (e.g. `git checkout main`) and retry.'
+  );
+  process.exit(1);
+}
+
+function execDetail(err) {
+  const stderr = err.stderr ? err.stderr.toString().trim() : '';
+  return [err.message, stderr].filter(Boolean).join('\n');
 }
 
 // Function to run the release process
@@ -33,7 +53,7 @@ function runRelease(type) {
 
     if (type === 'current') {
       // Get current version from package.json
-      const pkg = require(path.join(__dirname, '../package.json'));
+      const pkg = require(PKG_PATH);
       const currentVersion = pkg.version;
       const tagName = `v${currentVersion}`;
 
@@ -50,7 +70,18 @@ function runRelease(type) {
 
       // Push tag to remote
       console.log(`\n🔄 Pushing tag ${tagName} to remote...`);
-      execSync(`git push origin ${tagName}`, { stdio: 'inherit' });
+      try {
+        execSync(`git push origin ${tagName}`, { stdio: 'inherit' });
+      } catch (err) {
+        console.error(`❌ Pushing tag ${tagName} failed:\n${execDetail(err)}`);
+        console.error(
+          `\nRecovery: the tag exists locally. Fix the remote/auth issue and run:\n` +
+            `  git push origin ${tagName}\n` +
+            `Or delete the local tag to start over:\n` +
+            `  git tag -d ${tagName}`
+        );
+        process.exit(1);
+      }
 
       console.log(`\n✅ Tag ${tagName} successfully created and pushed!`);
     } else {
@@ -60,12 +91,22 @@ function runRelease(type) {
 
       // 3. Push to git
       console.log(`\n🔄 Pushing commits and tags to remote (branch: ${currentBranch})...`);
-      execSync(`git push origin ${currentBranch} --follow-tags`, { stdio: 'inherit' });
+      try {
+        execSync(`git push origin ${currentBranch} --follow-tags`, { stdio: 'inherit' });
+      } catch (err) {
+        console.error(`❌ Push failed:\n${execDetail(err)}`);
+        console.error(
+          `\nRecovery: the version bump commit and tag exist locally. Fix the remote/auth\n` +
+            `issue and run:\n  git push origin ${currentBranch} --follow-tags\n` +
+            `Or undo the release locally:\n  git reset --hard HEAD~1 && git tag -d v<version>`
+        );
+        process.exit(1);
+      }
 
       console.log('\n✅ Release successfully completed!');
     }
   } catch (err) {
-    console.error('\n❌ Release failed:', err.message);
+    console.error('\n❌ Release failed:', execDetail(err));
     process.exit(1);
   }
 }
@@ -91,10 +132,10 @@ if (arg) {
   // Load current version for display
   let currentVersion = 'unknown';
   try {
-    const pkg = require(path.join(__dirname, '../package.json'));
+    const pkg = require(PKG_PATH);
     currentVersion = pkg.version;
   } catch (err) {
-    // Ignore
+    console.warn('⚠️ Warning: could not read version from package.json:', err.message);
   }
 
   console.log(`Current version: v${currentVersion}\n`);

@@ -9,15 +9,17 @@ on:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
+    # No submodules: CI never compiles the C++ sources (the WASM artifacts are
+    # committed and hash-verified below); `npm run build:wasm` is the only
+    # step that needs them, and it requires Docker.
     - name: Checkout Repository
-      uses: actions/checkout@v4
-      with:
-        submodules: recursive
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
     - name: Setup Node.js
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
       with:
         node-version: '22'
         cache: 'npm'
@@ -25,10 +27,13 @@ jobs:
     - name: Install Dependencies
       run: npm ci
 
+    - name: Verify WASM Artifacts (pinned hashes + CSP scan)
+      run: node build-scripts/verify-wasm-artifacts.mjs
+
     - name: Build Library
       run: npm run build
 
-    - name: Verify WASM Artifacts Exist
+    - name: Verify Build Artifacts Exist
       run: test -f dist/heic-decoder.wasm && test -f test/fixtures/example.heic
 
     - name: Run Unit Tests (coverage thresholds enforced)

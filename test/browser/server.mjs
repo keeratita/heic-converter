@@ -2,6 +2,7 @@ import http from 'http';
 import fs from 'fs';
 import path from 'path';
 import zlib from 'zlib';
+import { pipeline } from 'stream';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -29,6 +30,42 @@ const MIME_TYPES = {
 // Text-like types that benefit from gzip/brotli (the .wasm dominates the payload).
 const COMPRESSIBLE_EXTENSIONS = new Set(['.html', '.css', '.js', '.mjs', '.wasm', '.svg', '.json']);
 
+// Exact-match routes (URL path -> file on disk).
+const EXACT_ROUTES = new Map([
+  ['/', path.join(__dirname, 'index.html')],
+  ['/index.html', path.join(__dirname, 'index.html')],
+  ['/sandbox.js', path.join(__dirname, 'sandbox.js')],
+  ['/api-test.html', path.join(__dirname, 'api-test.html')],
+  ['/api-test.js', path.join(__dirname, 'api-test.js')],
+  ['/worker.js', path.join(__dirname, 'worker.js')],
+  // GitHub Pages demo (docs/) — served with ./dist/ next to it, like the
+  // deployed site artifact.
+  ['/demo', path.join(ROOT_DIR, 'docs/index.html')],
+  ['/demo/', path.join(ROOT_DIR, 'docs/index.html')],
+  ['/demo/demo.js', path.join(ROOT_DIR, 'docs/demo.js')],
+  ['/demo/worker.js', path.join(ROOT_DIR, 'docs/worker.js')],
+]);
+
+// Prefix routes: [prefix, resolver(url) -> file path].
+const PREFIX_ROUTES = [
+  ['/demo/dist/', (reqUrl) => path.join(ROOT_DIR, reqUrl.slice('/demo'.length))],
+  ['/dist/', (reqUrl) => path.join(ROOT_DIR, reqUrl)],
+  ['/test/fixtures/', (reqUrl) => path.join(ROOT_DIR, reqUrl)],
+];
+
+function resolveRoute(reqUrl) {
+  const exact = EXACT_ROUTES.get(reqUrl);
+  if (exact) {
+    return exact;
+  }
+  for (const [prefix, resolvePath] of PREFIX_ROUTES) {
+    if (reqUrl.startsWith(prefix)) {
+      return resolvePath(reqUrl);
+    }
+  }
+  return null;
+}
+
 const server = http.createServer((req, res) => {
   // Parse URL path
   let reqUrl = req.url || '/';
@@ -43,35 +80,8 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  let filePath;
-
-  // Route mapping
-  if (reqUrl === '/' || reqUrl === '/index.html') {
-    filePath = path.join(__dirname, 'index.html');
-  } else if (reqUrl === '/sandbox.js') {
-    filePath = path.join(__dirname, 'sandbox.js');
-  } else if (reqUrl === '/api-test.html') {
-    filePath = path.join(__dirname, 'api-test.html');
-  } else if (reqUrl === '/api-test.js') {
-    filePath = path.join(__dirname, 'api-test.js');
-  } else if (reqUrl === '/worker.js') {
-    filePath = path.join(__dirname, 'worker.js');
-  } else if (reqUrl === '/demo' || reqUrl === '/demo/') {
-    // GitHub Pages demo (docs/) — served with ./dist/ next to it, like the
-    // deployed site artifact.
-    filePath = path.join(ROOT_DIR, 'docs/index.html');
-  } else if (reqUrl === '/demo/demo.js') {
-    filePath = path.join(ROOT_DIR, 'docs/demo.js');
-  } else if (reqUrl === '/demo/worker.js') {
-    filePath = path.join(ROOT_DIR, 'docs/worker.js');
-  } else if (reqUrl.startsWith('/demo/dist/')) {
-    filePath = path.join(ROOT_DIR, reqUrl.slice('/demo'.length));
-  } else if (reqUrl.startsWith('/dist/')) {
-    filePath = path.join(ROOT_DIR, reqUrl);
-  } else if (reqUrl.startsWith('/test/fixtures/')) {
-    filePath = path.join(ROOT_DIR, reqUrl);
-  } else {
-    // 404
+  const filePath = resolveRoute(reqUrl);
+  if (!filePath) {
     res.writeHead(404, { 'Content-Type': 'text/plain' });
     res.end('Not Found');
     return;
@@ -139,18 +149,25 @@ const server = http.createServer((req, res) => {
 
     res.writeHead(200, headers);
 
-    const source = fs.createReadStream(encodedPath ?? resolvedPath);
-    source.on('error', () => {
+    // stream.pipeline (not .pipe) so a mid-stream error — or the browser
+    // disconnecting early — tears down every stream in the chain instead of
+    // leaking file descriptors and unobserved 'error' events.
+    const streams = [fs.createReadStream(encodedPath ?? resolvedPath)];
+    if (transform) {
+      streams.push(transform);
+    }
+    streams.push(res);
+    pipeline(...streams, (err) => {
+      if (!err) {
+        return;
+      }
       if (!res.headersSent) {
         res.writeHead(500, { 'Content-Type': 'text/plain' });
         res.end('Internal Server Error');
+      } else {
+        res.destroy();
       }
     });
-    if (transform) {
-      source.pipe(transform).pipe(res);
-    } else {
-      source.pipe(res);
-    }
   });
 });
 

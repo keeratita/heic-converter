@@ -129,25 +129,21 @@ describe('convertHeicInWorker', () => {
     await promise;
   });
 
-  it('should strip non-cloneable options (decoder, onProgress, workerUrl) from the posted message', async () => {
-    const onProgress = vi.fn();
+  it('should reject when a decoder is injected (cannot cross the worker boundary)', async () => {
     const decoder = { initialize: vi.fn(), decode: vi.fn(), free: vi.fn() };
-    const promise = convertHeicInWorker(new Uint8Array([1]), {
+
+    const error = await convertHeicInWorker(new Uint8Array([1]), {
       workerUrl: '/worker.js',
-      decoder,
-      onProgress,
+      decoder: decoder as any,
+      onProgress: vi.fn(),
       scale: 0.5,
-    });
+    }).catch((e) => e);
 
-    const worker = MockWorker.instances[0];
-    const posted = worker.posted[0] as { options: Record<string, unknown> };
-    expect(posted.options).not.toHaveProperty('decoder');
-    expect(posted.options).not.toHaveProperty('onProgress');
-    expect(posted.options).not.toHaveProperty('workerUrl');
-    expect(posted.options).toEqual({ scale: 0.5 });
-
-    worker.emit('message', { data: { type: 'result', ok: true, blob: new Blob() } });
-    await promise;
+    expect(error).toBeInstanceOf(Error);
+    expect(error.code).toBe('invalid_input');
+    expect(error.message).toContain('decoder option is not supported');
+    // Fails before any worker is even constructed.
+    expect(MockWorker.instances).toHaveLength(0);
   });
 
   it('should forward progress messages to the onProgress callback', async () => {
@@ -443,5 +439,153 @@ describe('convertHeicInWorker', () => {
 
     await expect(promise).rejects.toThrow('Failed to post message to Web Worker: boom');
     expect(MockWorker.instances[0].terminated).toBe(true);
+  });
+
+  describe('Structured error codes', () => {
+    it('should tag worker construction failures with worker_create_failed', async () => {
+      MockWorker.constructionError = new Error('worker script not found');
+
+      const error = await convertHeicInWorker(new Uint8Array([1]), {
+        workerUrl: '/missing.js',
+      }).catch((e) => e);
+      expect(error.code).toBe('worker_create_failed');
+    });
+
+    it('should tag postMessage failures with worker_post_failed', async () => {
+      MockWorker.postError = new Error('clone error');
+
+      const error = await convertHeicInWorker(new Uint8Array([1]), {
+        workerUrl: '/worker.js',
+      }).catch((e) => e);
+      expect(error.code).toBe('worker_post_failed');
+    });
+
+    it('should tag timeouts with worker_timeout', async () => {
+      const error = await convertHeicInWorker(new Uint8Array([1]), {
+        workerUrl: '/worker.js',
+        timeoutMs: 5,
+      }).catch((e) => e);
+      expect(error.code).toBe('worker_timeout');
+    });
+
+    it('should tag failed results with worker_failed', async () => {
+      const promise = convertHeicInWorker(new Uint8Array([1]), { workerUrl: '/worker.js' });
+      MockWorker.instances[0].emit('message', { data: { type: 'result', ok: false, error: 'x' } });
+
+      const error = await promise.catch((e) => e);
+      expect(error.code).toBe('worker_failed');
+    });
+
+    it('should name the worker script in the timeout diagnostic and hint at the protocol', async () => {
+      const promise = convertHeicInWorker(new Uint8Array([1]), {
+        workerUrl: '/slow-worker.js',
+        timeoutMs: 5,
+      });
+
+      const worker = MockWorker.instances[0];
+      worker.emit('message', { data: { type: 'progress', percent: 40 } });
+      worker.emit('message', { data: { type: 'log', text: 'chatty' } });
+
+      const error = await promise.catch((e) => e);
+      expect(error.message).toContain('1 progress message(s) received');
+      expect(error.message).toContain('last percent 40');
+      expect(error.message).toContain("unknown message type 'log'");
+      expect(error.message).toContain('/slow-worker.js');
+      expect(error.message).toContain('progress/result protocol');
+      expect(worker.terminated).toBe(true);
+    });
+
+    it('should hint at the worker URL and MIME type for messageless error events', async () => {
+      const promise = convertHeicInWorker(new Uint8Array([1]), { workerUrl: '/broken.js' });
+      MockWorker.instances[0].emit('error', {});
+
+      await expect(promise).rejects.toThrow('could not load worker script at /broken.js');
+    });
+  });
+
+  describe('Bounded worker concurrency', () => {
+    it('should queue calls beyond maxConcurrentWorkers and reuse free slots', async () => {
+      const firstBlob = new Blob(['a']);
+      const secondBlob = new Blob(['b']);
+
+      const p1 = convertHeicInWorker(new Uint8Array([1]), {
+        workerUrl: '/worker.js',
+        maxConcurrentWorkers: 1,
+      });
+      const p2 = convertHeicInWorker(new Uint8Array([2]), {
+        workerUrl: '/worker.js',
+        maxConcurrentWorkers: 1,
+      });
+
+      // Second call must wait for the only slot instead of spawning a worker.
+      expect(MockWorker.instances).toHaveLength(1);
+
+      MockWorker.instances[0].emit('message', { data: { type: 'result', ok: true, blob: firstBlob } });
+      await expect(p1).resolves.toBe(firstBlob);
+
+      // Slot freed: the queued call now constructs its worker.
+      await vi.waitFor(() => expect(MockWorker.instances).toHaveLength(2));
+      MockWorker.instances[1].emit('message', {
+        data: { type: 'result', ok: true, blob: secondBlob },
+      });
+      await expect(p2).resolves.toBe(secondBlob);
+    });
+
+    it('should release the slot when a queued call times out before it was granted', async () => {
+      const p1 = convertHeicInWorker(new Uint8Array([1]), {
+        workerUrl: '/worker.js',
+        maxConcurrentWorkers: 1,
+      });
+      const p2 = convertHeicInWorker(new Uint8Array([2]), {
+        workerUrl: '/worker.js',
+        maxConcurrentWorkers: 1,
+        timeoutMs: 5,
+      });
+
+      // p2 times out while still queued behind p1.
+      await expect(p2).rejects.toThrow('timed out');
+
+      // p3 queues behind p1; when p1 settles, the slot must go to p3 (a
+      // leaked cancelled queue entry would hang it instead).
+      const p3 = convertHeicInWorker(new Uint8Array([3]), {
+        workerUrl: '/worker.js',
+        maxConcurrentWorkers: 1,
+        timeoutMs: 100,
+      });
+      expect(MockWorker.instances).toHaveLength(1); // p3 still queued
+
+      MockWorker.instances[0].emit('message', { data: { type: 'result', ok: true, blob: new Blob(['y']) } });
+      await expect(p1).resolves.toBeInstanceOf(Blob);
+
+      await vi.waitFor(() => expect(MockWorker.instances).toHaveLength(2));
+      MockWorker.instances[1].emit('message', { data: { type: 'result', ok: true, blob: new Blob(['x']) } });
+      await expect(p3).resolves.toBeInstanceOf(Blob);
+    });
+  });
+
+  describe('Default timeout', () => {
+    it('should apply a 60s default timeout', async () => {
+      vi.useFakeTimers();
+      try {
+        const promise = convertHeicInWorker(new Uint8Array([1]), { workerUrl: '/worker.js' });
+        // Attach the rejection handler immediately: the fake-timer flush
+        // rejects the promise before the assertion below would attach one,
+        // which Node reports as an unhandled rejection in the meantime.
+        const settled = promise.then(
+          () => null,
+          (error: Error) => error
+        );
+
+        await vi.advanceTimersByTimeAsync(59_000);
+        expect(MockWorker.instances[0].terminated).toBe(false);
+
+        await vi.advanceTimersByTimeAsync(2_000);
+        expect(await settled).toBeInstanceOf(Error);
+        expect((await settled)!.message).toContain('timed out after 60000ms');
+        expect(MockWorker.instances[0].terminated).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 });

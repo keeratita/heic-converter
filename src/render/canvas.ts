@@ -1,12 +1,28 @@
-import { DecodedImage, ImageFormat, ResizeOptions } from '../types';
+import type { DecodedImage, ImageFormat, ResizeOptions } from '../types';
+import { SUPPORTED_FORMATS } from '../types';
 import { Messages } from '../messages';
+import { HeicConverterError } from '../errors';
 
 /**
  * Maximum supported canvas dimension per side. Browsers cap canvas sizes
  * (e.g. 16384px per side in Chrome); this guard turns absurd scale
- * factors into a clear error instead of an allocation failure.
+ * factors into a clear error instead of an allocation failure. The WASM
+ * wrapper (build-wasm/wrapper/main.cpp) enforces the same per-side cap
+ * before allocating decoded pixels — keep the two in sync.
  */
 const MAX_CANVAS_DIMENSION = 16384;
+
+/**
+ * Cheap probe for canvas support, safe to call before an expensive decode.
+ * Throws (unwrapped, with an actionable message) in environments with
+ * neither OffscreenCanvas nor HTMLCanvasElement — notably plain Node.js,
+ * where encoding is unsupported even though decoding works.
+ */
+export function assertEncodeEnvironment(): void {
+  if (typeof OffscreenCanvas === 'undefined' && typeof document === 'undefined') {
+    throw new HeicConverterError('unsupported_environment', Messages.CanvasUnsupported);
+  }
+}
 
 /**
  * Validates resize options. Throws if any value is not a positive finite number.
@@ -17,19 +33,29 @@ export function validateResize(resize?: ResizeOptions): void {
   }
   const { maxWidth, maxHeight, scale } = resize;
   if (scale !== undefined && (typeof scale !== 'number' || !Number.isFinite(scale) || scale <= 0)) {
-    throw new Error(Messages.ScaleInvalid(scale));
+    throw new HeicConverterError('invalid_resize', Messages.ScaleInvalid(scale));
   }
   if (
     maxWidth !== undefined &&
     (typeof maxWidth !== 'number' || !Number.isFinite(maxWidth) || maxWidth <= 0)
   ) {
-    throw new Error(Messages.MaxWidthInvalid(maxWidth));
+    throw new HeicConverterError('invalid_resize', Messages.MaxWidthInvalid(maxWidth));
   }
   if (
     maxHeight !== undefined &&
     (typeof maxHeight !== 'number' || !Number.isFinite(maxHeight) || maxHeight <= 0)
   ) {
-    throw new Error(Messages.MaxHeightInvalid(maxHeight));
+    throw new HeicConverterError('invalid_resize', Messages.MaxHeightInvalid(maxHeight));
+  }
+}
+
+/**
+ * Validates that a requested output format is supported (case-insensitive).
+ */
+export function validateFormat(format: ImageFormat): void {
+  const normalized = String(format).toLowerCase();
+  if (!(SUPPORTED_FORMATS as readonly string[]).includes(normalized)) {
+    throw new HeicConverterError('invalid_format', Messages.UnsupportedFormat(String(format)));
   }
 }
 
@@ -96,7 +122,7 @@ function validateTargetSize(width: number, height: number): void {
     width > MAX_CANVAS_DIMENSION ||
     height > MAX_CANVAS_DIMENSION
   ) {
-    throw new Error(Messages.TargetSizeTooLarge(width, height, MAX_CANVAS_DIMENSION));
+    throw new HeicConverterError('invalid_resize', Messages.TargetSizeTooLarge(width, height, MAX_CANVAS_DIMENSION));
   }
 }
 
@@ -112,7 +138,7 @@ export async function blobToBase64(blob: Blob): Promise<string> {
         if (typeof reader.result === 'string') {
           resolve(reader.result);
         } else {
-          reject(new Error(Messages.BlobToBase64Failed));
+          reject(new HeicConverterError('render_encode_failed', Messages.BlobToBase64Failed));
         }
       };
       reader.onerror = () => reject(reader.error);
@@ -136,7 +162,8 @@ export async function blobToBase64(blob: Blob): Promise<string> {
     const base64 = btoa(binary);
     return `data:${blob.type};base64,${base64}`;
   } catch (error) {
-    throw new Error(
+    throw new HeicConverterError(
+      'render_encode_failed',
       Messages.BlobToBase64FailedWithCause(error instanceof Error ? error.message : String(error)),
       { cause: error }
     );
@@ -163,7 +190,7 @@ export function canvasToBlob(
         if (blob) {
           resolve(blob);
         } else {
-          reject(new Error(Messages.CanvasToBlobFailed(type)));
+          reject(new HeicConverterError('render_encode_failed', Messages.CanvasToBlobFailed(type)));
         }
       },
       type,
@@ -185,7 +212,7 @@ function createCanvas(width: number, height: number): HTMLCanvasElement | Offscr
     canvas.height = height;
     return canvas;
   }
-  throw new Error(Messages.CanvasUnsupported);
+  throw new HeicConverterError('unsupported_environment', Messages.CanvasUnsupported);
 }
 
 /**
@@ -193,8 +220,11 @@ function createCanvas(width: number, height: number): HTMLCanvasElement | Offscr
  * before a long-running encode step.
  */
 function releaseCanvas(canvas: HTMLCanvasElement | OffscreenCanvas): void {
-  if (typeof (canvas as OffscreenCanvas).close === 'function') {
-    (canvas as OffscreenCanvas).close();
+  // OffscreenCanvas.close() exists at runtime but is missing from the
+  // TypeScript DOM lib, so probe it structurally.
+  const closable = canvas as OffscreenCanvas & { close?: () => void };
+  if (typeof closable.close === 'function') {
+    closable.close();
   } else {
     (canvas as HTMLCanvasElement).width = 0;
   }
@@ -234,18 +264,24 @@ export async function renderAndEncode(
   quality: number,
   resize?: ResizeOptions
 ): Promise<Blob> {
+  // Reject unknown formats before any canvas/pixel work happens.
+  validateFormat(format);
+
   const { width, height, data } = decoded;
 
   // Dimensions must be positive integers before they are used for buffer
   // sizing, canvas allocation, and SVG serialization.
   if (!Number.isInteger(width) || width <= 0 || !Number.isInteger(height) || height <= 0) {
-    throw new Error(Messages.InvalidDimensions(width, height));
+    throw new HeicConverterError('render_encode_failed', Messages.InvalidDimensions(width, height));
   }
 
   // Validate data length matches expected dimensions
   const expectedLength = width * height * 4;
   if (data.length !== expectedLength) {
-    throw new Error(Messages.DataLengthMismatch(expectedLength, width, height, data.length));
+    throw new HeicConverterError(
+      'render_encode_failed',
+      Messages.DataLengthMismatch(expectedLength, width, height, data.length)
+    );
   }
 
   const target = computeTargetSize(width, height, resize);
@@ -254,7 +290,7 @@ export async function renderAndEncode(
   const canvas = createCanvas(target.width, target.height);
   const ctx = canvas.getContext('2d') as CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null;
   if (!ctx) {
-    throw new Error(Messages.ContextUnavailable);
+    throw new HeicConverterError('render_encode_failed', Messages.ContextUnavailable);
   }
 
   if (needsResize) {
@@ -263,7 +299,7 @@ export async function renderAndEncode(
     const sourceCanvas = createCanvas(width, height);
     const sourceCtx = sourceCanvas.getContext('2d') as CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null;
     if (!sourceCtx) {
-      throw new Error(Messages.ContextUnavailable);
+      throw new HeicConverterError('render_encode_failed', Messages.ContextUnavailable);
     }
     writeImageData(sourceCtx, data, width, height);
     ctx.drawImage(sourceCanvas, 0, 0, target.width, target.height);
@@ -277,20 +313,36 @@ export async function renderAndEncode(
   const normalizedFormat = format.toLowerCase();
 
   if (normalizedFormat === 'png') {
-    return canvasToBlob(canvas, 'image/png');
-  } else if (normalizedFormat === 'jpeg' || normalizedFormat === 'jpg') {
-    return canvasToBlob(canvas, 'image/jpeg', quality);
-  } else if (normalizedFormat === 'webp') {
-    return canvasToBlob(canvas, 'image/webp', quality);
-  } else if (normalizedFormat === 'svg') {
-    // SVG wrapping of raster image
-    const pngBlob = await canvasToBlob(canvas, 'image/png');
-    const base64Url = await blobToBase64(pngBlob);
-    const svgString = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${target.width} ${target.height}" width="${target.width}" height="${target.height}">
-  <image width="${target.width}" height="${target.height}" href="${base64Url}" />
-</svg>`;
-    return new Blob([svgString], { type: 'image/svg+xml' });
-  } else {
-    throw new Error(Messages.UnsupportedFormat(format));
+    const blob = await canvasToBlob(canvas, 'image/png');
+    releaseCanvas(canvas);
+    return blob;
   }
+  if (normalizedFormat === 'jpeg' || normalizedFormat === 'jpg') {
+    const blob = await canvasToBlob(canvas, 'image/jpeg', quality);
+    releaseCanvas(canvas);
+    return blob;
+  }
+  if (normalizedFormat === 'webp') {
+    const blob = await canvasToBlob(canvas, 'image/webp', quality);
+    releaseCanvas(canvas);
+    return blob;
+  }
+  if (normalizedFormat === 'svg') {
+    // SVG wrapping of the raster image (an <image> element embedding a PNG —
+    // note this is a wrapper format, not vector output; PNG is smaller).
+    const pngBlob = await canvasToBlob(canvas, 'image/png');
+    // The canvas is fully consumed by encode; release its backing store
+    // before the base64/SVG assembly, which is the memory-heavy stage.
+    releaseCanvas(canvas);
+    const base64Url = await blobToBase64(pngBlob);
+    const svgPrefix = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${target.width} ${target.height}" width="${target.width}" height="${target.height}">
+  <image width="${target.width}" height="${target.height}" href="`;
+    const svgSuffix = `" />
+</svg>`;
+    // Assemble the Blob from parts so the base64 payload is never copied
+    // into an intermediate full-size concatenated string.
+    return new Blob([svgPrefix, base64Url, svgSuffix], { type: 'image/svg+xml' });
+  }
+  // Unreachable: validateFormat rejected other formats above.
+  throw new HeicConverterError('invalid_format', Messages.UnsupportedFormat(String(format)));
 }

@@ -2,6 +2,19 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderAndEncode } from '../../src/render/canvas';
 import { DecodedImage } from '../../src/types';
 
+interface MockContext {
+  putImageData: ReturnType<typeof vi.fn>;
+  createImageData: ReturnType<typeof vi.fn>;
+  drawImage: ReturnType<typeof vi.fn>;
+}
+
+interface MockCanvasObject {
+  width: number;
+  height: number;
+  getContext: ReturnType<typeof vi.fn>;
+  toBlob: ReturnType<typeof vi.fn>;
+}
+
 const createMockDecodedImage = (width: number, height: number): DecodedImage => ({
   width,
   height,
@@ -9,8 +22,18 @@ const createMockDecodedImage = (width: number, height: number): DecodedImage => 
 });
 
 describe('renderAndEncode - Resize', () => {
-  let mockCanvas: HTMLCanvasElement;
-  let mockCtx: CanvasRenderingContext2D;
+  let mockCtx: MockContext;
+  let createdCanvases: MockCanvasObject[];
+  // Queued getContext() results (one per canvas creation); when exhausted,
+  // the shared mockCtx is returned. Lets tests fail the source-canvas
+  // context lookup specifically.
+  let contextResults: unknown[];
+  // Per-test toBlob behaviour, shared by every canvas created in that test.
+  let toBlobImpl: (
+    callback: (blob: Blob | null) => void,
+    type?: string,
+    quality?: number
+  ) => void;
   let originalDocument: typeof document;
   let originalOffscreenCanvas: typeof OffscreenCanvas;
   let originalImageData: typeof ImageData;
@@ -26,18 +49,32 @@ describe('renderAndEncode - Resize', () => {
       putImageData: vi.fn(),
       createImageData: vi.fn(),
       drawImage: vi.fn(),
-      getContext: vi.fn(),
-    } as unknown as CanvasRenderingContext2D;
+    };
+    createdCanvases = [];
+    contextResults = [];
+    toBlobImpl = (callback) => callback(new Blob(['blob'], { type: 'image/jpeg' }));
 
-    mockCanvas = {
-      width: 0,
-      height: 0,
-      getContext: vi.fn().mockReturnValue(mockCtx),
-      toBlob: vi.fn(),
-    } as unknown as HTMLCanvasElement;
-
+    // Each createElement() yields an independent canvas: the resize path
+    // creates a target canvas first and a full-resolution source canvas
+    // second, and releaseCanvas() zeroes them at different times — sharing
+    // one stub between them would hide that.
     global.document = {
-      createElement: vi.fn().mockReturnValue(mockCanvas),
+      createElement: vi.fn(() => {
+        const results = contextResults;
+        const canvas: MockCanvasObject = {
+          width: 0,
+          height: 0,
+          getContext: vi.fn().mockImplementation(() => {
+            if (results.length > 0) {
+              return results.shift();
+            }
+            return mockCtx;
+          }),
+          toBlob: vi.fn((callback, type?, quality?) => toBlobImpl(callback, type, quality)),
+        };
+        createdCanvases.push(canvas);
+        return canvas as unknown as HTMLCanvasElement;
+      }),
     } as unknown as typeof document;
 
     global.OffscreenCanvas = undefined as unknown as typeof OffscreenCanvas;
@@ -60,26 +97,47 @@ describe('renderAndEncode - Resize', () => {
     global.FileReader = originalFileReader;
   });
 
+  /** Canvas the encoded blob comes from: created first. */
+  const targetCanvas = (): MockCanvasObject => createdCanvases[0];
+  /** Full-resolution canvas the resize path draws from: created second. */
+  const sourceCanvas = (): MockCanvasObject => createdCanvases[1];
+
   it('should downscale with scale factor and draw the source canvas scaled', async () => {
     const decoded = createMockDecodedImage(100, 100);
     const mockBlob = new Blob(['jpeg-data'], { type: 'image/jpeg' });
-    mockCanvas.toBlob = vi.fn((callback: (blob: Blob | null) => void) => {
-      callback(mockBlob);
-    });
+    toBlobImpl = (callback) => callback(mockBlob);
 
     const result = await renderAndEncode(decoded, 'jpeg', 0.92, { scale: 0.5 });
 
     expect(result.type).toBe('image/jpeg');
     expect(mockCtx.drawImage).toHaveBeenCalledWith(expect.any(Object), 0, 0, 50, 50);
-    expect(mockCanvas.toBlob).toHaveBeenCalledWith(expect.any(Function), 'image/jpeg', 0.92);
+    expect(targetCanvas().toBlob).toHaveBeenCalledWith(expect.any(Function), 'image/jpeg', 0.92);
+  });
+
+  it('should release the full-resolution source canvas before encoding', async () => {
+    const decoded = createMockDecodedImage(100, 100);
+    const mockBlob = new Blob(['jpeg-data'], { type: 'image/jpeg' });
+    const stateAtEncode: Array<{ sourceWidth: number; target: [number, number] }> = [];
+    toBlobImpl = (callback) => {
+      // Peak-memory fix: the full-res source must be released before the
+      // encode runs, while the target is still alive at its scaled size.
+      // releaseCanvas() frees the HTMLCanvasElement backing store via width=0.
+      stateAtEncode.push({
+        sourceWidth: sourceCanvas().width,
+        target: [targetCanvas().width, targetCanvas().height],
+      });
+      callback(mockBlob);
+    };
+
+    await renderAndEncode(decoded, 'jpeg', 0.92, { scale: 0.5 });
+
+    expect(stateAtEncode).toEqual([{ sourceWidth: 0, target: [50, 50] }]);
   });
 
   it('should upscale with a scale factor greater than 1', async () => {
     const decoded = createMockDecodedImage(10, 10);
     const mockBlob = new Blob(['png-data'], { type: 'image/png' });
-    mockCanvas.toBlob = vi.fn((callback: (blob: Blob | null) => void) => {
-      callback(mockBlob);
-    });
+    toBlobImpl = (callback) => callback(mockBlob);
 
     await renderAndEncode(decoded, 'png', 1, { scale: 2 });
 
@@ -88,10 +146,7 @@ describe('renderAndEncode - Resize', () => {
 
   it('should downscale to fit within maxWidth while preserving aspect ratio', async () => {
     const decoded = createMockDecodedImage(200, 100);
-    const mockBlob = new Blob(['jpeg-data'], { type: 'image/jpeg' });
-    mockCanvas.toBlob = vi.fn((callback: (blob: Blob | null) => void) => {
-      callback(mockBlob);
-    });
+    toBlobImpl = (callback) => callback(new Blob(['jpeg-data'], { type: 'image/jpeg' }));
 
     await renderAndEncode(decoded, 'jpeg', 0.92, { maxWidth: 100 });
 
@@ -100,10 +155,7 @@ describe('renderAndEncode - Resize', () => {
 
   it('should downscale to fit within maxHeight while preserving aspect ratio', async () => {
     const decoded = createMockDecodedImage(200, 100);
-    const mockBlob = new Blob(['jpeg-data'], { type: 'image/jpeg' });
-    mockCanvas.toBlob = vi.fn((callback: (blob: Blob | null) => void) => {
-      callback(mockBlob);
-    });
+    toBlobImpl = (callback) => callback(new Blob(['jpeg-data'], { type: 'image/jpeg' }));
 
     await renderAndEncode(decoded, 'jpeg', 0.92, { maxHeight: 50 });
 
@@ -113,27 +165,25 @@ describe('renderAndEncode - Resize', () => {
   it('should not upscale when maxWidth is larger than the image', async () => {
     const decoded = createMockDecodedImage(100, 100);
     const mockBlob = new Blob(['jpeg-data'], { type: 'image/jpeg' });
-    mockCanvas.toBlob = vi.fn((callback: (blob: Blob | null) => void) => {
-      callback(mockBlob);
-    });
+    toBlobImpl = (callback) => callback(mockBlob);
 
     await renderAndEncode(decoded, 'jpeg', 0.92, { maxWidth: 1000 });
 
     expect(mockCtx.drawImage).not.toHaveBeenCalled();
-    expect(mockCanvas.toBlob).toHaveBeenCalledWith(expect.any(Function), 'image/jpeg', 0.92);
+    expect(targetCanvas().toBlob).toHaveBeenCalledWith(expect.any(Function), 'image/jpeg', 0.92);
+    // No resize: only the target canvas exists.
+    expect(createdCanvases).toHaveLength(1);
   });
 
   it('should not resize when no resize options are provided', async () => {
     const decoded = createMockDecodedImage(100, 100);
-    const mockBlob = new Blob(['jpeg-data'], { type: 'image/jpeg' });
-    mockCanvas.toBlob = vi.fn((callback: (blob: Blob | null) => void) => {
-      callback(mockBlob);
-    });
+    toBlobImpl = (callback) => callback(new Blob(['jpeg-data'], { type: 'image/jpeg' }));
 
     await renderAndEncode(decoded, 'jpeg', 0.92);
 
     expect(mockCtx.drawImage).not.toHaveBeenCalled();
     expect(mockCtx.putImageData).toHaveBeenCalledTimes(1);
+    expect(createdCanvases).toHaveLength(1);
   });
 
   it('should throw when scale is invalid', async () => {
@@ -163,9 +213,7 @@ describe('renderAndEncode - Resize', () => {
   it('should use the resized dimensions in the SVG output', async () => {
     const decoded = createMockDecodedImage(200, 100);
     const mockPngBlob = new Blob(['png-data'], { type: 'image/png' });
-    mockCanvas.toBlob = vi.fn((callback: (blob: Blob | null) => void) => {
-      callback(mockPngBlob);
-    });
+    toBlobImpl = (callback) => callback(mockPngBlob);
 
     class MockFileReader {
       result: string | null = 'data:image/png;base64,cG5nLWRhdGE=';
@@ -193,34 +241,27 @@ describe('renderAndEncode - Resize', () => {
   it('should pass quality to the encoder when resizing', async () => {
     const decoded = createMockDecodedImage(100, 100);
     const mockBlob = new Blob(['webp-data'], { type: 'image/webp' });
-    mockCanvas.toBlob = vi.fn((callback: (blob: Blob | null) => void) => {
-      callback(mockBlob);
-    });
+    toBlobImpl = (callback) => callback(mockBlob);
 
     await renderAndEncode(decoded, 'webp', 0.5, { scale: 0.5 });
 
-    expect(mockCanvas.toBlob).toHaveBeenCalledWith(expect.any(Function), 'image/webp', 0.5);
+    expect(targetCanvas().toBlob).toHaveBeenCalledWith(expect.any(Function), 'image/webp', 0.5);
   });
 
   it('should not resize when scale is exactly 1', async () => {
     const decoded = createMockDecodedImage(100, 100);
-    const mockBlob = new Blob(['jpeg-data'], { type: 'image/jpeg' });
-    mockCanvas.toBlob = vi.fn((callback: (blob: Blob | null) => void) => {
-      callback(mockBlob);
-    });
+    toBlobImpl = (callback) => callback(new Blob(['jpeg-data'], { type: 'image/jpeg' }));
 
     await renderAndEncode(decoded, 'jpeg', 0.92, { scale: 1 });
 
     expect(mockCtx.drawImage).not.toHaveBeenCalled();
     expect(mockCtx.putImageData).toHaveBeenCalledTimes(1);
+    expect(createdCanvases).toHaveLength(1);
   });
 
   it('should let scale take precedence over maxWidth and maxHeight', async () => {
     const decoded = createMockDecodedImage(200, 100);
-    const mockBlob = new Blob(['jpeg-data'], { type: 'image/jpeg' });
-    mockCanvas.toBlob = vi.fn((callback: (blob: Blob | null) => void) => {
-      callback(mockBlob);
-    });
+    toBlobImpl = (callback) => callback(new Blob(['jpeg-data'], { type: 'image/jpeg' }));
 
     await renderAndEncode(decoded, 'jpeg', 0.92, { maxWidth: 50, maxHeight: 50, scale: 0.5 });
 
@@ -229,10 +270,7 @@ describe('renderAndEncode - Resize', () => {
 
   it('should keep a 1x1 image at 1x1 when downscaled', async () => {
     const decoded = createMockDecodedImage(1, 1);
-    const mockBlob = new Blob(['jpeg-data'], { type: 'image/jpeg' });
-    mockCanvas.toBlob = vi.fn((callback: (blob: Blob | null) => void) => {
-      callback(mockBlob);
-    });
+    toBlobImpl = (callback) => callback(new Blob(['jpeg-data'], { type: 'image/jpeg' }));
 
     await renderAndEncode(decoded, 'jpeg', 0.92, { scale: 0.5 });
 
@@ -243,26 +281,22 @@ describe('renderAndEncode - Resize', () => {
   it('should encode PNG with resize', async () => {
     const decoded = createMockDecodedImage(100, 100);
     const mockBlob = new Blob(['png-data'], { type: 'image/png' });
-    mockCanvas.toBlob = vi.fn((callback: (blob: Blob | null) => void) => {
-      callback(mockBlob);
-    });
+    toBlobImpl = (callback) => callback(mockBlob);
 
     await renderAndEncode(decoded, 'png', 1, { scale: 0.5 });
 
     expect(mockCtx.drawImage).toHaveBeenCalledWith(expect.any(Object), 0, 0, 50, 50);
-    expect(mockCanvas.toBlob).toHaveBeenCalledWith(expect.any(Function), 'image/png', undefined);
+    expect(targetCanvas().toBlob).toHaveBeenCalledWith(expect.any(Function), 'image/png', undefined);
   });
 
   it('should normalize jpg format with resize', async () => {
     const decoded = createMockDecodedImage(100, 100);
     const mockBlob = new Blob(['jpeg-data'], { type: 'image/jpeg' });
-    mockCanvas.toBlob = vi.fn((callback: (blob: Blob | null) => void) => {
-      callback(mockBlob);
-    });
+    toBlobImpl = (callback) => callback(mockBlob);
 
     await renderAndEncode(decoded, 'jpg', 0.8, { scale: 0.5 });
 
-    expect(mockCanvas.toBlob).toHaveBeenCalledWith(expect.any(Function), 'image/jpeg', 0.8);
+    expect(targetCanvas().toBlob).toHaveBeenCalledWith(expect.any(Function), 'image/jpeg', 0.8);
   });
 
   it('should resize with OffscreenCanvas when available', async () => {
@@ -293,16 +327,15 @@ describe('renderAndEncode - Resize', () => {
 
     expect(result).toBeInstanceOf(Blob);
     expect(mockOffscreenCtx.drawImage).toHaveBeenCalledWith(expect.any(Object), 0, 0, 50, 50);
-    expect(closeMock).toHaveBeenCalled();
+    // Both the released source and the encoded target are closed.
+    expect(closeMock).toHaveBeenCalledTimes(2);
     expect(convertToBlobMock).toHaveBeenCalledWith({ type: 'image/jpeg', quality: 0.92 });
   });
 
   it('should resize using the createImageData fallback when ImageData is unavailable', async () => {
     const decoded = createMockDecodedImage(100, 100);
     const mockBlob = new Blob(['jpeg-data'], { type: 'image/jpeg' });
-    mockCanvas.toBlob = vi.fn((callback: (blob: Blob | null) => void) => {
-      callback(mockBlob);
-    });
+    toBlobImpl = (callback) => callback(mockBlob);
 
     const createdImageData = new Uint8ClampedArray(100 * 100 * 4);
     mockCtx.createImageData = vi.fn().mockReturnValue({ data: createdImageData });
@@ -317,11 +350,8 @@ describe('renderAndEncode - Resize', () => {
 
   it('should throw when the source canvas context is unavailable', async () => {
     const decoded = createMockDecodedImage(100, 100);
-    // First getContext call (target canvas) succeeds, second (source canvas) returns null.
-    mockCanvas.getContext = vi
-      .fn()
-      .mockReturnValueOnce(mockCtx)
-      .mockReturnValueOnce(null);
+    // First canvas (target) gets a context, second (source) gets null.
+    contextResults = [mockCtx, null];
 
     await expect(renderAndEncode(decoded, 'jpeg', 0.92, { scale: 0.5 })).rejects.toThrow(
       'Failed to acquire 2D rendering context from canvas'

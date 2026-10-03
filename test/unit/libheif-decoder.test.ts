@@ -21,7 +21,7 @@ vi.mock('../../src/wasm/wrapper/heic-decoder.js', () => ({
   default: mockState.mockModuleFactory,
 }));
 
-describe('LibheifDecoder Unit Tests', () => {
+describe('LibheifDecoder (mocked glue)', () => {
   beforeEach(() => {
     mockState.mockModuleFactory.mockResolvedValue(mockState.mockModule);
     mockState.mockDecoderInstance.decode.mockClear();
@@ -346,7 +346,7 @@ describe('LibheifDecoder Unit Tests', () => {
       expect(mockState.mockDecoderInstance.decode).toHaveBeenCalledWith(mockData, null);
     });
 
-    it('should pass the progress callback when provided', async () => {
+    it('should pass a normalizing wrapper around the progress callback', async () => {
       const mockData = new Uint8Array([1, 2, 3, 4]);
       const mockResult = {
         width: 100,
@@ -360,7 +360,43 @@ describe('LibheifDecoder Unit Tests', () => {
       await decoder.initialize();
       await decoder.decode(mockData, progressCallback);
 
-      expect(mockState.mockDecoderInstance.decode).toHaveBeenCalledWith(mockData, progressCallback);
+      const [passedData, passedProgress] = mockState.mockDecoderInstance.decode.mock.calls[0];
+      expect(passedData).toBe(mockData);
+      expect(passedProgress).toBeInstanceOf(Function);
+      expect(passedProgress).not.toBe(progressCallback);
+      // Values leaving the wrapper are clamped to the documented 0-100 range.
+      passedProgress(50);
+      passedProgress(150);
+      passedProgress(-5);
+      passedProgress(Number.NaN);
+      expect(progressCallback.mock.calls.map(([percent]) => percent)).toEqual([50, 100, 0, 0]);
+    });
+
+    it('should attribute a throwing host progress callback as progress_callback_failed', async () => {
+      const mockData = new Uint8Array([1, 2, 3, 4]);
+      const mockResult = {
+        width: 100,
+        height: 100,
+        data: new Uint8Array(100 * 100 * 4),
+      };
+      mockState.mockDecoderInstance.decode.mockImplementation(
+        (_data: Uint8Array, onProgress?: (percent: number) => void) => {
+          onProgress?.(50); // host callback throws below; must not reach WASM
+          return mockResult;
+        }
+      );
+
+      const decoder = new LibheifDecoder();
+      await decoder.initialize();
+
+      const error = await decoder
+        .decode(mockData, () => {
+          throw new Error('host exploded');
+        })
+        .catch((e) => e);
+      expect(error.code).toBe('progress_callback_failed');
+      expect(error.message).toContain('onProgress callback threw during decode');
+      expect(error.message).toContain('host exploded');
     });
   });
 
@@ -383,11 +419,140 @@ describe('LibheifDecoder Unit Tests', () => {
       expect(mockState.mockModuleFactory).toHaveBeenCalledWith({ wasmBinary });
     });
 
+    it('should pass moduleOverrides through to the module factory', async () => {
+      const decoder = new LibheifDecoder({
+        moduleOverrides: { print: () => undefined },
+        wasmBinary: new ArrayBuffer(4),
+      });
+      await decoder.initialize();
+
+      const [moduleArgs] = mockState.mockModuleFactory.mock.calls[0];
+      expect(moduleArgs.print).toBeInstanceOf(Function);
+      expect(moduleArgs.wasmBinary).toBeInstanceOf(ArrayBuffer);
+    });
+
     it('should handle undefined options', async () => {
       const decoder = new LibheifDecoder(undefined);
       await decoder.initialize();
 
       expect(mockState.mockModuleFactory).toHaveBeenCalledWith({});
+    });
+  });
+
+  describe('Input fast path (decodeFromPointer) and buffer ownership', () => {
+    const heap = new ArrayBuffer(1024);
+    let fastInstance: {
+      decode: ReturnType<typeof vi.fn>;
+      decodeFromPointer: ReturnType<typeof vi.fn>;
+      delete: ReturnType<typeof vi.fn>;
+    };
+    let fastModule: Record<string, unknown>;
+
+    beforeEach(() => {
+      fastInstance = {
+        decode: vi.fn(),
+        decodeFromPointer: vi.fn(() => ({
+          width: 1,
+          height: 1,
+          data: new Uint8Array([1, 2, 3, 4]),
+        })),
+        delete: vi.fn(),
+      };
+      fastModule = {
+        HeicDecoder: class {
+          constructor() {
+            return fastInstance;
+          }
+        },
+        _malloc: vi.fn(() => 16),
+        _free: vi.fn(),
+        HEAPU8: new Uint8Array(heap),
+      };
+      mockState.mockModuleFactory.mockResolvedValue(fastModule);
+    });
+
+    it('should bulk-load input into the WASM heap and call decodeFromPointer', async () => {
+      const mockData = new Uint8Array([10, 20, 30, 40]);
+      const decoder = new LibheifDecoder();
+      await decoder.initialize();
+      const result = await decoder.decode(mockData);
+
+      expect((fastModule as { _malloc: ReturnType<typeof vi.fn> })._malloc).toHaveBeenCalledWith(4);
+      expect((fastModule as { HEAPU8: Uint8Array }).HEAPU8!.subarray(16, 20)).toEqual(
+        new Uint8Array([10, 20, 30, 40])
+      );
+      expect(fastInstance.decodeFromPointer).toHaveBeenCalledWith(16, 4, null);
+      expect(fastInstance.decode).not.toHaveBeenCalled();
+      expect((fastModule as { _free: ReturnType<typeof vi.fn> })._free).toHaveBeenCalledWith(16);
+      expect(result.width).toBe(1);
+    });
+
+    it('should free the malloc-ed input even when decodeFromPointer throws', async () => {
+      fastInstance.decodeFromPointer.mockImplementation(() => {
+        throw new Error('wasm exploded');
+      });
+      const decoder = new LibheifDecoder();
+      await decoder.initialize();
+
+      await expect(decoder.decode(new Uint8Array([1]))).rejects.toThrow('wasm exploded');
+      expect((fastModule as { _free: ReturnType<typeof vi.fn> })._free).toHaveBeenCalledWith(16);
+    });
+
+    it('should copy pixel data that is a view into the WASM heap', async () => {
+      // Glue builds that return a heap view must not leak the view to callers.
+      const heapView = new Uint8Array(heap, 0, 4);
+      heapView.set([7, 7, 7, 7]);
+      const heapModule = { ...fastModule, HEAPU8: new Uint8Array(heap) };
+      const heapInstance = {
+        decode: vi.fn(() => ({ width: 1, height: 1, data: heapView })),
+        delete: vi.fn(),
+      };
+      (heapModule as { HeicDecoder: unknown }).HeicDecoder = class {
+        constructor() {
+          return heapInstance;
+        }
+      };
+      mockState.mockModuleFactory.mockResolvedValue(heapModule);
+
+      const decoder = new LibheifDecoder();
+      await decoder.initialize();
+      const result = await decoder.decode(new Uint8Array([1]));
+
+      expect(result.data.buffer).not.toBe(heap);
+      expect(Array.from(result.data)).toEqual([7, 7, 7, 7]);
+
+      // Mutating the heap afterwards must not corrupt the returned pixels.
+      heapView.set([1, 2, 3, 4]);
+      expect(Array.from(result.data)).toEqual([7, 7, 7, 7]);
+    });
+
+    it('should share (not copy) JS-owned pixel buffers when heap is inspectable', async () => {
+      // The C++ wrapper builds pixels with a JS Uint8Array; when the glue
+      // exposes HEAPU8 we can prove the buffer is not a heap view and skip
+      // the defensive second copy.
+      const jsOwned = new Uint8Array([5, 6, 7, 8]);
+      const jsOwnedInstance = {
+        decode: vi.fn(() => ({ width: 1, height: 1, data: jsOwned })),
+        delete: vi.fn(),
+      };
+      const jsOwnedModule = {
+        ...fastModule,
+        HEAPU8: new Uint8Array(heap),
+        HeicDecoder: class {
+          constructor() {
+            return jsOwnedInstance;
+          }
+        },
+      };
+      mockState.mockModuleFactory.mockResolvedValue(jsOwnedModule);
+
+      const decoder = new LibheifDecoder();
+      await decoder.initialize();
+      const result = await decoder.decode(new Uint8Array([1]));
+
+      expect(result.data).toBeInstanceOf(Uint8ClampedArray);
+      expect(result.data.buffer).toBe(jsOwned.buffer);
+      expect(Array.from(result.data)).toEqual([5, 6, 7, 8]);
     });
   });
 });

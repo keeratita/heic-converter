@@ -1,84 +1,36 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-
-const mockState = vi.hoisted(() => ({
-  // Deliberately a pass-through: convertHeic does not re-validate decoded
-  // output — the real renderAndEncode does (covered in canvas.test.ts).
-  renderAndEncodeMock: vi.fn(async () => new Blob(['converted'], { type: 'image/png' })),
-  defaultDecodedImage: {
-    width: 1,
-    height: 1,
-    data: new Uint8ClampedArray([0, 0, 0, 255]),
-  },
-  decoderInstances: [] as Array<{
-    initialize: ReturnType<typeof vi.fn>;
-    decode: ReturnType<typeof vi.fn>;
-    free: ReturnType<typeof vi.fn>;
-  }>,
-  initializeShouldThrow: false,
-  initializeThrowValue: null as unknown,
-}));
+import { mockState, resetConvertMocks } from './helpers/convert-mocks';
 
 vi.mock('../../src/render/canvas', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/render/canvas')>();
+  const { mockState } = await import('./helpers/convert-mocks');
   return {
     ...actual,
     renderAndEncode: mockState.renderAndEncodeMock,
+    assertEncodeEnvironment: mockState.assertEncodeEnvironmentMock,
   };
 });
 
-vi.mock('../../src/wasm', () => {
-  class MockLibheifDecoder {
-    initialize = vi.fn(async () => {
-      if (mockState.initializeThrowValue !== null) {
-        throw mockState.initializeThrowValue;
-      }
-      if (mockState.initializeShouldThrow) {
-        throw new Error('Init failed');
-      }
-    });
-    decode = vi.fn(
-      async (data: Uint8Array, onProgress?: (percent: number) => void) => {
-        onProgress?.(100);
-        return {
-          ...mockState.defaultDecodedImage,
-          data: new Uint8ClampedArray(mockState.defaultDecodedImage.data),
-        };
-      },
-    );
-    free = vi.fn(() => undefined);
-
-    constructor() {
-      mockState.decoderInstances.push(this);
-    }
-  }
-
-  return {
-    LibheifDecoder: MockLibheifDecoder,
-    LibheifDecoderOptions: {},
-  };
+vi.mock('../../src/wasm', async () => {
+  const { MockLibheifDecoder } = await import('./helpers/convert-mocks');
+  return { LibheifDecoder: MockLibheifDecoder };
 });
 
 import { convertHeic, freeSharedDecoder } from '../../src/index';
 
+const makeInjectedDecoder = (decoded = { width: 1, height: 1, data: new Uint8ClampedArray([0, 0, 0, 255]) }) => ({
+  initialize: vi.fn(async () => undefined),
+  decode: vi.fn(async () => decoded),
+  free: vi.fn(() => undefined),
+});
+
 describe('convertHeic - Decoder Lifecycle', () => {
   beforeEach(() => {
-    freeSharedDecoder();
-    mockState.renderAndEncodeMock.mockClear();
-    mockState.decoderInstances.length = 0;
-    mockState.initializeShouldThrow = false;
-    mockState.initializeThrowValue = null;
+    resetConvertMocks();
   });
 
-  it('should use injected decoder instead of creating shared default decoder', async () => {
-    const injectedDecoder = {
-      initialize: vi.fn(async () => undefined),
-      decode: vi.fn(async () => ({
-        width: 2,
-        height: 2,
-        data: new Uint8ClampedArray(16),
-      })),
-      free: vi.fn(() => undefined),
-    };
+  it('should use injected decoder instead of creating a default decoder', async () => {
+    const injectedDecoder = makeInjectedDecoder({ width: 2, height: 2, data: new Uint8ClampedArray(16) });
 
     await convertHeic(new Uint8Array([1, 2, 3]), {
       to: 'svg',
@@ -95,7 +47,7 @@ describe('convertHeic - Decoder Lifecycle', () => {
     );
   });
 
-  it('should free shared decoder after each conversion and create new one for next call', async () => {
+  it('should free the per-conversion decoder after each conversion and create a new one for the next call', async () => {
     await convertHeic(new Uint8Array([1]));
 
     expect(mockState.decoderInstances).toHaveLength(1);
@@ -108,7 +60,7 @@ describe('convertHeic - Decoder Lifecycle', () => {
     expect(mockState.decoderInstances[1].free).toHaveBeenCalledTimes(1);
   });
 
-  it('should create new shared decoder after freeSharedDecoder is called', async () => {
+  it('should create a fresh decoder per conversion (freeSharedDecoder is a no-op)', async () => {
     await convertHeic(new Uint8Array([1]));
     const firstDecoder = mockState.decoderInstances[0];
 
@@ -121,16 +73,8 @@ describe('convertHeic - Decoder Lifecycle', () => {
     expect(firstDecoder.free).toHaveBeenCalledTimes(1);
   });
 
-  it('should not create shared decoder when injected decoder is used', async () => {
-    const injectedDecoder = {
-      initialize: vi.fn(async () => undefined),
-      decode: vi.fn(async () => ({
-        width: 1,
-        height: 1,
-        data: new Uint8ClampedArray([0, 0, 0, 255]),
-      })),
-      free: vi.fn(() => undefined),
-    };
+  it('should not create a default decoder when an injected decoder is used', async () => {
+    const injectedDecoder = makeInjectedDecoder();
 
     await convertHeic(new Uint8Array([1]), { decoder: injectedDecoder });
 
@@ -139,15 +83,7 @@ describe('convertHeic - Decoder Lifecycle', () => {
   });
 
   it('should reuse injected decoder between calls', async () => {
-    const injectedDecoder = {
-      initialize: vi.fn(async () => undefined),
-      decode: vi.fn(async () => ({
-        width: 1,
-        height: 1,
-        data: new Uint8ClampedArray([0, 0, 0, 255]),
-      })),
-      free: vi.fn(() => undefined),
-    };
+    const injectedDecoder = makeInjectedDecoder();
 
     await convertHeic(new Uint8Array([1]), { decoder: injectedDecoder });
     await convertHeic(new Uint8Array([2]), { decoder: injectedDecoder });
@@ -156,32 +92,38 @@ describe('convertHeic - Decoder Lifecycle', () => {
     expect(injectedDecoder.decode).toHaveBeenCalledTimes(2);
   });
 
-  describe('Shared decoder lifecycle', () => {
-    it('should free shared decoder after each conversion when no custom decoder provided', async () => {
+  describe('Per-conversion decoder lifecycle', () => {
+    it('should free the default decoder after each conversion when no custom decoder provided', async () => {
       await convertHeic(new Uint8Array([1]));
 
       expect(mockState.decoderInstances[0].free).toHaveBeenCalledTimes(1);
     });
 
     it('should not free custom injected decoder', async () => {
-      const injectedDecoder = {
-        initialize: vi.fn(async () => undefined),
-        decode: vi.fn(async () => ({
-          width: 1,
-          height: 1,
-          data: new Uint8ClampedArray([0, 0, 0, 255]),
-        })),
-        free: vi.fn(() => undefined),
-      };
+      const injectedDecoder = makeInjectedDecoder();
 
       await convertHeic(new Uint8Array([1]), { decoder: injectedDecoder });
 
       expect(injectedDecoder.free).not.toHaveBeenCalled();
     });
+
+    it('should free the default decoder before render/encode starts', async () => {
+      // Decoded pixels are a standalone copy, so the library releases the
+      // decoder immediately — before the memory-heavy encode step.
+      let freeCallsAtRender = -1;
+      mockState.renderAndEncodeMock.mockImplementation(async () => {
+        freeCallsAtRender = mockState.decoderInstances[0]?.free.mock.calls.length ?? -1;
+        return new Blob(['converted'], { type: 'image/png' });
+      });
+
+      await convertHeic(new Uint8Array([1]));
+
+      expect(freeCallsAtRender).toBe(1);
+    });
   });
 
-  describe('freeSharedDecoder', () => {
-    it('should do nothing when no shared decoder exists', () => {
+  describe('freeSharedDecoder (deprecated no-op)', () => {
+    it('should do nothing when no decoder exists', () => {
       expect(() => freeSharedDecoder()).not.toThrow();
     });
 
@@ -203,6 +145,19 @@ describe('convertHeic - Decoder Lifecycle', () => {
 
       await expect(convertHeic(new Uint8Array([1]), { decoder: failingDecoder }))
         .rejects.toThrow('Initialize failed');
+    });
+
+    it('should tag initialize failures on injected decoders with decoder_init_failed code', async () => {
+      const failingDecoder = {
+        initialize: vi.fn().mockRejectedValue(new Error('Initialize failed')),
+        decode: vi.fn(),
+        free: vi.fn(),
+      };
+
+      const error = await convertHeic(new Uint8Array([1]), { decoder: failingDecoder }).catch((e) => e);
+      // Injected-decoder init failures are wrapped with context and a code.
+      expect(error.code).toBe('decoder_init_failed');
+      expect(error.message).toContain('Failed to initialize HEIC decoder: Initialize failed');
     });
 
     it('should handle decoder.decode that throws', async () => {
@@ -240,15 +195,7 @@ describe('convertHeic - Decoder Lifecycle', () => {
     });
 
     it('should not call free on custom decoder even when conversion fails', async () => {
-      const customDecoder = {
-        initialize: vi.fn().mockResolvedValue(undefined),
-        decode: vi.fn().mockResolvedValue({
-          width: 1,
-          height: 1,
-          data: new Uint8ClampedArray([0, 0, 0, 255]),
-        }),
-        free: vi.fn(),
-      };
+      const customDecoder = makeInjectedDecoder();
 
       mockState.renderAndEncodeMock.mockRejectedValue(new Error('Render failed'));
 
@@ -278,12 +225,15 @@ describe('convertHeic - Decoder Lifecycle', () => {
     });
 
     it('should free the default decoder when decode throws', async () => {
-      const promise = convertHeic(new Uint8Array([1]));
-      const decoder = mockState.decoderInstances[0];
-      decoder.decode.mockRejectedValue(new Error('Decode failed'));
+      // Configure the failure before starting: convertHeic reaches the
+      // decoder only after an awaited input-resolution step, so the mock
+      // instance does not exist yet when convertHeic() returns its promise.
+      mockState.decodeImpl = async () => {
+        throw new Error('Decode failed');
+      };
 
-      await expect(promise).rejects.toThrow('Decode failed');
-      expect(decoder.free).toHaveBeenCalledTimes(1);
+      await expect(convertHeic(new Uint8Array([1]))).rejects.toThrow('Decode failed');
+      expect(mockState.decoderInstances[0].free).toHaveBeenCalledTimes(1);
     });
 
     it('should free the default decoder when renderAndEncode throws', async () => {

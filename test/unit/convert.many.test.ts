@@ -1,91 +1,65 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-
-const mockState = vi.hoisted(() => {
-  const state = {
-    renderAndEncodeMock: vi.fn(async (decoded: { data: Uint8ClampedArray }) =>
-      new Blob([String(decoded.data[0])], { type: 'image/png' })
-    ),
-    defaultDecodedImage: {
-      width: 1,
-      height: 1,
-      data: new Uint8ClampedArray([0, 0, 0, 255]),
-    },
-    decoderInstances: [] as Array<{
-      initialize: ReturnType<typeof vi.fn>;
-      decode: ReturnType<typeof vi.fn>;
-      free: ReturnType<typeof vi.fn>;
-    }>,
-    rejectWithNull: false,
-    active: 0,
-    maxActive: 0,
-    resetConcurrency: () => {
-      state.active = 0;
-      state.maxActive = 0;
-    },
-    getMaxActive: () => state.maxActive,
-  };
-  return state;
-});
+import { mockState, resetConvertMocks, type DecodeImpl } from './helpers/convert-mocks';
 
 vi.mock('../../src/render/canvas', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/render/canvas')>();
+  const { mockState } = await import('./helpers/convert-mocks');
   return {
     ...actual,
     renderAndEncode: mockState.renderAndEncodeMock,
+    assertEncodeEnvironment: mockState.assertEncodeEnvironmentMock,
   };
 });
 
-vi.mock('../../src/wasm', () => {
-  class MockLibheifDecoder {
-    initialize = vi.fn(async () => undefined);
-    decode = vi.fn(
-      async (data: Uint8Array, onProgress?: (percent: number) => void) => {
-        mockState.active += 1;
-        mockState.maxActive = Math.max(mockState.maxActive, mockState.active);
-        // Input 1 is slow so conversions finish out of order; inputs 8 and 9
-        // fail fast (with distinct messages) so failures win the race.
-        const value = data[0];
-        const delay = value === 1 ? 50 : value === 8 || value === 9 ? 5 : 10;
-        await new Promise((resolve) => setTimeout(resolve, delay));
-        mockState.active -= 1;
-        if (mockState.rejectWithNull) {
-          throw null;
-        }
-        if (value === 8) {
-          throw new Error('decode failed for input 8');
-        }
-        if (value === 9) {
-          throw new Error('decode failed for input 9');
-        }
-        onProgress?.(100);
-        return {
-          width: 1,
-          height: 1,
-          data: new Uint8ClampedArray([value ?? 0, 0, 0, 255]),
-        };
-      },
-    );
-    free = vi.fn(() => undefined);
-
-    constructor() {
-      mockState.decoderInstances.push(this);
-    }
-  }
-
-  return {
-    LibheifDecoder: MockLibheifDecoder,
-    LibheifDecoderOptions: {},
-  };
+vi.mock('../../src/wasm', async () => {
+  const { MockLibheifDecoder } = await import('./helpers/convert-mocks');
+  return { LibheifDecoder: MockLibheifDecoder };
 });
 
 import { convertMany } from '../../src/index';
 
+// Input 1 is slow so conversions finish out of order; inputs 8 and 9 fail
+// fast (with distinct messages) so failures win the race; input 7 fails
+// synchronously (before the delay) so multi-failure counting is deterministic.
+const active = { count: 0, max: 0 };
+let rejectWithNull = false;
+
+const batchDecodeImpl: DecodeImpl = async (data, onProgress) => {
+  const value = data[0];
+  if (value === 7) {
+    throw new Error('decode failed for input 7');
+  }
+  active.count += 1;
+  active.max = Math.max(active.max, active.count);
+  const delay = value === 1 ? 50 : value === 8 || value === 9 ? 5 : 10;
+  await new Promise((resolve) => setTimeout(resolve, delay));
+  active.count -= 1;
+  if (rejectWithNull) {
+    throw null;
+  }
+  if (value === 8) {
+    throw new Error('decode failed for input 8');
+  }
+  if (value === 9) {
+    throw new Error('decode failed for input 9');
+  }
+  onProgress?.(100);
+  return {
+    width: 1,
+    height: 1,
+    data: new Uint8ClampedArray([value ?? 0, 0, 0, 255]),
+  };
+};
+
+const renderFromPixel = async (decoded: { data: Uint8ClampedArray }): Promise<Blob> =>
+  new Blob([String(decoded.data[0])], { type: 'image/png' });
+
 describe('convertMany', () => {
   beforeEach(() => {
-    mockState.renderAndEncodeMock.mockClear();
-    mockState.decoderInstances.length = 0;
-    mockState.rejectWithNull = false;
-    mockState.resetConcurrency();
+    resetConvertMocks({ renderAndEncode: renderFromPixel, decodeImpl: batchDecodeImpl });
+    rejectWithNull = false;
+    active.count = 0;
+    active.max = 0;
   });
 
   it('should convert all inputs and return results in input order', async () => {
@@ -114,16 +88,17 @@ describe('convertMany', () => {
 
     await convertMany(inputs, { concurrency: 2 });
 
-    expect(mockState.getMaxActive()).toBe(2);
+    expect(active.max).toBe(2);
     expect(mockState.decoderInstances).toHaveLength(5);
   });
 
   it('should default to concurrency of 4', async () => {
-    const inputs = Array.from({ length: 8 }, (_, i) => new Uint8Array([i]));
+    // Values 10..17: avoids the 7/8/9 failure sentinels and the 1 slow value.
+    const inputs = Array.from({ length: 8 }, (_, i) => new Uint8Array([i + 10]));
 
     await convertMany(inputs);
 
-    expect(mockState.getMaxActive()).toBe(4);
+    expect(active.max).toBe(4);
   });
 
   it('should run sequentially with concurrency of 1', async () => {
@@ -131,7 +106,7 @@ describe('convertMany', () => {
 
     await convertMany(inputs, { concurrency: 1 });
 
-    expect(mockState.getMaxActive()).toBe(1);
+    expect(active.max).toBe(1);
   });
 
   it('should run all conversions at once when concurrency exceeds the input count', async () => {
@@ -139,14 +114,49 @@ describe('convertMany', () => {
 
     await convertMany(inputs, { concurrency: 10 });
 
-    expect(mockState.getMaxActive()).toBe(3);
+    expect(active.max).toBe(3);
   });
 
   it('should convert a single input', async () => {
-    const results = await convertMany([new Uint8Array([7])]);
+    // Value 42: any byte value works as long as it is not a failure sentinel.
+    const results = await convertMany([new Uint8Array([42])]);
 
     expect(results).toHaveLength(1);
-    expect(await results[0].text()).toBe('7');
+    expect(await results[0].text()).toBe('42');
+  });
+
+  it('should not leak batch-only options into per-item conversion options', async () => {
+    // `concurrency` is a batch knob and must not disturb per-item option
+    // forwarding: item options still reach the encoder untouched.
+    await convertMany([new Uint8Array([1])], { concurrency: 3, to: 'png', quality: 0.4 });
+
+    expect(mockState.renderAndEncodeMock).toHaveBeenCalledWith(expect.any(Object), 'png', 0.4);
+    expect(mockState.decoderInstances).toHaveLength(1);
+  });
+
+  it('should reuse one injected decoder across items and never free it', async () => {
+    const injected = {
+      initialize: vi.fn(async () => undefined),
+      decode: vi.fn(async (data: Uint8Array) => ({
+        width: 1,
+        height: 1,
+        data: new Uint8ClampedArray([data[0], 0, 0, 255]),
+      })),
+      free: vi.fn(),
+    };
+
+    const results = await convertMany([new Uint8Array([1]), new Uint8Array([2])], {
+      decoder: injected,
+      concurrency: 1,
+    });
+
+    expect(results).toHaveLength(2);
+    expect(injected.initialize).toHaveBeenCalledTimes(2);
+    expect(injected.decode).toHaveBeenCalledTimes(2);
+    // The library never frees a user-injected decoder.
+    expect(injected.free).not.toHaveBeenCalled();
+    // And no default decoders were created.
+    expect(mockState.decoderInstances).toHaveLength(0);
   });
 
   it('should pass through format and quality options', async () => {
@@ -199,6 +209,18 @@ describe('convertMany', () => {
     );
   });
 
+  it('should carry structured batch failure fields', async () => {
+    const inputs = [new Uint8Array([1]), new Uint8Array([9]), new Uint8Array([3])];
+
+    const error = await convertMany(inputs).catch((e) => e);
+    expect(error.code).toBe('batch_item_failed');
+    expect(error.itemIndex).toBe(1); // 0-based index of the failing item
+    expect(error.itemTotal).toBe(3);
+    expect(error.failedCount).toBe(1);
+    expect(error.cause).toBeInstanceOf(Error);
+    expect((error.cause as Error).message).toContain('decode failed for input 9');
+  });
+
   it('should report the first failure in time, not the lowest index', async () => {
     // Item 1 (index 1) fails fast while item 0 is still decoding slowly.
     const inputs = [new Uint8Array([1]), new Uint8Array([8]), new Uint8Array([9])];
@@ -216,8 +238,38 @@ describe('convertMany', () => {
     );
   });
 
+  it('should summarize multiple failures in the message', async () => {
+    // Value 7 fails synchronously, so both failures are recorded before the
+    // race rejection continues and the summary is deterministic.
+    const inputs = [new Uint8Array([7]), new Uint8Array([7])];
+
+    const error = await convertMany(inputs, { concurrency: 2 }).catch((e) => e);
+    expect(error.failedCount).toBe(2);
+    expect(error.message).toContain('(2 of 2 items failed in total)');
+    expect(error.message).toContain('other errors:');
+  });
+
+  it('should free decoders of in-flight items after an early batch rejection', async () => {
+    // Item 0 fails fast; item 1 keeps decoding. After the batch rejects, the
+    // in-flight conversion must still release its own decoder.
+    const inputs = [new Uint8Array([9]), new Uint8Array([1])]; // value 1 = slow
+
+    await expect(convertMany(inputs, { concurrency: 2 })).rejects.toThrow(
+      'decode failed for input 9'
+    );
+
+    await vi.waitFor(() => {
+      expect(mockState.decoderInstances).toHaveLength(2);
+      mockState.decoderInstances.forEach((decoder) => {
+        // Failed item's decoder is freed via finally; the in-flight item's
+        // decoder is freed once its background conversion completes.
+        expect(decoder.free).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
   it('should wrap a null rejection with the item index', async () => {
-    mockState.rejectWithNull = true;
+    rejectWithNull = true;
 
     await expect(convertMany([new Uint8Array([1])])).rejects.toThrow(
       'Conversion of item 1 of 1 failed: null'

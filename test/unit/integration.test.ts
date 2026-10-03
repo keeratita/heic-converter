@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, vi } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -13,21 +13,30 @@ const ALPHA_FIXTURE_PATH = path.resolve(__dirname, '../fixtures/colors-with-alph
 
 const hasWasm = fs.existsSync(WASM_PATH);
 const hasFixture = fs.existsSync(FIXTURE_PATH) && fs.existsSync(ALPHA_FIXTURE_PATH);
+const isCI = typeof process !== 'undefined' && !!process.env.CI;
 
 if (!hasWasm || !hasFixture) {
-  console.warn(
-    '[integration] Real-WASM integration suite is SKIPPED because dist/heic-decoder.wasm or test/fixtures are missing — run `npm run build` first.'
-  );
+  if (isCI) {
+    // CI must never silently skip the real-WASM pipeline: a missing build or
+    // artifact would hide regressions. Let beforeAll crash the suite instead.
+    console.error(
+      '[integration] dist/heic-decoder.wasm or test fixtures are missing in CI — this suite will FAIL.'
+    );
+  } else {
+    console.warn(
+      '[integration] Real-WASM integration suite is SKIPPED because dist/heic-decoder.wasm or test/fixtures are missing — run `npm run build` first.'
+    );
+  }
 }
 
 /**
  * Integration tests exercising the real WASM decoder with a real HEIC fixture.
  *
  * These run in Node, which can decode but not canvas-encode (see the last
- * test). They are skipped automatically when the build artifacts or fixtures
- * are missing — run `npm run build` first.
+ * test). Outside CI they are skipped automatically when build artifacts or
+ * fixtures are missing (run `npm run build` first); on CI they fail hard.
  */
-describe.skipIf(!hasWasm || !hasFixture)('Integration Tests - Real WASM Pipeline', () => {
+describe.skipIf((!hasWasm || !hasFixture) && !isCI)('Integration Tests - Real WASM Pipeline', () => {
   let heicBytes: Uint8Array;
   let wasmBinary: ArrayBuffer;
 
@@ -113,18 +122,24 @@ describe.skipIf(!hasWasm || !hasFixture)('Integration Tests - Real WASM Pipeline
     expect(progressValues[progressValues.length - 1]).toBe(100);
     progressValues.forEach((value) => {
       expect(Number.isFinite(value)).toBe(true);
+      // Documented onProgress contract: normalized into [0, 100].
+      expect(value).toBeGreaterThanOrEqual(0);
+      expect(value).toBeLessThanOrEqual(100);
     });
   });
 
   it('should reject convertHeic in Node.js environments (no canvas) with a clear error', async () => {
     // convertHeic needs canvas APIs for encoding, which Node.js lacks — this is
     // documented behavior: Node users decode raw RGBA and encode externally.
-    // The decoder is injected (with the WASM binary) so the failure comes from
-    // the missing canvas, not from module loading.
+    // The environment probe runs before decoding, so the injected decoder must
+    // not even be initialized (fail fast, no wasted WASM load/decode).
     const decoder = new LibheifDecoder({ wasmBinary });
+    const initSpy = vi.spyOn(decoder, 'initialize');
 
-    await expect(convertHeic(heicBytes, { to: 'png', decoder })).rejects.toThrow(
-      'Canvas is not supported'
-    );
+    const error = await convertHeic(heicBytes, { to: 'png', decoder }).catch((e) => e);
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).toContain('Canvas is not supported');
+    expect(error.code).toBe('unsupported_environment');
+    expect(initSpy).not.toHaveBeenCalled();
   });
 });

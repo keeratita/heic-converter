@@ -1,10 +1,12 @@
 name: Publish
 
+# Tag pushes are the only publish path (release.js creates the tags).
+# workflow_dispatch was removed on purpose: it let anyone with write access
+# publish arbitrary branch content to npm.
 on:
   push:
     tags:
       - 'v*'
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -13,13 +15,17 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Configure required reviewers / branch protection for this environment in
+    # the repo's Settings → Environments (it is auto-created on first run).
+    environment: npm-publish
 
     steps:
     - name: Checkout Repository
-      uses: actions/checkout@v4
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
     - name: Setup Node.js
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
       with:
         node-version: '24' # npm >= 11.5.1 is required for trusted publishing
         registry-url: 'https://registry.npmjs.org'
@@ -37,10 +43,13 @@ jobs:
           exit 1
         fi
 
+    - name: Verify WASM Artifacts (pinned hashes + CSP scan)
+      run: node build-scripts/verify-wasm-artifacts.mjs
+
     - name: Build Library
       run: npm run build
 
-    - name: Verify WASM Artifacts Exist
+    - name: Verify Build Artifacts Exist
       run: test -f dist/heic-decoder.wasm && test -f dist/heic-decoder.wasm.gz && test -f dist/heic-decoder.wasm.br
 
     - name: Run Unit Tests
