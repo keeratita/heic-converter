@@ -1,6 +1,7 @@
 import http from 'http';
 import fs from 'fs';
 import path from 'path';
+import zlib from 'zlib';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -24,6 +25,9 @@ const MIME_TYPES = {
   '.heif': 'image/heif',
   '.json': 'application/json'
 };
+
+// Text-like types that benefit from gzip/brotli (the .wasm dominates the payload).
+const COMPRESSIBLE_EXTENSIONS = new Set(['.html', '.css', '.js', '.mjs', '.wasm', '.svg', '.json']);
 
 const server = http.createServer((req, res) => {
   // Parse URL path
@@ -91,6 +95,30 @@ const server = http.createServer((req, res) => {
     const ext = path.extname(resolvedPath).toLowerCase();
     const contentType = MIME_TYPES[ext] || 'application/octet-stream';
 
+    let encodedPath = null;
+    let transform = null;
+    let contentEncoding = null;
+    if (COMPRESSIBLE_EXTENSIONS.has(ext)) {
+      const acceptEncoding = req.headers['accept-encoding'] || '';
+      const wantsBr = /\bbr\b/.test(acceptEncoding);
+      const wantsGzip = /\bgzip\b/.test(acceptEncoding);
+      // Prefer the pre-compressed artifacts emitted by the build; fall back
+      // to compressing on the fly so the sandbox mirrors what a CDN does.
+      if (wantsBr && fs.existsSync(`${resolvedPath}.br`)) {
+        encodedPath = `${resolvedPath}.br`;
+        contentEncoding = 'br';
+      } else if (wantsGzip && fs.existsSync(`${resolvedPath}.gz`)) {
+        encodedPath = `${resolvedPath}.gz`;
+        contentEncoding = 'gzip';
+      } else if (wantsBr) {
+        transform = zlib.createBrotliCompress();
+        contentEncoding = 'br';
+      } else if (wantsGzip) {
+        transform = zlib.createGzip();
+        contentEncoding = 'gzip';
+      }
+    }
+
     // Headers including the strict CSP header
     const headers = {
       'Content-Type': contentType,
@@ -104,16 +132,25 @@ const server = http.createServer((req, res) => {
       'Content-Security-Policy': "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' blob: data:; connect-src 'self';"
     };
 
+    if (contentEncoding) {
+      headers['Content-Encoding'] = contentEncoding;
+      headers['Vary'] = 'Accept-Encoding';
+    }
+
     res.writeHead(200, headers);
 
-    const stream = fs.createReadStream(resolvedPath);
-    stream.on('error', () => {
+    const source = fs.createReadStream(encodedPath ?? resolvedPath);
+    source.on('error', () => {
       if (!res.headersSent) {
         res.writeHead(500, { 'Content-Type': 'text/plain' });
         res.end('Internal Server Error');
       }
     });
-    stream.pipe(res);
+    if (transform) {
+      source.pipe(transform).pipe(res);
+    } else {
+      source.pipe(res);
+    }
   });
 });
 

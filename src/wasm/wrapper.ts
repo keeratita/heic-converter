@@ -1,6 +1,5 @@
 import { IHeicDecoder, DecodedImage } from '../types';
 import { Messages } from '../messages';
-import createHeicDecoderModule from './wrapper/heic-decoder.js';
 
 export interface LibheifDecoderOptions {
   /**
@@ -73,7 +72,12 @@ export class LibheifDecoder implements IHeicDecoder {
         moduleArgs.wasmBinary = this.options.wasmBinary;
       }
 
-      this.initPromise = createHeicDecoderModule(moduleArgs)
+      // Lazy-load the Emscripten glue so it stays out of the main bundle and
+      // is only fetched on the first actual decode (not on import).
+      this.initPromise = import('./wrapper/heic-decoder.js')
+        .then(({ default: createHeicDecoderModule }) =>
+          createHeicDecoderModule(moduleArgs)
+        )
         .then((module) => {
           this.module = module;
           this.decoderInstance = new module.HeicDecoder();

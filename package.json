@@ -24,7 +24,7 @@
     "node": ">=20.0.0"
   },
   "scripts": {
-    "build": "tsup",
+    "build": "tsup && node build-scripts/compress-wasm.mjs",
     "build:wasm": "bash build-scripts/build-wasm.sh",
     "test": "vitest run",
     "test:watch": "vitest",
