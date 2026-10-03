@@ -1,0 +1,100 @@
+import { describe, expect, it } from 'vitest';
+import { Messages } from '../../src/messages';
+
+/**
+ * Message builders are the single source of user-facing error text. These
+ * tests pin the template contracts (including the optional-detail branches
+ * of the worker diagnostics) so callers' message assertions stay stable.
+ */
+describe('Messages', () => {
+  describe('index.ts builders', () => {
+    it('formats the core validation messages', () => {
+      expect(Messages.QualityInvalid(2)).toContain('Quality must be a number between 0.0 and 1.0, got: 2');
+      expect(Messages.UnsupportedInputType('[object Object]')).toContain('Got: [object Object]');
+      expect(Messages.DecoderInitFailed('boom')).toBe('Failed to initialize HEIC decoder: boom');
+      expect(Messages.RenderEncodeFailed('png', 'oops')).toContain('as png: oops');
+      expect(Messages.ConcurrencyInvalid(0)).toContain('got: 0');
+      expect(Messages.InputsMustBeArray).toBe('Inputs must be an array of HEIC images');
+      expect(Messages.ConvertManyItemFailed(2, 3, 'nope')).toBe(
+        'Conversion of item 2 of 3 failed: nope'
+      );
+      expect(Messages.ConvertManyExtraFailures(4, 5)).toBe(' (4 of 5 items failed in total)');
+    });
+  });
+
+  describe('render/canvas.ts builders', () => {
+    it('formats resize, canvas, and render messages', () => {
+      expect(Messages.ScaleInvalid(0)).toContain('Scale must be a positive finite number, got: 0');
+      expect(Messages.MaxWidthInvalid(-5)).toContain('maxWidth must be a positive finite number');
+      expect(Messages.MaxHeightInvalid(Number.NaN)).toContain('maxHeight must be a positive finite number');
+      expect(Messages.TargetSizeTooLarge(20000, 10, 16384)).toContain('16384');
+      expect(Messages.BlobToBase64Failed).toContain('base64');
+      expect(Messages.BlobToBase64FailedWithCause('io')).toContain('io');
+      expect(Messages.CanvasToBlobFailed('image/png')).toContain('image/png');
+      expect(Messages.CanvasUnsupported).toContain('Canvas is not supported');
+      expect(Messages.InvalidDimensions(0, -1)).toContain('0');
+      expect(Messages.DataLengthMismatch(40000, 100, 100, 1000)).toContain('40000');
+      expect(Messages.ContextUnavailable).toContain('2D rendering context');
+      expect(Messages.UnsupportedFormat('gif')).toContain('gif');
+    });
+  });
+
+  describe('wasm builders', () => {
+    it('formats decode failure messages with input size context', () => {
+      expect(Messages.DecodeFailed(6)).toContain('input: 6 bytes');
+      expect(Messages.DecodeFailedWithDetail('truncated', 6)).toContain('truncated');
+      expect(Messages.DecodeFailedWithDetail('truncated', 6)).toContain('input: 6 bytes');
+      expect(Messages.ProgressCallbackThrew('host')).toContain('onProgress callback threw');
+      expect(Messages.ProgressCallbackThrew('host')).toContain('host');
+    });
+  });
+
+  describe('worker builders', () => {
+    it('names the worker script when a URL is known', () => {
+      const message = Messages.WorkerFailed('/worker.js');
+      expect(message).toContain('Worker failed');
+      expect(message).toContain('could not load worker script at /worker.js');
+      expect(message).toContain('text/javascript');
+    });
+
+    it('falls back to a bare message when the worker URL is unknown', () => {
+      expect(Messages.WorkerFailed()).toBe('Worker failed');
+      expect(Messages.WorkerFailed(undefined)).toBe('Worker failed');
+    });
+
+    it('accepts URL instances in the failure hint', () => {
+      const url = new URL('https://example.com/w.js');
+      expect(Messages.WorkerFailed(url)).toContain(String(url));
+    });
+
+    it('formats minimal timeout diagnostics', () => {
+      const message = Messages.WorkerTimeout(5000, { progressMessages: 0 });
+      expect(message).toContain('timed out after 5000ms');
+      expect(message).toContain('0 progress message(s) received');
+      expect(message).not.toContain('last percent');
+      expect(message).not.toContain('unknown message type');
+      expect(message).toContain('Increase timeoutMs');
+    });
+
+    it('formats full timeout diagnostics with percent, unknown type, and worker URL', () => {
+      const message = Messages.WorkerTimeout(1000, {
+        progressMessages: 3,
+        lastPercent: 40,
+        unknownType: 'log',
+        workerUrl: '/slow.js',
+      });
+      expect(message).toContain('3 progress message(s) received');
+      expect(message).toContain('last percent 40');
+      expect(message).toContain("last unknown message type 'log'");
+      expect(message).toContain('worker /slow.js');
+    });
+
+    it('includes the create/post failure causes verbatim', () => {
+      expect(Messages.WorkerCreateFailed('SecurityError')).toContain('SecurityError');
+      expect(Messages.WorkerPostFailed('DataCloneError')).toContain('DataCloneError');
+      expect(Messages.WorkerConversionFailed).toContain('Worker conversion failed');
+      expect(Messages.WorkerUnsupported).toContain('Web Worker is not supported');
+      expect(Messages.WorkerDecoderUnsupported).toContain('decoder option is not supported');
+    });
+  });
+});

@@ -66,10 +66,8 @@ function defaultMaxWorkers(): number {
 }
 
 /**
- * Per-workerUrl bookkeeping: `inputs.map(i => convertHeicInWorker(i, …))`
- * must not start an unbounded number of workers, each with its own thread,
- * compiled WASM module, and grown linear-memory heap. Calls beyond the cap
- * queue until an earlier call settles.
+ * Per-workerUrl concurrency bookkeeping: calls beyond the cap queue until an
+ * earlier call settles, so a batch cannot spawn unbounded workers.
  */
 const workerSlots = new Map<string, { active: number; waiters: Array<() => void> }>();
 
@@ -130,6 +128,13 @@ function reserveWorkerSlot(key: string, max: number, start: (release: () => void
   }
   return release;
 }
+
+/** @internal Semaphore unit-test hooks; not part of the public API. */
+export const __semaphoreTestHooks = {
+  reserveWorkerSlot,
+  workerSlots,
+  defaultMaxWorkers,
+};
 
 /**
  * Converts a HEIC image inside a Web Worker so the main thread stays

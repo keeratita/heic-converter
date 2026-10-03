@@ -555,4 +555,82 @@ describe('LibheifDecoder (mocked glue)', () => {
       expect(Array.from(result.data)).toEqual([5, 6, 7, 8]);
     });
   });
+
+  describe('Initialization races with free()', () => {
+    it('should reject decode when freed while the module is loading', async () => {
+      let resolveFactory: ((module: unknown) => void) | undefined;
+      mockState.mockModuleFactory.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveFactory = resolve;
+          })
+      );
+
+      const decoder = new LibheifDecoder();
+      const decoding = decoder.decode(new Uint8Array([1, 2, 3, 4]));
+      const settled = decoding.catch((e) => e);
+      await new Promise((r) => setTimeout(r, 0)); // let the glue import reach the factory
+
+      decoder.free(); // abandons the in-flight load
+      resolveFactory!(mockState.mockModule);
+
+      const error = await settled;
+      expect(error.code).toBe('decode_failed');
+      expect(error.message).toContain('Decoder was freed before decoding completed');
+      expect(mockState.mockDecoderInstance.delete).toHaveBeenCalled();
+      expect(mockState.mockDecoderInstance.decode).not.toHaveBeenCalled();
+    });
+
+    it('should not clobber a newer initialization when a stale load rejects', async () => {
+      let rejectFirst: ((error: unknown) => void) | undefined;
+      mockState.mockModuleFactory
+        .mockImplementationOnce(
+          () =>
+            new Promise((_resolve, reject) => {
+              rejectFirst = reject;
+            })
+        )
+        .mockImplementationOnce(() => Promise.resolve(mockState.mockModule));
+
+      const decoder = new LibheifDecoder();
+      const first = decoder.initialize();
+      // Let the first glue import settle (factory invoked, load pending)
+      // before starting the second one, mirroring real-world timing.
+      await new Promise((r) => setTimeout(r, 0));
+      decoder.free(); // abandons the first load
+      await decoder.initialize(); // newer load succeeds
+
+      rejectFirst!(new Error('stale load failed'));
+      await expect(first).rejects.toThrow('stale load failed');
+
+      mockState.mockDecoderInstance.decode.mockReturnValue({
+        width: 1,
+        height: 1,
+        data: new Uint8Array([0, 0, 0, 255]),
+      });
+      const result = await decoder.decode(new Uint8Array([1]));
+      expect(result.width).toBe(1);
+    });
+
+    it('should report a non-Error progress throw via its string form', async () => {
+      mockState.mockDecoderInstance.decode.mockImplementation(
+        (_data: Uint8Array, onProgress?: (percent: number) => void) => {
+          onProgress?.(50);
+          return { width: 1, height: 1, data: new Uint8Array([0, 0, 0, 255]) };
+        }
+      );
+
+      const decoder = new LibheifDecoder();
+      await decoder.initialize();
+
+      const error = await decoder
+        .decode(new Uint8Array([1]), () => {
+          throw 'boom-string';
+        })
+        .catch((e) => e);
+      expect(error.code).toBe('progress_callback_failed');
+      expect(error.message).toContain('boom-string');
+      expect(error.cause).toBe('boom-string');
+    });
+  });
 });

@@ -124,6 +124,20 @@ describe('convertHeic - Input Types', () => {
     expect(Array.from(decodedInput)).toEqual([4, 5, 6]);
   });
 
+  it('should reject blob-likes whose arrayBuffer() resolves to a non-ArrayBuffer', async () => {
+    // Duck typing accepts any object with arrayBuffer(); if the resolved
+    // value is not an ArrayBuffer the input must fall through to the
+    // unsupported-type error instead of decoding undefined.
+    const brokenBlobLike = {
+      arrayBuffer: async () => 'not-an-arraybuffer',
+    } as unknown as Blob;
+
+    const error = await convertHeic(brokenBlobLike).catch((e) => e);
+    expect(error.code).toBe('invalid_input');
+    expect(error.message).toContain('Unsupported input type');
+    expect(mockState.decoderInstances).toHaveLength(0);
+  });
+
   it('should accept other ArrayBufferViews (DataView)', async () => {
     const view = new DataView(new ArrayBuffer(3));
     view.setUint8(0, 7);

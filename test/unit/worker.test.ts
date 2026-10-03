@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { convertHeicInWorker } from '../../src/worker';
+import { convertHeicInWorker, __semaphoreTestHooks } from '../../src/worker';
 
 class MockWorker {
   static instances: MockWorker[] = [];
@@ -587,5 +587,142 @@ describe('convertHeicInWorker', () => {
         vi.useRealTimers();
       }
     });
+  });
+});
+
+/**
+ * Direct unit tests for the per-URL worker-slot semaphore. These exercise
+ * state-machine branches (double release, cancelled/ignored grants) that the
+ * public API cannot reach, via the @internal test hooks.
+ */
+describe('worker slot semaphore (internal hooks)', () => {
+  const { reserveWorkerSlot, workerSlots } = __semaphoreTestHooks;
+  const KEY = 'semaphore-test-key';
+
+  afterEach(() => {
+    workerSlots.clear();
+  });
+
+  it('grants immediately when below the cap and prunes the entry when idle', () => {
+    let captured: (() => void) | undefined;
+    reserveWorkerSlot(KEY, 1, (release) => {
+      captured = release;
+    });
+    expect(workerSlots.get(KEY)?.active).toBe(1);
+
+    captured!();
+    expect(workerSlots.has(KEY)).toBe(false);
+  });
+
+  it('is a no-op on double release', () => {
+    const releases: Array<() => void> = [];
+    reserveWorkerSlot(KEY, 2, (release) => releases.push(release));
+    reserveWorkerSlot(KEY, 2, (release) => releases.push(release));
+    expect(workerSlots.get(KEY)?.active).toBe(2);
+
+    releases[0]();
+    releases[0](); // second release must not decrement again
+    expect(workerSlots.get(KEY)?.active).toBe(1);
+  });
+
+  it('queues beyond the cap and drains in order', () => {
+    const order: number[] = [];
+    const releases: Array<() => void> = [];
+    reserveWorkerSlot(KEY, 1, (release) => {
+      order.push(0);
+      releases.push(release);
+    });
+    reserveWorkerSlot(KEY, 1, (release) => {
+      order.push(1);
+      releases.push(release);
+    });
+    expect(order).toEqual([0]);
+
+    releases[0](); // drains the queued reservation synchronously
+    expect(order).toEqual([0, 1]);
+    releases[1]();
+    expect(workerSlots.has(KEY)).toBe(false);
+  });
+
+  it('drops a queued reservation released before it starts', () => {
+    const releases: Array<() => void> = [];
+    reserveWorkerSlot(KEY, 1, (release) => releases.push(release));
+    const releaseQueued = reserveWorkerSlot(KEY, 1, (release) => releases.push(release));
+    expect(workerSlots.get(KEY)?.waiters).toHaveLength(1);
+
+    releaseQueued(); // cancelled while still queued
+    expect(workerSlots.get(KEY)?.waiters).toHaveLength(0);
+
+    releases[0](); // queued reservation must not start
+    expect(releases).toHaveLength(1);
+    expect(workerSlots.has(KEY)).toBe(false);
+  });
+
+  it('tolerates release after its grant was already dequeued', () => {
+    let releaseFirst: (() => void) | undefined;
+    reserveWorkerSlot(KEY, 1, (release) => {
+      releaseFirst = release;
+    });
+    const releaseQueued = reserveWorkerSlot(KEY, 1, () => {
+      throw new Error('must not start');
+    });
+    workerSlots.get(KEY)!.waiters.length = 0; // grant no longer in line
+    expect(() => releaseQueued()).not.toThrow();
+    expect(workerSlots.get(KEY)?.active).toBe(1);
+    releaseFirst!();
+  });
+
+  it('ignores a grant invoked after its release', () => {
+    let started = false;
+    const release = reserveWorkerSlot(KEY, 0, () => {
+      started = true;
+    });
+    const queuedGrant = workerSlots.get(KEY)!.waiters[0];
+
+    release();
+    queuedGrant(); // must be ignored
+    expect(started).toBe(false);
+  });
+});
+
+describe('defaultMaxWorkers', () => {
+  const { defaultMaxWorkers } = __semaphoreTestHooks;
+  let originalNavigator: PropertyDescriptor | undefined;
+
+  beforeEach(() => {
+    originalNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  });
+
+  afterEach(() => {
+    if (originalNavigator) {
+      Object.defineProperty(globalThis, 'navigator', originalNavigator);
+    } else {
+      delete (globalThis as { navigator?: unknown }).navigator;
+    }
+  });
+
+  function withNavigator(value: unknown, assert: () => void): void {
+    Object.defineProperty(globalThis, 'navigator', { value, configurable: true });
+    try {
+      assert();
+    } finally {
+      if (originalNavigator) {
+        Object.defineProperty(globalThis, 'navigator', originalNavigator);
+      } else {
+        delete (globalThis as { navigator?: unknown }).navigator;
+      }
+    }
+  }
+
+  it('clamps hardwareConcurrency to 1-8', () => {
+    withNavigator({ hardwareConcurrency: 2 }, () => expect(defaultMaxWorkers()).toBe(2));
+    withNavigator({ hardwareConcurrency: 99 }, () => expect(defaultMaxWorkers()).toBe(8));
+    withNavigator({ hardwareConcurrency: 0 }, () => expect(defaultMaxWorkers()).toBe(1));
+  });
+
+  it('falls back to 4 without a numeric core count', () => {
+    withNavigator({}, () => expect(defaultMaxWorkers()).toBe(4));
+    withNavigator({ hardwareConcurrency: 'many' }, () => expect(defaultMaxWorkers()).toBe(4));
+    withNavigator(undefined, () => expect(defaultMaxWorkers()).toBe(4));
   });
 });

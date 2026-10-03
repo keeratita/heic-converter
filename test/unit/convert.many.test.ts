@@ -19,24 +19,25 @@ vi.mock('../../src/wasm', async () => {
 import { convertMany } from '../../src/index';
 
 // Input 1 is slow so conversions finish out of order; inputs 8 and 9 fail
-// fast (with distinct messages) so failures win the race; input 7 fails
-// synchronously (before the delay) so multi-failure counting is deterministic.
+// fast (with distinct messages) so failures win the race; inputs 5, 6, 7 and
+// 18 fail synchronously (before the delay) so multi-failure counting and the
+// other-errors cap are deterministic.
 const active = { count: 0, max: 0 };
 let rejectWithNull = false;
 
 const batchDecodeImpl: DecodeImpl = async (data, onProgress) => {
   const value = data[0];
-  if (value === 7) {
-    throw new Error('decode failed for input 7');
+  if (value === 7 || value === 6 || value === 5 || value === 18) {
+    throw new Error(`decode failed for input ${value}`);
+  }
+  if (rejectWithNull) {
+    throw null;
   }
   active.count += 1;
   active.max = Math.max(active.max, active.count);
   const delay = value === 1 ? 50 : value === 8 || value === 9 ? 5 : 10;
   await new Promise((resolve) => setTimeout(resolve, delay));
   active.count -= 1;
-  if (rejectWithNull) {
-    throw null;
-  }
   if (value === 8) {
     throw new Error('decode failed for input 8');
   }
@@ -247,6 +248,35 @@ describe('convertMany', () => {
     expect(error.failedCount).toBe(2);
     expect(error.message).toContain('(2 of 2 items failed in total)');
     expect(error.message).toContain('other errors:');
+  });
+
+  it('should cap the other-errors list at two extra messages', async () => {
+    // All four items fail synchronously: item 0 (value 7) is the first
+    // failure; values 6 and 5 fill the other-errors list; value 18 must be
+    // dropped so the message stays bounded.
+    const inputs = [7, 6, 5, 18].map((v) => new Uint8Array([v]));
+
+    const error = await convertMany(inputs, { concurrency: 4 }).catch((e) => e);
+    expect(error.code).toBe('batch_item_failed');
+    expect(error.itemIndex).toBe(0);
+    expect(error.itemTotal).toBe(4);
+    expect(error.failedCount).toBe(4);
+    expect(error.message).toContain('(4 of 4 items failed in total)');
+    expect(error.message).toContain(
+      'other errors: decode failed for input 6 | decode failed for input 5'
+    );
+    expect(error.message).not.toContain('input 18');
+  });
+
+  it('should stringify non-Error rejections in the other-errors list', async () => {
+    // Second failure rejects with a non-Error value; the summary must
+    // stringify it instead of dropping it.
+    rejectWithNull = true;
+    const inputs = [new Uint8Array([7]), new Uint8Array([2])];
+
+    const error = await convertMany(inputs, { concurrency: 2 }).catch((e) => e);
+    expect(error.failedCount).toBe(2);
+    expect(error.message).toContain('other errors: null');
   });
 
   it('should free decoders of in-flight items after an early batch rejection', async () => {
