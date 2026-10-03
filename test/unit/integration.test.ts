@@ -163,6 +163,73 @@ describe.skipIf((!hasWasm || !hasFixture) && !isCI)('Integration Tests - Real WA
     decoder.free();
   });
 
+  describe('EXIF passthrough (DecodedImage.exif)', () => {
+    const EXIF_MARKER = [0x45, 0x78, 0x69, 0x66, 0x00, 0x00]; // "Exif\0\0"
+
+    const decodeFixture = async (file: string) => {
+      const decoder = new LibheifDecoder({ wasmBinary });
+      await decoder.initialize();
+      const decoded = await decoder.decode(new Uint8Array(fs.readFileSync(file)));
+      return { decoder, decoded };
+    };
+
+    const expectExifBlock = (exif: Uint8Array | undefined): Uint8Array => {
+      expect(exif).toBeInstanceOf(Uint8Array);
+      const block = exif as Uint8Array;
+      expect(block.length).toBeGreaterThanOrEqual(14); // marker + minimal TIFF
+      expect(Array.from(block.subarray(0, 6))).toEqual(EXIF_MARKER);
+      const le = block[6] === 0x49 && block[7] === 0x49;
+      const be = block[6] === 0x4d && block[7] === 0x4d;
+      expect(le || be).toBe(true);
+      const magic = le
+        ? block[8] | (block[9] << 8)
+        : (block[8] << 8) | block[9];
+      expect(magic).toBe(42);
+      return block;
+    };
+
+    it('exposes the normalized "Exif\\0\\0"+TIFF block for Exif-item files', async () => {
+      const { decoder, decoded } = await decodeFixture(ORIENTED_FIXTURE_PATH);
+      const block = expectExifBlock(decoded.exif);
+      // The fixture carries orientation 6: the 0x0112 entry must be inside
+      // the preserved TIFF (byte order per the TIFF header).
+      const le = block[6] === 0x49;
+      const tag = le ? [0x12, 0x01] : [0x01, 0x12];
+      const found = Array.from(block).some(
+        (_, i) => block[i] === tag[0] && block[i + 1] === tag[1]
+      );
+      expect(found).toBe(true);
+      decoder.free();
+    });
+
+    it('reports the Exif block even when irot already drove orientation (preservation is unguarded)', async () => {
+      // Apple-style fixture: irot/imir present means orientation stays
+      // undefined, but the Exif item still exists and must be exposed for
+      // preserveExif consumers.
+      const { decoder, decoded } = await decodeFixture(IROT_FIXTURE_PATH);
+      expect(decoded.orientation).toBeUndefined();
+      expectExifBlock(decoded.exif);
+      decoder.free();
+    });
+
+    it('omits the exif field for files without an Exif item', async () => {
+      const { decoder, decoded } = await decodeFixture(FIXTURE_PATH);
+      expect(decoded.exif).toBeUndefined();
+      decoder.free();
+    });
+
+    it('keeps the exif block fully readable after the decoder is freed', async () => {
+      const { decoder, decoded } = await decodeFixture(ORIENTED_FIXTURE_PATH);
+      const copy = decoded.exif ? Array.from(decoded.exif) : undefined;
+      decoder.free();
+
+      // Owned copy: still matches what was read before free(), never a
+      // dangling WASM-heap view (which would read zeros after memory reuse).
+      expect(decoded.exif && Array.from(decoded.exif)).toEqual(copy);
+      expect(copy && copy.length).toBeGreaterThanOrEqual(14);
+    });
+  });
+
   it('should reject convertHeic in Node.js environments (no canvas) with a clear error', async () => {
     // convertHeic needs canvas APIs for encoding, which Node.js lacks — this is
     // documented behavior: Node users decode raw RGBA and encode externally.

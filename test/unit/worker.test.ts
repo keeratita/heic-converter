@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { convertHeicInWorker, __semaphoreTestHooks } from '../../src/worker';
+import {
+  convertHeicInWorker,
+  convertManyInWorker,
+  __semaphoreTestHooks,
+} from '../../src/worker';
 
 class MockWorker {
   static instances: MockWorker[] = [];
@@ -756,5 +760,293 @@ describe('defaultMaxWorkers', () => {
     withNavigator({}, () => expect(defaultMaxWorkers()).toBe(4));
     withNavigator({ hardwareConcurrency: 'many' }, () => expect(defaultMaxWorkers()).toBe(4));
     withNavigator(undefined, () => expect(defaultMaxWorkers()).toBe(4));
+  });
+});
+
+describe('convertHeicInWorker - cancellation and output shapes', () => {
+  let originalWorker: typeof Worker;
+
+  beforeEach(() => {
+    originalWorker = globalThis.Worker;
+    MockWorker.instances.length = 0;
+    MockWorker.constructionError = null;
+    MockWorker.postError = null;
+    globalThis.Worker = MockWorker as unknown as typeof Worker;
+  });
+
+  afterEach(() => {
+    globalThis.Worker = originalWorker;
+  });
+
+  it('rejects an already-aborted signal with aborted and never constructs a worker', async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    const error = await convertHeicInWorker(new Uint8Array([1]), {
+      workerUrl: '/abort-early.js',
+      signal: controller.signal,
+    }).catch((e) => e);
+
+    expect(error).toMatchObject({ code: 'aborted' });
+    expect(MockWorker.instances).toHaveLength(0);
+  });
+
+  it('rejects a malformed signal with invalid_input before constructing a worker', async () => {
+    const error = await convertHeicInWorker(new Uint8Array([1]), {
+      workerUrl: '/abort-badsignal.js',
+      signal: {} as unknown as AbortSignal,
+    }).catch((e) => e);
+
+    expect(error).toMatchObject({ code: 'invalid_input' });
+    expect(MockWorker.instances).toHaveLength(0);
+  });
+
+  it('terminates the worker and rejects with aborted when the signal fires mid-flight', async () => {
+    const controller = new AbortController();
+    const promise = convertHeicInWorker(new Uint8Array([1]), {
+      workerUrl: '/abort-mid.js',
+      signal: controller.signal,
+    });
+
+    controller.abort();
+
+    const error = await promise.catch((e) => e);
+    expect(error).toMatchObject({ code: 'aborted' });
+    expect(MockWorker.instances[0].terminated).toBe(true);
+  });
+
+  it('does not post the (non-cloneable) signal to the worker', async () => {
+    const controller = new AbortController();
+    const promise = convertHeicInWorker(new Uint8Array([1]), {
+      workerUrl: '/abort-post.js',
+      signal: controller.signal,
+      to: 'png',
+    });
+
+    const worker = MockWorker.instances[0];
+    const posted = worker.posted[0] as { options: Record<string, unknown> };
+    expect(posted.options).toEqual({ to: 'png' });
+
+    worker.emit('message', { data: { type: 'result', ok: true, blob: new Blob() } });
+    await promise;
+  });
+
+  it('resolves with a data URL string when the worker was told to emit dataUrl', async () => {
+    const promise = convertHeicInWorker(new Uint8Array([1]), {
+      workerUrl: '/out-dataurl.js',
+      output: 'dataUrl',
+    });
+
+    MockWorker.instances[0].emit('message', {
+      data: { type: 'result', ok: true, blob: 'data:image/png;base64,AAAA' },
+    });
+
+    await expect(promise).resolves.toBe('data:image/png;base64,AAAA');
+  });
+
+  it('resolves with an ArrayBuffer when the worker was told to emit arrayBuffer', async () => {
+    const promise = convertHeicInWorker(new Uint8Array([1]), {
+      workerUrl: '/out-arraybuffer.js',
+      output: 'arrayBuffer',
+    });
+
+    const bytes = new ArrayBuffer(4);
+    MockWorker.instances[0].emit('message', {
+      data: { type: 'result', ok: true, blob: bytes },
+    });
+
+    await expect(promise).resolves.toBe(bytes);
+  });
+});
+
+describe('convertManyInWorker', () => {
+  let originalWorker: typeof Worker;
+  let urlSeq = 0;
+
+  const uniqueUrl = () => `/many-${urlSeq++}.js`;
+
+  const emitResult = (worker: MockWorker, blob: Blob) =>
+    worker.emit('message', { data: { type: 'result', ok: true, blob } });
+  const emitFailure = (worker: MockWorker, error: string) =>
+    worker.emit('message', { data: { type: 'result', ok: false, error } });
+
+  beforeEach(() => {
+    originalWorker = globalThis.Worker;
+    MockWorker.instances.length = 0;
+    MockWorker.constructionError = null;
+    MockWorker.postError = null;
+    globalThis.Worker = MockWorker as unknown as typeof Worker;
+  });
+
+  afterEach(() => {
+    globalThis.Worker = originalWorker;
+  });
+
+  it('converts all inputs in input order with bounded concurrency', async () => {
+    const blob = new Blob(['x'], { type: 'image/png' });
+    const promise = convertManyInWorker(
+      [new Uint8Array([1]), new Uint8Array([2]), new Uint8Array([3])],
+      { workerUrl: uniqueUrl(), maxConcurrentWorkers: 2 }
+    );
+
+    // Two items start immediately; the third waits for a runner to free up.
+    expect(MockWorker.instances).toHaveLength(2);
+
+    emitResult(MockWorker.instances[0], blob);
+    // The runner claims the queued item after the awaited promise settles
+    // (microtask hops), so flush before observing the third worker.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(MockWorker.instances).toHaveLength(3);
+    emitResult(MockWorker.instances[1], blob);
+    emitResult(MockWorker.instances[2], blob);
+
+    const results = await promise;
+    expect(results).toHaveLength(3);
+    expect(results[0]).toBe(blob);
+    expect(results[2]).toBe(blob);
+  });
+
+  it('rejects with batch_item_failed naming the failing item', async () => {
+    const promise = convertManyInWorker([new Uint8Array([1]), new Uint8Array([2])], {
+      workerUrl: uniqueUrl(),
+      maxConcurrentWorkers: 2,
+    });
+
+    emitResult(MockWorker.instances[0], new Blob(['a']));
+    emitFailure(MockWorker.instances[1], 'corrupt HEIC');
+
+    const error = await promise.catch((e) => e);
+    expect(error).toMatchObject({ code: 'batch_item_failed', itemIndex: 1, itemTotal: 2 });
+    expect(error.message).toContain('corrupt HEIC');
+    expect(MockWorker.instances[1].terminated).toBe(true);
+  });
+
+  it('continueOnError fulfills with per-item ok/error entries', async () => {
+    const blob = new Blob(['a'], { type: 'image/png' });
+    const onProgress = vi.fn();
+    const promise = convertManyInWorker([new Uint8Array([1]), new Uint8Array([2])], {
+      workerUrl: uniqueUrl(),
+      maxConcurrentWorkers: 2,
+      continueOnError: true,
+      onProgress,
+    });
+
+    emitResult(MockWorker.instances[0], blob);
+    emitFailure(MockWorker.instances[1], 'one bad file');
+
+    const results = await promise;
+    expect(results[0]).toMatchObject({ index: 0, ok: true });
+    expect((results[0] as { result: Blob }).result).toBe(blob);
+    expect(results[1]).toMatchObject({ index: 1, ok: false });
+    expect((results[1] as { error: { code: string } }).error.code).toBe('worker_failed');
+    // Progress fired only for the successful item.
+    expect(onProgress).toHaveBeenCalledWith(0, 100);
+    expect(onProgress.mock.calls.every(([index]) => index === 0)).toBe(true);
+  });
+
+  it('forwards per-item progress as (index, percent)', async () => {
+    const onProgress = vi.fn();
+    const promise = convertManyInWorker([new Uint8Array([1]), new Uint8Array([2])], {
+      workerUrl: uniqueUrl(),
+      maxConcurrentWorkers: 2,
+      onProgress,
+    });
+
+    MockWorker.instances[1].emit('message', { data: { type: 'progress', percent: 40 } });
+    expect(onProgress).toHaveBeenCalledWith(1, 40);
+
+    emitResult(MockWorker.instances[0], new Blob(['a']));
+    emitResult(MockWorker.instances[1], new Blob(['b']));
+    await promise;
+
+    expect(onProgress).toHaveBeenCalledWith(0, 100);
+    expect(onProgress).toHaveBeenCalledWith(1, 100);
+  });
+
+  it('strips batch-only, worker-only, and non-cloneable options from the post payload', async () => {
+    const controller = new AbortController();
+    const promise = convertManyInWorker([new Uint8Array([1])], {
+      workerUrl: uniqueUrl(),
+      workerType: 'module',
+      maxConcurrentWorkers: 2,
+      timeoutMs: 5000,
+      continueOnError: true,
+      signal: controller.signal,
+      onProgress: vi.fn(),
+      to: 'webp',
+      output: 'dataUrl',
+      quality: 0.5,
+    });
+
+    const posted = MockWorker.instances[0].posted[0] as { options: Record<string, unknown> };
+    expect(posted.options).toEqual({ to: 'webp', output: 'dataUrl', quality: 0.5 });
+
+    emitResult(MockWorker.instances[0], new Blob(['a']));
+    await promise;
+  });
+
+  it('applies the output shape inside the worker (dataUrl results pass through)', async () => {
+    const promise = convertManyInWorker([new Uint8Array([1]), new Uint8Array([2])], {
+      workerUrl: uniqueUrl(),
+      maxConcurrentWorkers: 2,
+      output: 'dataUrl',
+    });
+
+    emitResult(MockWorker.instances[0], 'data:image/png;base64,AAA' as never);
+    emitResult(MockWorker.instances[1], 'data:image/png;base64,BBB' as never);
+
+    const results = await promise;
+    expect(results).toEqual(['data:image/png;base64,AAA', 'data:image/png;base64,BBB']);
+  });
+
+  it('rejects mid-batch abort with aborted and terminates active workers', async () => {
+    const controller = new AbortController();
+    const promise = convertManyInWorker(
+      [new Uint8Array([1]), new Uint8Array([2]), new Uint8Array([3])],
+      { workerUrl: uniqueUrl(), maxConcurrentWorkers: 2, signal: controller.signal }
+    );
+
+    controller.abort();
+
+    const error = await promise.catch((e) => e);
+    expect(error).toMatchObject({ code: 'aborted' });
+    expect(MockWorker.instances[0].terminated).toBe(true);
+    expect(MockWorker.instances[1].terminated).toBe(true);
+  });
+
+  it.each([
+    ['quality 5', { quality: 5 }, 'invalid_quality'],
+    ['bogus output', { output: 'bogus' }, 'invalid_input'],
+    ['injected decoder', { decoder: {} }, 'invalid_input'],
+    ['bad continueOnError', { continueOnError: 'yes' }, 'invalid_input'],
+    ['malformed crop', { crop: { x: 0, y: 0, width: 0, height: 5 } }, 'invalid_crop'],
+    ['malformed signal', { signal: {} }, 'invalid_input'],
+  ] as Array<[string, Record<string, unknown>, string]>)(
+    'validates %s up front without constructing a worker',
+    async (_label, extra, code) => {
+      const error = await convertManyInWorker([new Uint8Array([1])], {
+        workerUrl: uniqueUrl(),
+        ...extra,
+      } as never).catch((e) => e);
+      expect(error).toMatchObject({ code });
+      expect(MockWorker.instances).toHaveLength(0);
+    }
+  );
+
+  it('rejects non-array inputs with invalid_input', async () => {
+    const error = await convertManyInWorker('not-an-array' as never, {
+      workerUrl: uniqueUrl(),
+    }).catch((e) => e);
+    expect(error).toMatchObject({ code: 'invalid_input' });
+    expect(error.message).toContain('array');
+  });
+
+  it('rejects with worker_unsupported when Worker is unavailable', async () => {
+    globalThis.Worker = undefined as unknown as typeof Worker;
+
+    const error = await convertManyInWorker([new Uint8Array([1])], {
+      workerUrl: uniqueUrl(),
+    }).catch((e) => e);
+    expect(error).toMatchObject({ code: 'worker_unsupported' });
   });
 });

@@ -43,8 +43,9 @@ describe('convertHeic - Input Types', () => {
       'jpeg',
       0.92,
       undefined,
-      true
-    );
+      true,
+      undefined,
+    false);
   });
 
   it('should convert Blob input and forward format, quality, and progress callback', async () => {
@@ -72,8 +73,9 @@ describe('convertHeic - Input Types', () => {
       'png',
       0.5,
       undefined,
-      true
-    );
+      true,
+      undefined,
+    false);
   });
 
   it('should normalize out-of-range progress values and gate 100% on success', async () => {

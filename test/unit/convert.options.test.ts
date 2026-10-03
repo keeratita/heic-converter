@@ -17,6 +17,7 @@ vi.mock('../../src/wasm', async () => {
 });
 
 import { convertHeic } from '../../src/index';
+import { HeicConverterError } from '../../src/errors';
 
 describe('convertHeic - Options', () => {
   beforeEach(() => {
@@ -80,8 +81,9 @@ describe('convertHeic - Options', () => {
         'jpeg',
         0.0,
         undefined,
-        true
-      );
+        true,
+        undefined,
+      false);
     });
 
     it('should handle quality as 1.0 (float)', async () => {
@@ -92,8 +94,9 @@ describe('convertHeic - Options', () => {
         'jpeg',
         1.0,
         undefined,
-        true
-      );
+        true,
+        undefined,
+      false);
     });
 
     it('should handle quality as Infinity', async () => {
@@ -123,12 +126,13 @@ describe('convertHeic - Options', () => {
 
   describe('Format handling', () => {
     it('should pass through all output formats correctly', async () => {
-      const formats: Array<'jpeg' | 'jpg' | 'png' | 'svg' | 'webp'> = [
+      const formats: Array<'jpeg' | 'jpg' | 'png' | 'svg' | 'webp' | 'avif'> = [
         'jpeg',
         'jpg',
         'png',
         'svg',
         'webp',
+        'avif',
       ];
 
       for (const format of formats) {
@@ -139,8 +143,9 @@ describe('convertHeic - Options', () => {
           format,
           0.92,
           undefined,
-          true
-        );
+          true,
+          undefined,
+        false);
       }
     });
 
@@ -164,8 +169,9 @@ describe('convertHeic - Options', () => {
         'jpeg',
         0.92,
         undefined,
-        true
-      );
+        true,
+        undefined,
+      false);
     });
 
     it('should apply quality to PNG (though ignored by encoder)', async () => {
@@ -205,8 +211,9 @@ describe('convertHeic - Options', () => {
         'jpeg',
         0.92,
         undefined,
-        true
-      );
+        true,
+        undefined,
+      false);
     });
 
     it('should handle undefined options', async () => {
@@ -218,8 +225,9 @@ describe('convertHeic - Options', () => {
         'jpeg',
         0.92,
         undefined,
-        true
-      );
+        true,
+        undefined,
+      false);
     });
 
     it('should handle options with extra properties', async () => {
@@ -247,8 +255,9 @@ describe('convertHeic - Options', () => {
         'jpeg',
         0.92,
         undefined,
-        true
-      );
+        true,
+        undefined,
+      false);
     });
 
     it('should handle options as null', async () => {
@@ -282,8 +291,9 @@ describe('convertHeic - applyOrientation', () => {
       'jpeg',
       0.92,
       undefined,
-      true
-    );
+      true,
+      undefined,
+    false);
   });
 
   it('forwards applyOrientation: false to the renderer', async () => {
@@ -293,8 +303,9 @@ describe('convertHeic - applyOrientation', () => {
       'jpeg',
       0.92,
       undefined,
-      false
-    );
+      false,
+      undefined,
+    false);
   });
 
   it('passes the decoded orientation through to the renderer', async () => {
@@ -311,5 +322,208 @@ describe('convertHeic - applyOrientation', () => {
 
     const [decoded] = mockState.renderAndEncodeMock.mock.calls[0];
     expect(decoded.orientation).toBe(6);
+  });
+});
+
+describe('convertHeic - Output shape', () => {
+  beforeEach(() => {
+    resetConvertMocks();
+  });
+
+  it('returns a Blob by default', async () => {
+    const result = await convertHeic(new Uint8Array([1]));
+    expect(result).toBeInstanceOf(Blob);
+  });
+
+  it("returns a Blob for an explicit output: 'blob'", async () => {
+    const result = await convertHeic(new Uint8Array([1]), { output: 'blob' });
+    expect(result).toBeInstanceOf(Blob);
+  });
+
+  it("output: 'dataUrl' returns a base64 data URL carrying the encoded type", async () => {
+    const result = await convertHeic(new Uint8Array([1]), { output: 'dataUrl' });
+    expect(typeof result).toBe('string');
+    // The mocked renderer returns an image/png blob; the data URL must
+    // inherit its type.
+    expect(result.startsWith('data:image/png;base64,')).toBe(true);
+    expect(result.length).toBeGreaterThan('data:image/png;base64,'.length);
+  });
+
+  it("output: 'arrayBuffer' returns the raw bytes", async () => {
+    const result = await convertHeic(new Uint8Array([1]), { output: 'arrayBuffer' });
+    expect(result).toBeInstanceOf(ArrayBuffer);
+    expect(new TextDecoder().decode(new Uint8Array(result))).toBe('converted');
+  });
+
+  it.each([
+    ['base64', 'string'],
+    ['Blob', 'case-wrong string'],
+    ['', 'empty string'],
+    ['dataURL', 'case-wrong string'],
+    [1, 'number'],
+    [{}, 'object'],
+  ])('rejects invalid output value (%s as %s)', async (output) => {
+    const error = await convertHeic(new Uint8Array([1]), {
+      output: output as 'blob',
+    }).catch((e) => e);
+    expect(error).toMatchObject({ code: 'invalid_input' });
+    expect(error.message).toContain("output must be one of 'blob'");
+  });
+
+  it('fails validation before any decoder is created', async () => {
+    await expect(
+      convertHeic(new Uint8Array([1]), { output: 'nope' as 'blob' })
+    ).rejects.toMatchObject({ code: 'invalid_input' });
+    expect(mockState.decoderInstances).toHaveLength(0);
+  });
+});
+
+describe('convertHeic - Crop option', () => {
+  beforeEach(() => {
+    resetConvertMocks();
+  });
+
+  it('forwards the crop rectangle to the renderer as the 6th argument', async () => {
+    await convertHeic(new Uint8Array([1]), { crop: { x: 10, y: 20, width: 30, height: 40 } });
+
+    expect(mockState.renderAndEncodeMock).toHaveBeenCalledWith(
+      expect.any(Object),
+      'jpeg',
+      expect.any(Number),
+      undefined,
+      true,
+      { x: 10, y: 20, width: 30, height: 40 },
+    false);
+  });
+
+  it('rejects malformed crop shapes before creating a decoder', async () => {
+    const error = await convertHeic(new Uint8Array([1]), {
+      crop: { x: 0, y: 0, width: 0, height: 5 },
+    }).catch((e) => e);
+
+    expect(error).toMatchObject({ code: 'invalid_crop' });
+    expect(mockState.decoderInstances).toHaveLength(0);
+  });
+
+  it('propagates the renderer invalid_crop (range check) with its original code', async () => {
+    // Range validation needs real decoded dimensions, so it happens in the
+    // renderer; the library error must pass through unwrapped.
+    mockState.renderAndEncodeMock.mockImplementationOnce(() => {
+      throw new HeicConverterError('invalid_crop', 'crop 9999x9999 exceeds the image');
+    });
+
+    const error = await convertHeic(new Uint8Array([1]), {
+      crop: { x: 0, y: 0, width: 9999, height: 9999 },
+    }).catch((e) => e);
+
+    expect(error).toMatchObject({ code: 'invalid_crop' });
+    expect(error.message).toContain('exceeds the image');
+  });
+});
+
+describe('convertHeic - AbortSignal', () => {
+  beforeEach(() => {
+    resetConvertMocks();
+  });
+
+  it('rejects an already-aborted signal with aborted before any work', async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    const error = await convertHeic(new Uint8Array([1]), { signal: controller.signal }).catch(
+      (e) => e
+    );
+
+    expect(error).toMatchObject({ code: 'aborted' });
+    expect(mockState.decoderInstances).toHaveLength(0);
+    expect(mockState.renderAndEncodeMock).not.toHaveBeenCalled();
+  });
+
+  it.each([[{}], [42], ['abort'], [null]])('rejects non-AbortSignal signal (%p)', async (signal) => {
+    const error = await convertHeic(new Uint8Array([1]), {
+      signal: signal as unknown as AbortSignal,
+    }).catch((e) => e);
+    expect(error).toMatchObject({ code: 'invalid_input' });
+    expect(error.message).toContain('signal must be an AbortSignal');
+  });
+
+  it('accepts duck-typed AbortSignal-like objects', async () => {
+    const fakeSignal = {
+      aborted: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    };
+
+    const result = await convertHeic(new Uint8Array([1]), {
+      signal: fakeSignal as unknown as AbortSignal,
+    });
+    expect(result).toBeInstanceOf(Blob);
+  });
+
+  it('stops after decode when the signal aborts during decoding, and still frees the decoder', async () => {
+    const controller = new AbortController();
+    mockState.decodeImpl = async () => {
+      controller.abort();
+      return { width: 1, height: 1, data: new Uint8ClampedArray([0, 0, 0, 255]) };
+    };
+
+    const error = await convertHeic(new Uint8Array([1]), { signal: controller.signal }).catch(
+      (e) => e
+    );
+
+    expect(error).toMatchObject({ code: 'aborted' });
+    expect(mockState.renderAndEncodeMock).not.toHaveBeenCalled();
+    // The owned decoder is released even on the abort path.
+    expect(mockState.decoderInstances[0].free).toHaveBeenCalled();
+  });
+
+  it('stops before creating a decoder when abort happens during input reading', async () => {
+    const controller = new AbortController();
+    const blobLike = {
+      arrayBuffer: async () => {
+        controller.abort();
+        return new Uint8Array([1]).buffer;
+      },
+    };
+
+    const error = await convertHeic(blobLike as unknown as Blob, {
+      signal: controller.signal,
+    }).catch((e) => e);
+
+    expect(error).toMatchObject({ code: 'aborted' });
+    expect(mockState.decoderInstances).toHaveLength(0);
+  });
+
+  it('does not emit the withheld 100% when aborted mid-decode', async () => {
+    const controller = new AbortController();
+    const onProgress = vi.fn();
+    mockState.decodeImpl = async (_data, cb) => {
+      cb?.(50);
+      controller.abort();
+      return { width: 1, height: 1, data: new Uint8ClampedArray([0, 0, 0, 255]) };
+    };
+
+    await expect(
+      convertHeic(new Uint8Array([1]), { signal: controller.signal, onProgress })
+    ).rejects.toMatchObject({ code: 'aborted' });
+
+    expect(onProgress).toHaveBeenCalledWith(50);
+    expect(onProgress).not.toHaveBeenCalledWith(100);
+  });
+
+  it('a post-completion abort does not disturb the resolved result', async () => {
+    const controller = new AbortController();
+    const result = await convertHeic(new Uint8Array([1]), { signal: controller.signal });
+    controller.abort();
+    expect(result).toBeInstanceOf(Blob);
+  });
+
+  it('options validation wins over a pre-aborted signal (deterministic argument errors)', async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      convertHeic(new Uint8Array([1]), { signal: controller.signal, quality: 5 })
+    ).rejects.toMatchObject({ code: 'invalid_quality' });
   });
 });

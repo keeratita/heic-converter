@@ -691,3 +691,53 @@ describe('LibheifDecoder (mocked glue) - orientation reporting', () => {
     }
   });
 });
+
+describe('LibheifDecoder (mocked glue) - exif reporting', () => {
+  beforeEach(() => {
+    mockState.mockModuleFactory.mockResolvedValue(mockState.mockModule);
+    mockState.mockDecoderInstance.decode.mockReset();
+  });
+
+  const decodeWithExif = async (exif?: unknown): Promise<{ exif?: Uint8Array }> => {
+    const result: Record<string, unknown> = {
+      width: 4,
+      height: 2,
+      data: new Uint8Array(4 * 2 * 4),
+    };
+    if (exif !== undefined) {
+      result.exif = exif;
+    }
+    mockState.mockDecoderInstance.decode.mockReturnValue(result);
+    const decoder = new LibheifDecoder();
+    await decoder.initialize();
+    return decoder.decode(new Uint8Array([1, 2, 3, 4]));
+  };
+
+  const validBlock = (): Uint8Array =>
+    new Uint8Array([0x45, 0x78, 0x69, 0x66, 0x00, 0x00, 0x49, 0x49, 0x2a, 0x00, 8, 0, 0, 0]);
+
+  it('passes through a valid EXIF block as an owned copy', async () => {
+    const source = validBlock();
+    const decoded = await decodeWithExif(source);
+
+    expect(decoded.exif).toBeInstanceOf(Uint8Array);
+    // Defensive copy: distinct buffer, identical bytes…
+    expect(decoded.exif).not.toBe(source);
+    expect(Array.from(decoded.exif as Uint8Array)).toEqual(Array.from(source));
+    // …so later glue-side mutation cannot corrupt the consumer's block.
+    source.fill(0);
+    expect(Array.from(decoded.exif as Uint8Array)).not.toEqual(Array.from(source));
+  });
+
+  it('omits the field when absent or not a byte array', async () => {
+    expect((await decodeWithExif()).exif).toBeUndefined();
+    expect((await decodeWithExif('Exif')).exif).toBeUndefined();
+    expect((await decodeWithExif([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14])).exif).toBeUndefined();
+    expect((await decodeWithExif(null)).exif).toBeUndefined();
+  });
+
+  it('omits blocks too short to carry a marker plus a minimal TIFF header', async () => {
+    expect((await decodeWithExif(new Uint8Array(13))).exif).toBeUndefined();
+    expect((await decodeWithExif(new Uint8Array(14))).exif).toBeInstanceOf(Uint8Array);
+  });
+});

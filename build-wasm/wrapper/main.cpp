@@ -158,6 +158,62 @@ int parse_exif_orientation(const uint8_t* data, size_t size) {
     return direct > 0 ? direct : 1;
 }
 
+// Returns true when [p, p+size) starts with a TIFF header (II*/MM* + magic 42).
+bool is_tiff_header(const uint8_t* p, size_t size) {
+    if (size < 8) {
+        return false;
+    }
+    const bool le = (p[0] == 'I' && p[1] == 'I');
+    const bool be = (p[0] == 'M' && p[1] == 'M');
+    if (!le && !be) {
+        return false;
+    }
+    const uint16_t magic = le ? (uint16_t)(p[2] | (p[3] << 8)) : (uint16_t)(p[3] | (p[2] << 8));
+    return magic == 42;
+}
+
+const char kExifMarker[6] = {'E', 'x', 'i', 'f', 0, 0};
+
+// Normalizes a HEIF Exif item payload to the standard "Exif\0\0" + TIFF block
+// (the JPEG APP1 payload form) so consumers can embed it verbatim. Payload
+// layout: [4-byte BE offset][Exif\0\0][TIFF], offset counted from just past
+// the 4-byte field; writers also store raw TIFF without the marker. Returns
+// an empty vector when no TIFF header is found at any candidate position.
+std::vector<uint8_t> normalize_exif_item(const uint8_t* data, size_t size) {
+    std::vector<uint8_t> out;
+    if (size < 12) {
+        return out;
+    }
+    const uint8_t* body = data + 4;
+    const size_t body_size = size - 4;
+    const uint32_t tiff_off = ((uint32_t)data[0] << 24) | ((uint32_t)data[1] << 16) |
+                              ((uint32_t)data[2] << 8) | (uint32_t)data[3];
+
+    // Candidate TIFF start positions inside the body: the declared offset,
+    // the body start (raw TIFF writers), and just past the Exif marker.
+    size_t candidates[3];
+    int count = 0;
+    if ((uint64_t)tiff_off + 8 <= body_size) {
+        candidates[count++] = tiff_off;
+    }
+    candidates[count++] = 0;
+    if (body_size >= 6 && memcmp(body, kExifMarker, 6) == 0) {
+        candidates[count++] = 6;
+    }
+    for (int i = 0; i < count; ++i) {
+        const size_t at = candidates[i];
+        if (at >= body_size || !is_tiff_header(body + at, body_size - at)) {
+            continue;
+        }
+        const size_t tiff_size = body_size - at;
+        out.reserve(6 + tiff_size);
+        out.insert(out.end(), kExifMarker, kExifMarker + 6);
+        out.insert(out.end(), body + at, body + at + tiff_size);
+        return out;
+    }
+    return out;
+}
+
 struct DecodeProgressData {
     val callback;
     int max_progress = 0;
@@ -276,10 +332,16 @@ private:
         // The irot/imir check is a whole-container fourcc scan: conservative
         // by design, the worst case is "not rotated" (pre-fix behavior),
         // never "double-rotated".
+        //
+        // The raw Exif *bytes* are read regardless of the fourcc guard (for
+        // metadata preservation in converted output): files that both carry
+        // irot and hold EXIF should still be able to preserve the block —
+        // only the orientation value is guarded.
         int orientation = 1;
-        if (err.code == heif_error_Ok &&
-            !contains_fourcc(bytes, len, "irot") &&
-            !contains_fourcc(bytes, len, "imir")) {
+        std::vector<uint8_t> exif_block;
+        if (err.code == heif_error_Ok) {
+            const bool pending_transform =
+                contains_fourcc(bytes, len, "irot") || contains_fourcc(bytes, len, "imir");
             int n_blocks = heif_image_handle_get_number_of_metadata_blocks(handle, "Exif");
             if (n_blocks > kMaxMetadataBlocks) {
                 n_blocks = kMaxMetadataBlocks;
@@ -288,14 +350,23 @@ private:
                 std::vector<heif_item_id> ids((size_t)n_blocks);
                 int got = heif_image_handle_get_list_of_metadata_block_IDs(
                     handle, "Exif", ids.data(), n_blocks);
-                for (int i = 0; i < got && orientation == 1; ++i) {
+                for (int i = 0; i < got; ++i) {
+                    if (!exif_block.empty() && (pending_transform || orientation != 1)) {
+                        break; // have everything we came for
+                    }
                     size_t msize = heif_image_handle_get_metadata_size(handle, ids[i]);
                     if (msize < 8 || msize > kMaxExifParseBytes) {
                         continue;
                     }
                     std::vector<uint8_t> buf(msize);
                     heif_error merr = heif_image_handle_get_metadata(handle, ids[i], buf.data());
-                    if (merr.code == heif_error_Ok) {
+                    if (merr.code != heif_error_Ok) {
+                        continue;
+                    }
+                    if (exif_block.empty()) {
+                        exif_block = normalize_exif_item(buf.data(), msize);
+                    }
+                    if (!pending_transform && orientation == 1) {
                         orientation = parse_exif_orientation(buf.data(), msize);
                     }
                 }
@@ -367,6 +438,14 @@ private:
         result.set("height", height);
         result.set("data", resultData);
         result.set("orientation", orientation);
+        if (!exif_block.empty()) {
+            // JS-owned copy (same guarantee as `data`): valid after free(),
+            // never a WASM-heap view. Already normalized to "Exif\0\0"+TIFF.
+            val exifData = val::global("Uint8Array").new_((uint32_t)exif_block.size());
+            exifData.call<void>("set",
+                                val(typed_memory_view(exif_block.size(), exif_block.data())));
+            result.set("exif", exifData);
+        }
         return result;
     }
 };

@@ -37,8 +37,9 @@ describe('convertHeic - Resize options', () => {
       'jpeg',
       0.92,
       { maxWidth: undefined, maxHeight: undefined, scale: 0.5 },
-      true
-    );
+      true,
+      undefined,
+    false);
   });
 
   it('should pass maxWidth to renderAndEncode', async () => {
@@ -49,8 +50,9 @@ describe('convertHeic - Resize options', () => {
       'jpeg',
       0.92,
       { maxWidth: 800, maxHeight: undefined, scale: undefined },
-      true
-    );
+      true,
+      undefined,
+    false);
   });
 
   it('should pass maxHeight to renderAndEncode', async () => {
@@ -61,8 +63,9 @@ describe('convertHeic - Resize options', () => {
       'jpeg',
       0.92,
       { maxWidth: undefined, maxHeight: 600, scale: undefined },
-      true
-    );
+      true,
+      undefined,
+    false);
   });
 
   it('should pass all resize options together', async () => {
@@ -73,8 +76,9 @@ describe('convertHeic - Resize options', () => {
       'jpeg',
       0.92,
       { maxWidth: 800, maxHeight: 600, scale: 0.5 },
-      true
-    );
+      true,
+      undefined,
+    false);
   });
 
   it('should not pass a resize argument when no resize options are given', async () => {
@@ -85,8 +89,9 @@ describe('convertHeic - Resize options', () => {
       'jpeg',
       0.92,
       undefined,
-      true
-    );
+      true,
+      undefined,
+    false);
   });
 
   it('should not pass a resize argument when resize options are explicitly undefined', async () => {
@@ -101,8 +106,9 @@ describe('convertHeic - Resize options', () => {
       'jpeg',
       0.92,
       undefined,
-      true
-    );
+      true,
+      undefined,
+    false);
   });
 
   it('should throw when scale is zero', async () => {
@@ -168,7 +174,8 @@ describe('convertHeic - Resize options', () => {
       'webp',
       0.5,
       expect.objectContaining({ scale: 2 }),
-      true
-    );
+      true,
+      undefined,
+    false);
   });
 });

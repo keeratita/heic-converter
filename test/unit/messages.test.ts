@@ -102,4 +102,46 @@ describe('Messages', () => {
       expect(Messages.WorkerDecoderUnsupported).toContain('decoder option is not supported');
     });
   });
+
+  describe('0.5.0 option and feature messages', () => {
+    it('formats output shape rejection', () => {
+      const message = Messages.OutputShapeInvalid('base64');
+      expect(message).toContain("output must be one of 'blob', 'dataUrl', 'arrayBuffer'");
+      expect(message).toContain('got: base64');
+    });
+
+    it('formats boolean option rejections', () => {
+      expect(Messages.ReuseDecodersInvalid(1)).toContain('reuseDecoders must be a boolean');
+      expect(Messages.ContinueOnErrorInvalid('yes')).toContain('continueOnError must be a boolean');
+    });
+
+    it('formats signal rejection', () => {
+      expect(Messages.SignalInvalid({})).toContain('signal must be an AbortSignal');
+    });
+
+    it('formats the abort message', () => {
+      expect(Messages.Aborted).toContain('abort');
+    });
+
+    it('names the format and suggests fallbacks in format_unsupported', () => {
+      const message = Messages.FormatUnsupported('avif');
+      expect(message).toContain('avif');
+      expect(message).toContain('cannot encode');
+      expect(message).toContain("'jpeg'");
+    });
+
+    it('distinguishes positive-integer and non-negative-integer crop fields', () => {
+      expect(Messages.CropInvalid('width', 0)).toContain('crop.width must be a positive integer');
+      expect(Messages.CropInvalid('height', 1.5)).toContain('crop.height must be a positive integer');
+      expect(Messages.CropInvalid('x', -1)).toContain('crop.x must be a non-negative integer');
+      expect(Messages.CropInvalid('y', 2.5)).toContain('crop.y must be a non-negative integer');
+    });
+
+    it('reports crop bounds against the display dimensions', () => {
+      const message = Messages.CropOutOfBounds(100, 50, 200, 150, 1600, 1200);
+      expect(message).toContain('crop 200x150 at (100, 50)');
+      expect(message).toContain('exceeds the 1600x1200 image');
+      expect(message).toContain('post-orientation display pixels');
+    });
+  });
 });

@@ -20,6 +20,17 @@ export const Messages = {
   ConcurrencyInvalid: (value: unknown): string =>
     `Concurrency must be a positive integer, got: ${value}`,
   InputsMustBeArray: 'Inputs must be an array of HEIC images',
+  OutputShapeInvalid: (value: unknown): string =>
+    `output must be one of 'blob', 'dataUrl', 'arrayBuffer', got: ${value}`,
+  ReuseDecodersInvalid: (value: unknown): string =>
+    `reuseDecoders must be a boolean, got: ${value}`,
+  ContinueOnErrorInvalid: (value: unknown): string =>
+    `continueOnError must be a boolean, got: ${value}`,
+  PreserveExifInvalid: (value: unknown): string =>
+    `preserveExif must be a boolean, got: ${value}`,
+  SignalInvalid: (value: unknown): string =>
+    `signal must be an AbortSignal, got: ${value}`,
+  Aborted: 'Conversion aborted (AbortSignal was aborted)',
   ConvertManyItemFailed: (index: number, total: number, message: string): string =>
     `Conversion of item ${index} of ${total} failed: ${message}`,
   ConvertManyExtraFailures: (failedCount: number, total: number): string =>
@@ -49,6 +60,22 @@ export const Messages = {
     `Image data length mismatch. Expected ${expected} bytes for ${width}x${height}, got ${actual}`,
   ContextUnavailable: 'Failed to acquire 2D rendering context from canvas',
   UnsupportedFormat: (format: string): string => `Unsupported output format: ${format}`,
+  FormatUnsupported: (format: string): string =>
+    `The current environment cannot encode '${format}' — canvas encoding produced no ` +
+    `'${format}' image (e.g. AVIF encoding is not supported in this browser). Try 'jpeg', ` +
+    `'png', or 'webp' instead.`,
+  CropInvalid: (field: string, value: unknown): string =>
+    `crop.${field} must be ${field === 'width' || field === 'height' ? 'a positive integer' : 'a non-negative integer'}, got: ${value}`,
+  CropOutOfBounds: (
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    displayWidth: number,
+    displayHeight: number
+  ): string =>
+    `crop ${width}x${height} at (${x}, ${y}) exceeds the ${displayWidth}x${displayHeight} image ` +
+    '(crop coordinates are in post-orientation display pixels)',
 
   // wasm/wrapper.ts
   DecoderFreedDuringDecode:

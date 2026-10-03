@@ -36,6 +36,12 @@ interface HeicDecoderResult {
   data: Uint8Array;
   /** EXIF orientation 1-8 (1 when absent or already applied by libheif). */
   orientation?: number;
+  /**
+   * Raw EXIF block normalized to the JPEG APP1 payload form
+   * ("Exif\0\0" + TIFF), present when the file carries an Exif item
+   * (regardless of irot/imir). JS-owned, same as `data`.
+   */
+  exif?: Uint8Array;
 }
 
 /**
@@ -254,6 +260,14 @@ export class LibheifDecoder implements IHeicDecoder {
     };
     if (orientation > 1) {
       decoded.orientation = orientation;
+    }
+    // Expose the raw EXIF block for metadata preservation (preserveExif) and
+    // for raw-decode consumers (e.g. Node + sharp). Defensive copy so the
+    // block provably outlives free() like `data`; require at least a marker
+    // plus a minimal TIFF header to be useful.
+    const rawExif = result.exif;
+    if (rawExif instanceof Uint8Array && rawExif.length >= 14) {
+      decoded.exif = new Uint8Array(rawExif);
     }
     return decoded;
   }

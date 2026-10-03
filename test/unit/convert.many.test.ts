@@ -133,8 +133,9 @@ describe('convertMany', () => {
 
     expect(mockState.renderAndEncodeMock).toHaveBeenCalledWith(expect.any(Object), 'png', 0.4,
         undefined,
-        true
-      );
+        true,
+        undefined,
+      false);
     expect(mockState.decoderInstances).toHaveLength(1);
   });
 
@@ -171,8 +172,9 @@ describe('convertMany', () => {
       'png',
       0.5,
         undefined,
-        true
-      );
+        true,
+        undefined,
+      false);
   });
 
   it('should pass through resize options', async () => {
@@ -183,8 +185,9 @@ describe('convertMany', () => {
       'jpeg',
       0.92,
       expect.objectContaining({ scale: 0.5 }),
-      true
-    );
+      true,
+      undefined,
+    false);
   });
 
   it('should forward per-item progress with the item index', async () => {
@@ -381,5 +384,256 @@ describe('convertMany', () => {
     await expect(convertMany([new Uint8Array([1])], { concurrency: NaN })).rejects.toThrow(
       'Concurrency must be a positive integer'
     );
+  });
+});
+
+describe('convertMany - continueOnError', () => {
+  beforeEach(() => {
+    resetConvertMocks({ renderAndEncode: renderFromPixel, decodeImpl: batchDecodeImpl });
+  });
+
+  it('resolves with per-item results for a mixed batch, in input order', async () => {
+    const results = await convertMany(
+      [new Uint8Array([5]), new Uint8Array([1]), new Uint8Array([6])],
+      { continueOnError: true, concurrency: 3 }
+    );
+
+    expect(results).toHaveLength(3);
+    expect(results[0]).toMatchObject({ index: 0, ok: false });
+    expect((results[0] as { error: Error }).error.message).toContain('input 5');
+    expect(results[1]).toMatchObject({ index: 1, ok: true });
+    expect((results[1] as { result: Blob }).result).toBeInstanceOf(Blob);
+    expect(results[2]).toMatchObject({ index: 2, ok: false });
+    expect((results[2] as { error: Error }).error.message).toContain('input 6');
+  });
+
+  it('runs every item to completion even after failures', async () => {
+    const results = await convertMany(
+      [new Uint8Array([5]), new Uint8Array([2]), new Uint8Array([6])],
+      { continueOnError: true, concurrency: 1 }
+    );
+
+    // No early stop: all three items were processed by their own decoder.
+    expect(results).toHaveLength(3);
+    expect(mockState.decoderInstances).toHaveLength(3);
+    expect(results.map((entry) => entry.ok)).toEqual([false, true, false]);
+  });
+
+  it('preserves input order when items complete out of order', async () => {
+    // Item 0 is slow (50ms), item 1 fast (10ms): results must still follow
+    // input order.
+    const results = await convertMany([new Uint8Array([1]), new Uint8Array([2])], {
+      continueOnError: true,
+      concurrency: 2,
+    });
+
+    const blobs = results.map((entry) => (entry.ok ? entry.result : null));
+    expect(blobs[0]).toBeInstanceOf(Blob);
+    expect(await (blobs[0] as Blob).text()).toBe('1');
+    expect(await (blobs[1] as Blob).text()).toBe('2');
+  });
+
+  it('reports progress only for successful items, as (index, percent)', async () => {
+    const onProgress = vi.fn();
+    await convertMany([new Uint8Array([5]), new Uint8Array([2])], {
+      continueOnError: true,
+      concurrency: 2,
+      onProgress,
+    });
+
+    expect(onProgress).toHaveBeenCalledWith(1, 100);
+    expect(onProgress.mock.calls.length).toBe(1);
+  });
+
+  it('still rejects up-front validation failures', async () => {
+    await expect(
+      convertMany([new Uint8Array([1])], { continueOnError: true, concurrency: 0 })
+    ).rejects.toMatchObject({ code: 'invalid_concurrency' });
+    expect(mockState.decoderInstances).toHaveLength(0);
+  });
+
+  it.each([['yes', 'string'], [1, 'number'], [{}, 'object']])(
+    'rejects non-boolean continueOnError (%s as %s)',
+    async (continueOnError) => {
+      const error = await convertMany([new Uint8Array([2])], {
+        continueOnError: continueOnError as unknown as boolean,
+      }).catch((e) => e);
+      expect(error).toMatchObject({ code: 'invalid_input' });
+      expect(error.message).toContain('continueOnError must be a boolean');
+    }
+  );
+
+  it('an all-failing batch still fulfills (with failure entries)', async () => {
+    const results = await convertMany([new Uint8Array([5]), new Uint8Array([7])], {
+      continueOnError: true,
+    });
+    expect(results.every((entry) => entry.ok === false)).toBe(true);
+    expect(results.map((entry) => entry.index)).toEqual([0, 1]);
+  });
+
+  it('normalizes non-Error throws into Error instances on failure entries', async () => {
+    mockState.decodeImpl = async () => {
+      const raw: unknown = 'raw string failure';
+      throw raw;
+    };
+    const results = await convertMany([new Uint8Array([1])], { continueOnError: true });
+    const entry = results[0] as { ok: false; error: Error };
+    expect(entry.ok).toBe(false);
+    expect(entry.error).toBeInstanceOf(Error);
+    expect(entry.error.message).toContain('raw string failure');
+  });
+});
+
+describe('convertMany - reuseDecoders (pool)', () => {
+  beforeEach(() => {
+    resetConvertMocks({ renderAndEncode: renderFromPixel, decodeImpl: batchDecodeImpl });
+  });
+
+  // Values 10-17 never fail (failure values are 5, 6, 7, 8, 9, 18).
+  const okInputs = (values: number[]) => values.map((v) => new Uint8Array([v]));
+
+  it('creates one decoder per runner, decodes every item, and frees at batch end', async () => {
+    const results = await convertMany(okInputs([10, 11, 12, 13, 14, 15, 16, 17]), {
+      concurrency: 2,
+      reuseDecoders: true,
+    });
+
+    expect(results).toHaveLength(8);
+    // Pool bound by runner count, not item count.
+    expect(mockState.decoderInstances).toHaveLength(2);
+    for (const instance of mockState.decoderInstances) {
+      expect(instance.decode).toHaveBeenCalledTimes(4);
+      // dispose() frees exactly once per pooled instance.
+      expect(instance.free).toHaveBeenCalledTimes(1);
+    }
+    expect(mockState.renderAndEncodeMock).toHaveBeenCalledTimes(8);
+  });
+
+  it('default path still creates a fresh decoder per item', async () => {
+    await convertMany(okInputs([10, 11, 12, 13, 14, 15, 16, 17]), { concurrency: 2 });
+    expect(mockState.decoderInstances).toHaveLength(8);
+  });
+
+  it('sequential concurrency reuses a single instance', async () => {
+    await convertMany(okInputs([10, 11, 12]), { concurrency: 1, reuseDecoders: true });
+
+    expect(mockState.decoderInstances).toHaveLength(1);
+    expect(mockState.decoderInstances[0].decode).toHaveBeenCalledTimes(3);
+    expect(mockState.decoderInstances[0].initialize).toHaveBeenCalledTimes(3);
+    // The wrapper memoizes module loading, so re-initialize is cheap.
+    expect(mockState.decoderInstances[0].free).toHaveBeenCalledTimes(1);
+  });
+
+  it('frees pooled decoders when the batch fails', async () => {
+    await expect(
+      convertMany(okInputs([10, 5]), { concurrency: 1, reuseDecoders: true })
+    ).rejects.toMatchObject({ code: 'batch_item_failed' });
+
+    expect(mockState.decoderInstances).toHaveLength(1);
+    expect(mockState.decoderInstances[0].free).toHaveBeenCalledTimes(1);
+  });
+
+  it('an injected decoder disables the pool entirely', async () => {
+    const injected = {
+      initialize: vi.fn(async () => undefined),
+      decode: vi.fn(async (data: Uint8Array) => ({
+        width: 1,
+        height: 1,
+        data: new Uint8ClampedArray([data[0], 0, 0, 255]),
+      })),
+      free: vi.fn(),
+    };
+
+    await convertMany(okInputs([10, 11, 12]), {
+      decoder: injected as never,
+      reuseDecoders: true,
+    });
+
+    expect(mockState.decoderInstances).toHaveLength(0);
+    expect(injected.decode).toHaveBeenCalledTimes(3);
+    expect(injected.free).not.toHaveBeenCalled();
+  });
+
+  it.each([['true', 'string'], [1, 'number'], [{}, 'object']])(
+    'rejects non-boolean reuseDecoders (%s as %s)',
+    async (reuseDecoders) => {
+      const error = await convertMany(okInputs([10]), {
+        reuseDecoders: reuseDecoders as unknown as boolean,
+      }).catch((e) => e);
+      expect(error).toMatchObject({ code: 'invalid_input' });
+      expect(error.message).toContain('reuseDecoders must be a boolean');
+      expect(mockState.decoderInstances).toHaveLength(0);
+    }
+  );
+});
+
+describe('convertMany - AbortSignal', () => {
+  beforeEach(() => {
+    resetConvertMocks({ renderAndEncode: renderFromPixel, decodeImpl: batchDecodeImpl });
+  });
+
+  it('a pre-aborted batch rejects with aborted (not batch_item_failed)', async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    const error = await convertMany([new Uint8Array([10]), new Uint8Array([11])], {
+      signal: controller.signal,
+    }).catch((e) => e);
+
+    expect(error).toMatchObject({ code: 'aborted' });
+    expect(mockState.renderAndEncodeMock).not.toHaveBeenCalled();
+  });
+
+  it('aborting mid-batch rejects with aborted', async () => {
+    const controller = new AbortController();
+    let aborted = false;
+    mockState.decodeImpl = async (data, onProgress) => {
+      if (!aborted) {
+        aborted = true;
+        controller.abort();
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      onProgress?.(100);
+      return { width: 1, height: 1, data: new Uint8ClampedArray([data[0], 0, 0, 255]) };
+    };
+
+    const error = await convertMany(
+      [new Uint8Array([10]), new Uint8Array([11]), new Uint8Array([12])],
+      { signal: controller.signal, concurrency: 1 }
+    ).catch((e) => e);
+
+    expect(error).toMatchObject({ code: 'aborted' });
+  });
+
+  it('continueOnError with a pre-aborted signal fulfills with aborted error entries', async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    const results = await convertMany([new Uint8Array([10]), new Uint8Array([11])], {
+      signal: controller.signal,
+      continueOnError: true,
+    });
+
+    expect(results).toHaveLength(2);
+    for (const entry of results) {
+      expect(entry.ok).toBe(false);
+      expect((entry as { error: { code: string } }).error.code).toBe('aborted');
+    }
+  });
+
+  it('a post-completion abort still returns the results (completion wins)', async () => {
+    const controller = new AbortController();
+    const results = await convertMany([new Uint8Array([10]), new Uint8Array([11])], {
+      signal: controller.signal,
+    });
+    controller.abort();
+    expect(results).toHaveLength(2);
+  });
+
+  it('rejects a malformed signal before any item runs', async () => {
+    await expect(
+      convertMany([new Uint8Array([10])], { signal: {} as unknown as AbortSignal })
+    ).rejects.toMatchObject({ code: 'invalid_input' });
+    expect(mockState.decoderInstances).toHaveLength(0);
   });
 });

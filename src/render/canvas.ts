@@ -1,7 +1,8 @@
-import type { DecodedImage, ImageFormat, ResizeOptions } from '../types';
+import type { CropOptions, DecodedImage, ImageFormat, ResizeOptions } from '../types';
 import { SUPPORTED_FORMATS } from '../types';
 import { Messages } from '../messages';
 import { HeicConverterError } from '../errors';
+import { injectExifIntoJpeg, injectExifIntoPng } from './exif';
 
 /**
  * Maximum supported canvas dimension per side. Browsers cap canvas sizes
@@ -57,6 +58,60 @@ export function validateFormat(format: ImageFormat): void {
   if (!(SUPPORTED_FORMATS as readonly string[]).includes(normalized)) {
     throw new HeicConverterError('invalid_format', Messages.UnsupportedFormat(String(format)));
   }
+}
+
+/**
+ * Validates the crop rectangle *shape* (integer, positive, non-negative).
+ * Range checking against the image size happens in `renderAndEncode`, once
+ * the post-orientation display dimensions are known.
+ */
+export function validateCrop(crop?: CropOptions): void {
+  if (!crop) {
+    return;
+  }
+  const { x = 0, y = 0, width, height } = crop;
+  if (!Number.isInteger(width) || width <= 0) {
+    throw new HeicConverterError('invalid_crop', Messages.CropInvalid('width', width));
+  }
+  if (!Number.isInteger(height) || height <= 0) {
+    throw new HeicConverterError('invalid_crop', Messages.CropInvalid('height', height));
+  }
+  if (!Number.isInteger(x) || x < 0) {
+    throw new HeicConverterError('invalid_crop', Messages.CropInvalid('x', x));
+  }
+  if (!Number.isInteger(y) || y < 0) {
+    throw new HeicConverterError('invalid_crop', Messages.CropInvalid('y', y));
+  }
+}
+
+/**
+ * Environment probe: some browsers cannot encode AVIF via canvas (e.g.
+ * Safari), and per spec `toBlob` silently falls back to PNG for unknown
+ * types — so trusting the requested type would emit a PNG under an AVIF
+ * label. Probed once (a 1×1 encode is cheap) and cached; `format_unsupported`
+ * is thrown up front when the environment cannot produce AVIF bytes.
+ */
+let avifSupport: Promise<boolean> | null = null;
+
+export function canEncodeAvif(): Promise<boolean> {
+  if (avifSupport === null) {
+    avifSupport = (async () => {
+      try {
+        const probe = createCanvas(1, 1);
+        const blob = await canvasToBlob(probe, 'image/avif');
+        releaseCanvas(probe);
+        return blob.type === 'image/avif' && blob.size > 0;
+      } catch {
+        return false;
+      }
+    })();
+  }
+  return avifSupport;
+}
+
+/** @internal Reset the cached AVIF capability probe (tests only). */
+export function __resetAvifProbe(): void {
+  avifSupport = null;
 }
 
 /**
@@ -298,6 +353,33 @@ function effectiveOrientation(orientation: number | undefined, apply: boolean): 
 }
 
 /**
+ * Re-inject the source EXIF block into freshly encoded JPEG/PNG bytes when
+ * `preserveExif` is on. Fail-safe: returns the original blob when the flag
+ * is off, no block was decoded, or the injector refused to modify
+ * unparsable output (metadata loss beats a corrupt image, always).
+ */
+async function withExif(
+  blob: Blob,
+  decoded: DecodedImage,
+  preserveExif: boolean,
+  kind: 'jpeg' | 'png'
+): Promise<Blob> {
+  const exif = decoded.exif;
+  if (!preserveExif || !exif || exif.length === 0) {
+    return blob;
+  }
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  const injected =
+    kind === 'jpeg' ? injectExifIntoJpeg(bytes, exif) : injectExifIntoPng(bytes, exif);
+  if (injected === bytes) {
+    return blob;
+  }
+  // `injected` is only distinct from `bytes` when the injector built a fresh
+  // whole-buffer Uint8Array, so `.buffer` is its complete payload.
+  return new Blob([injected.buffer as ArrayBuffer], { type: blob.type });
+}
+
+/**
  * Renders DecodedImage pixel data onto a canvas and encodes it into the target format.
  */
 export async function renderAndEncode(
@@ -305,10 +387,20 @@ export async function renderAndEncode(
   format: ImageFormat,
   quality: number,
   resize?: ResizeOptions,
-  applyOrientation = true
+  applyOrientation = true,
+  crop?: CropOptions,
+  preserveExif = false
 ): Promise<Blob> {
   // Reject unknown formats before any canvas/pixel work happens.
   validateFormat(format);
+  validateCrop(crop);
+
+  const normalizedFormat = format.toLowerCase();
+  // AVIF cannot be encoded by every canvas implementation and a failed
+  // toBlob() would otherwise silently emit a PNG — probe before pixel work.
+  if (normalizedFormat === 'avif' && !(await canEncodeAvif())) {
+    throw new HeicConverterError('format_unsupported', Messages.FormatUnsupported('avif'));
+  }
 
   const { width, height, data } = decoded;
 
@@ -333,8 +425,22 @@ export async function renderAndEncode(
   const displayWidth = swapsAxes ? height : width;
   const displayHeight = swapsAxes ? width : height;
 
-  const target = computeTargetSize(displayWidth, displayHeight, resize);
-  const needsResize = target.width !== displayWidth || target.height !== displayHeight;
+  // Crop operates on the display geometry (what the user sees); the crop
+  // region then becomes the input space for resize.
+  const cropX = crop?.x ?? 0;
+  const cropY = crop?.y ?? 0;
+  const regionWidth = crop ? crop.width : displayWidth;
+  const regionHeight = crop ? crop.height : displayHeight;
+  if (crop && (cropX + regionWidth > displayWidth || cropY + regionHeight > displayHeight)) {
+    throw new HeicConverterError(
+      'invalid_crop',
+      Messages.CropOutOfBounds(cropX, cropY, regionWidth, regionHeight, displayWidth, displayHeight)
+    );
+  }
+
+  const target = computeTargetSize(regionWidth, regionHeight, resize);
+  const needsResize = target.width !== regionWidth || target.height !== regionHeight;
+  const needsTransform = matrix !== null || crop !== undefined;
 
   const canvas = createCanvas(target.width, target.height);
   const ctx = canvas.getContext('2d') as CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null;
@@ -342,29 +448,29 @@ export async function renderAndEncode(
     throw new HeicConverterError('render_encode_failed', Messages.ContextUnavailable);
   }
 
-  if (needsResize || matrix) {
+  if (needsTransform || needsResize) {
     // Pixels land on a full-resolution source canvas first; the browser's
-    // high-quality resampling (and, when pending, the EXIF orientation) is
-    // applied by scaling/transforming it into the target canvas.
+    // high-quality resampling (and, when pending, the EXIF orientation and
+    // the crop translation) is applied by drawing it through a transform.
     const sourceCanvas = createCanvas(width, height);
     const sourceCtx = sourceCanvas.getContext('2d') as CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null;
     if (!sourceCtx) {
       throw new HeicConverterError('render_encode_failed', Messages.ContextUnavailable);
     }
     writeImageData(sourceCtx, data, width, height);
-    if (matrix) {
-      // Compose scale (resize) after the orientation matrix, then draw the
-      // source through it with the canvas transform doing the work.
-      const sx = target.width / displayWidth;
-      const sy = target.height / displayHeight;
-      ctx.setTransform(
-        matrix[0] * sx,
-        matrix[1] * sx,
-        matrix[2] * sy,
-        matrix[3] * sy,
-        matrix[4] * sx,
-        matrix[5] * sy
-      );
+    if (needsTransform) {
+      // Compose stored → display (orientation matrix) → crop translate →
+      // resize scale in one canvas transform: setTransform maps stored
+      // pixel p=(px,py) to (A·px + C·py + E, B·px + D·py + F).
+      const sx = target.width / regionWidth;
+      const sy = target.height / regionHeight;
+      const a = matrix ? matrix[0] : 1;
+      const b = matrix ? matrix[1] : 0;
+      const c = matrix ? matrix[2] : 0;
+      const d = matrix ? matrix[3] : 1;
+      const e = matrix ? matrix[4] : 0;
+      const f = matrix ? matrix[5] : 0;
+      ctx.setTransform(a * sx, b * sy, c * sx, d * sy, sx * (e - cropX), sy * (f - cropY));
       ctx.drawImage(sourceCanvas, 0, 0);
     } else {
       ctx.drawImage(sourceCanvas, 0, 0, target.width, target.height);
@@ -376,21 +482,30 @@ export async function renderAndEncode(
     writeImageData(ctx, data, width, height);
   }
 
-  const normalizedFormat = format.toLowerCase();
-
   if (normalizedFormat === 'png') {
     const blob = await canvasToBlob(canvas, 'image/png');
     releaseCanvas(canvas);
-    return blob;
+    return withExif(blob, decoded, preserveExif, 'png');
   }
   if (normalizedFormat === 'jpeg' || normalizedFormat === 'jpg') {
     const blob = await canvasToBlob(canvas, 'image/jpeg', quality);
     releaseCanvas(canvas);
-    return blob;
+    return withExif(blob, decoded, preserveExif, 'jpeg');
   }
   if (normalizedFormat === 'webp') {
     const blob = await canvasToBlob(canvas, 'image/webp', quality);
     releaseCanvas(canvas);
+    return blob;
+  }
+  if (normalizedFormat === 'avif') {
+    // Capability already probed before pixel work.
+    const blob = await canvasToBlob(canvas, 'image/avif', quality);
+    releaseCanvas(canvas);
+    if (blob.type !== 'image/avif') {
+      // Defensive: the probe passed but this encode fell back to another
+      // type — never label the result AVIF when it is not.
+      throw new HeicConverterError('format_unsupported', Messages.FormatUnsupported('avif'));
+    }
     return blob;
   }
   if (normalizedFormat === 'svg') {

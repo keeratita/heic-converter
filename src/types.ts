@@ -13,6 +13,20 @@ export interface DecodedImage {
   data: Uint8ClampedArray;
 
   /**
+   * Raw EXIF block copied from the source file, normalized to the JPEG APP1
+   * payload form: `"Exif\0\0"` followed by the TIFF structure. Present when
+   * the file carries an Exif item — including files where libheif already
+   * applied `irot`/`imir` (the block is reported independently of
+   * {@link DecodedImage.orientation}).
+   *
+   * `convertHeic` re-injects this block into JPEG (APP1) and PNG (`eXIf`)
+   * output when `preserveExif: true`; raw-decode consumers can attach it to
+   * their own encoder output (e.g. `sharp`'s `.withMetadata({ exif })`).
+   * Owned by the returned object; never a WASM-heap view.
+   */
+  exif?: Uint8Array;
+
+  /**
    * EXIF orientation of the **stored** pixels (1–8, EXIF tag 274 semantics;
    * 1 = upright). Absent or 1 means no rotation is pending.
    *
@@ -65,18 +79,59 @@ export interface IHeicDecoder {
   free(): void;
 }
 
-export type ImageFormat = 'jpeg' | 'jpg' | 'png' | 'svg' | 'webp';
+export type ImageFormat = 'jpeg' | 'jpg' | 'png' | 'svg' | 'webp' | 'avif';
 
 /**
  * Formats accepted by {@link ConvertOptions.to} (case-insensitive).
- * `'jpg'` is an alias of `'jpeg'`.
+ * `'jpg'` is an alias of `'jpeg'`. `'avif'` requires an environment whose
+ * canvas can encode AVIF (Chromium/Firefox today); elsewhere it rejects with
+ * `format_unsupported`.
  */
-export const SUPPORTED_FORMATS: readonly ImageFormat[] = ['jpeg', 'jpg', 'png', 'svg', 'webp'];
+export const SUPPORTED_FORMATS: readonly ImageFormat[] = [
+  'jpeg',
+  'jpg',
+  'png',
+  'svg',
+  'webp',
+  'avif',
+];
 
 /** Default JPEG/WebP encoding quality used when `quality` is not provided. */
 export const DEFAULT_QUALITY = 0.92;
 
 export type HeicInput = Blob | File | ArrayBuffer | Uint8Array;
+
+/**
+ * How {@link convertHeic} returns the converted image.
+ * - `'blob'` — a `Blob` (the default; browser-native, works everywhere)
+ * - `'dataUrl'` — a `data:image/...;base64,…` string (previews, `<img src>`)
+ * - `'arrayBuffer'` — raw bytes (uploads, WebCodecs, Node-friendly transfer)
+ */
+export type OutputShape = 'blob' | 'dataUrl' | 'arrayBuffer';
+
+/** Resolved return type of `convertHeic`/`convertMany` for an output shape. */
+export type ConvertResult<S extends OutputShape> = S extends 'dataUrl'
+  ? string
+  : S extends 'arrayBuffer'
+    ? ArrayBuffer
+    : Blob;
+
+/** Crop rectangle in **post-orientation display pixels** (top-left origin). */
+export interface CropOptions {
+  /** Left edge of the crop box. @default 0 */
+  x?: number;
+  /** Top edge of the crop box. @default 0 */
+  y?: number;
+  /** Crop width in pixels. Must be a positive integer and fit inside the image. */
+  width: number;
+  /** Crop height in pixels. Must be a positive integer and fit inside the image. */
+  height: number;
+}
+
+/** Per-item outcome when `continueOnError: true`. */
+export type ConvertItemResult<T = Blob> =
+  | { index: number; ok: true; result: T }
+  | { index: number; ok: false; error: Error };
 
 export interface ResizeOptions {
   /**
@@ -142,6 +197,38 @@ export interface ConvertOptions extends ResizeOptions {
    * @default true
    */
   applyOrientation?: boolean;
+
+  /**
+   * Representation of the converted image. See {@link OutputShape}.
+   * @default 'blob'
+   */
+  output?: OutputShape;
+
+  /**
+   * AbortSignal that cancels the conversion. Cancellation is checked at
+   * stage boundaries (input read, decoder init, before/after decode,
+   * before encode) and aborts `convertHeicInWorker` calls immediately by
+   * terminating the worker; the synchronous WASM decode itself cannot be
+   * preempted mid-call. An aborted signal rejects with code `aborted`.
+   */
+  signal?: AbortSignal;
+
+  /**
+   * Crop rectangle in post-orientation display pixels (the geometry the
+   * image will be displayed in). Applied before resize: `scale`/`maxWidth`/
+   * `maxHeight` then downscale the cropped region. Out-of-bounds crops
+   * reject with `invalid_crop`.
+   */
+  crop?: CropOptions;
+
+  /**
+   * Copy the source HEIC's EXIF block into JPEG (APP1) and PNG (`eXIf`
+   * chunk) output so converted files keep camera metadata (orientation,
+   * GPS, timestamps). Note this **preserves private data** like GPS — set
+   * deliberately. Ignored for `webp`/`svg` output.
+   * @default false
+   */
+  preserveExif?: boolean;
 }
 
 export interface ConvertManyOptions extends Omit<ConvertOptions, 'onProgress'> {
@@ -164,4 +251,25 @@ export interface ConvertManyOptions extends Omit<ConvertOptions, 'onProgress'> {
    * provided, a fresh default LibheifDecoder is created per item.
    */
   decoder?: IHeicDecoder;
+
+  /**
+   * Resolve with per-item results instead of rejecting the whole batch on
+   * the first failure: the promise fulfills with `ConvertItemResult[]` in
+   * input order, each item `{ index, ok: true, result }` or
+   * `{ index, ok: false, error }`. All items always run to completion.
+   * Up-front option validation failures still reject normally (a typo is a
+   * caller bug, not an item failure).
+   * @default false
+   */
+  continueOnError?: boolean;
+
+  /**
+   * Reuse one library-owned `LibheifDecoder` per concurrent runner across
+   * items instead of creating (and WASM-initializing) a fresh instance per
+   * item — amortizes the module load in large batches while preserving the
+   * exclusive-use invariant (an instance is only ever held by one runner,
+   * never decodes concurrently). Ignored when `decoder` is injected.
+   * @default false
+   */
+  reuseDecoders?: boolean;
 }

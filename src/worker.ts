@@ -1,7 +1,23 @@
-import type { ConvertOptions, HeicInput } from './types';
+import type {
+  ConvertItemResult,
+  ConvertOptions,
+  ConvertResult,
+  HeicInput,
+  OutputShape,
+} from './types';
 import { Messages } from './messages';
 import { clampPercent } from './progress';
 import { HeicConverterError } from './errors';
+import { runBoundedBatch } from './batch';
+import { validateCrop, validateFormat } from './render/canvas';
+import {
+  validateApplyOrientation,
+  validateContinueOnError,
+  validateOutputShape,
+  validatePreserveExif,
+  validateQuality,
+  validateSignal,
+} from './validate';
 
 export interface WorkerConvertOptions extends Omit<ConvertOptions, 'decoder'> {
   /**
@@ -46,7 +62,13 @@ export interface WorkerProgressMessage {
 export interface WorkerResultMessage {
   type: 'result';
   ok: boolean;
-  blob?: Blob;
+  /**
+   * The converted image exactly as `convertHeic` returned it inside the
+   * worker: a Blob, a data-URL string (`output: 'dataUrl'`), or an
+   * ArrayBuffer (`output: 'arrayBuffer'`). The field name `blob` is kept
+   * for protocol compatibility.
+   */
+  blob?: Blob | string | ArrayBuffer;
   error?: string;
 }
 
@@ -191,19 +213,30 @@ export const __semaphoreTestHooks = {
  *
  * @param input HEIC image as a Blob, File, ArrayBuffer, or Uint8Array.
  * @param options Conversion options plus the worker script URL.
- * @returns A Promise resolving to the converted image as a Blob.
+ * @returns The converted image as a Blob, data URL string, or ArrayBuffer
+ *   depending on `options.output` (default Blob).
  */
-export function convertHeicInWorker(
+export function convertHeicInWorker<S extends OutputShape = 'blob'>(
   input: HeicInput,
-  options: WorkerConvertOptions
-): Promise<Blob> {
-  return new Promise<Blob>((resolve, reject) => {
+  options: WorkerConvertOptions & { output?: S }
+): Promise<ConvertResult<S>> {
+  return new Promise<ConvertResult<S>>((resolve, reject) => {
     if (typeof Worker === 'undefined') {
       reject(new HeicConverterError('worker_unsupported', Messages.WorkerUnsupported));
       return;
     }
     if ((options as ConvertOptions).decoder !== undefined) {
       reject(new HeicConverterError('invalid_input', Messages.WorkerDecoderUnsupported));
+      return;
+    }
+    try {
+      validateSignal(options?.signal);
+    } catch (error) {
+      reject(error);
+      return;
+    }
+    if (options.signal?.aborted) {
+      reject(new HeicConverterError('aborted', Messages.Aborted));
       return;
     }
 
@@ -221,6 +254,7 @@ export function convertHeicInWorker(
       if (timeoutId !== undefined) {
         clearTimeout(timeoutId);
       }
+      options.signal?.removeEventListener('abort', onAbort);
       if (worker) {
         worker.removeEventListener('message', onMessage);
         worker.removeEventListener('messageerror', onMessageError);
@@ -229,6 +263,14 @@ export function convertHeicInWorker(
       }
       releaseSlot?.();
     };
+
+    const onAbort = (): void => {
+      // terminate() kills even a still-decoding worker; this is the one
+      // path where cancellation is immediate rather than boundary-based.
+      cleanup();
+      reject(new HeicConverterError('aborted', Messages.Aborted));
+    };
+    options.signal?.addEventListener('abort', onAbort, { once: true });
 
     const timeoutMs = options.timeoutMs ?? 60000;
     if (timeoutMs > 0) {
@@ -274,14 +316,14 @@ export function convertHeicInWorker(
         return;
       }
       cleanup();
-      if (message.ok && message.blob) {
+      if (message.ok && message.blob !== undefined) {
         try {
           options.onProgress?.(100);
         } catch (error) {
           reject(toProgressCallbackError(error));
           return;
         }
-        resolve(message.blob);
+        resolve(message.blob as ConvertResult<S>);
       } else {
         reject(
           new HeicConverterError('worker_failed', message.error ?? Messages.WorkerConversionFailed)
@@ -316,11 +358,11 @@ export function convertHeicInWorker(
       );
     };
 
-    // Functions and class instances (decoder, onProgress) are not
+    // Functions and class instances (decoder, onProgress, signal) are not
     // structured-cloneable, and workerUrl/timeoutMs/workerType/
     // maxConcurrentWorkers are only needed on the main thread;
     // rest-destructuring forwards all remaining options.
-    const { workerUrl, onProgress: _onProgress, timeoutMs: _timeoutMs, workerType: _workerType, maxConcurrentWorkers: _max, ...convertOptions } =
+    const { workerUrl, onProgress: _onProgress, timeoutMs: _timeoutMs, workerType: _workerType, maxConcurrentWorkers: _max, signal: _signal, ...convertOptions } =
       options;
 
     const start = (release: () => void): void => {
@@ -367,10 +409,110 @@ export function convertHeicInWorker(
     };
 
     const key = `${String(workerUrl)}|${options.workerType ?? 'classic'}`;
-    const max =
-      typeof options.maxConcurrentWorkers === 'number' && Number.isInteger(options.maxConcurrentWorkers)
-        ? Math.max(1, options.maxConcurrentWorkers)
-        : defaultMaxWorkers();
+    const max = toRunnerConcurrency(options.maxConcurrentWorkers);
     releaseSlot = reserveWorkerSlot(key, max, start);
   });
+}
+
+/**
+ * Options for {@link convertManyInWorker}: the {@link convertHeicInWorker}
+ * worker options plus the batch semantics of `convertMany`.
+ */
+export interface WorkerBatchOptions extends Omit<WorkerConvertOptions, 'onProgress'> {
+  /**
+   * Per-item progress callback: receives the 0-based item index and its
+   * progress percentage (normalized 0–100). Fires only for successful items.
+   */
+  onProgress?: (index: number, percent: number) => void;
+
+  /**
+   * Resolve with per-item results instead of rejecting the batch on the
+   * first failure; all items run to completion (see
+   * `ConvertManyOptions.continueOnError`).
+   * @default false
+   */
+  continueOnError?: boolean;
+}
+
+function toRunnerConcurrency(maxConcurrentWorkers: number | undefined): number {
+  return typeof maxConcurrentWorkers === 'number' && Number.isInteger(maxConcurrentWorkers)
+    ? Math.max(1, maxConcurrentWorkers)
+    : defaultMaxWorkers();
+}
+
+/**
+ * Converts multiple HEIC images inside Web Workers, mirroring
+ * {@link convertMany} semantics (input order, bounded concurrency,
+ * `batch_item_failed` aggregation or `continueOnError` per-item results).
+ * Concurrency is bounded by `maxConcurrentWorkers` (default
+ * `navigator.hardwareConcurrency` clamped to 1–8): items queue behind the
+ * worker semaphore, so a large batch never exhausts memory or the browser's
+ * worker limit. Each item runs in its own worker instance via
+ * {@link convertHeicInWorker}, which means `decoder` cannot be injected and
+ * `workerUrl` is required.
+ *
+ * ```ts
+ * const blobs = await convertManyInWorker(heicFiles, {
+ *   workerUrl: new URL('./converter.worker.js', import.meta.url),
+ *   workerType: 'module',
+ *   to: 'webp',
+ *   continueOnError: true, // get per-item results instead of batch rejection
+ * });
+ * ```
+ *
+ * @param inputs HEIC images as Blobs, Files, ArrayBuffers, or Uint8Arrays.
+ * @param options Batch + worker conversion options (see {@link WorkerBatchOptions}).
+ * @returns The converted images in input order, or per-item result entries
+ *   when `continueOnError: true`.
+ */
+export function convertManyInWorker<S extends OutputShape = 'blob'>(
+  inputs: HeicInput[],
+  options: WorkerBatchOptions & { output?: S; continueOnError: true }
+): Promise<ConvertItemResult<ConvertResult<S>>[]>;
+export function convertManyInWorker<S extends OutputShape = 'blob'>(
+  inputs: HeicInput[],
+  options: WorkerBatchOptions & { output?: S }
+): Promise<ConvertResult<S>[]>;
+export async function convertManyInWorker<S extends OutputShape = 'blob'>(
+  inputs: HeicInput[],
+  options: WorkerBatchOptions & { output?: S }
+): Promise<ConvertResult<S>[] | ConvertItemResult<ConvertResult<S>>[]> {
+  if (!Array.isArray(inputs)) {
+    throw new HeicConverterError('invalid_input', Messages.InputsMustBeArray);
+  }
+  if (typeof Worker === 'undefined') {
+    throw new HeicConverterError('worker_unsupported', Messages.WorkerUnsupported);
+  }
+  if ((options as ConvertOptions).decoder !== undefined) {
+    throw new HeicConverterError('invalid_input', Messages.WorkerDecoderUnsupported);
+  }
+  // Same up-front shared validation as convertMany: option typos surface
+  // their own code on the main thread instead of returning stringified as
+  // worker_failed from inside the worker.
+  validateFormat(options?.to ?? 'jpeg');
+  if (options?.quality !== undefined) {
+    validateQuality(options.quality);
+  }
+  validateApplyOrientation(options?.applyOrientation);
+  validateOutputShape(options?.output);
+  validateSignal(options?.signal);
+  validateCrop(options?.crop);
+  validateContinueOnError(options?.continueOnError);
+  validatePreserveExif(options?.preserveExif);
+
+  // Batch-only knobs stay out of the per-item worker options.
+  const { onProgress, continueOnError: _continueOnError, ...perItemOptions } = options ?? {};
+
+  return runBoundedBatch<ConvertResult<S>>(
+    inputs,
+    toRunnerConcurrency(options?.maxConcurrentWorkers),
+    (input, index) =>
+      convertHeicInWorker<S>(input as HeicInput, {
+        ...perItemOptions,
+        ...(onProgress !== undefined
+          ? { onProgress: (percent: number): void => onProgress(index, percent) }
+          : {}),
+      }),
+    { continueOnError: options?.continueOnError === true, signal: options?.signal }
+  ) as Promise<ConvertResult<S>[] | ConvertItemResult<ConvertResult<S>>[]>;
 }

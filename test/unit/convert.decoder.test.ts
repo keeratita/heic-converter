@@ -45,8 +45,9 @@ describe('convertHeic - Decoder Lifecycle', () => {
       'svg',
       0.92,
       undefined,
-      true
-    );
+      true,
+      undefined,
+    false);
   });
 
   it('should free the per-conversion decoder after each conversion and create a new one for the next call', async () => {
@@ -194,8 +195,9 @@ describe('convertHeic - Decoder Lifecycle', () => {
         'jpeg',
         0.92,
         undefined,
-        true
-      );
+        true,
+        undefined,
+      false);
     });
 
     it('should not call free on custom decoder even when conversion fails', async () => {
