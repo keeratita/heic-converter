@@ -10,6 +10,8 @@ export const Messages = {
   // index.ts
   QualityInvalid: (value: unknown): string =>
     `Quality must be a number between 0.0 and 1.0, got: ${value}`,
+  ApplyOrientationInvalid: (value: unknown): string =>
+    `applyOrientation must be a boolean, got: ${value}`,
   UnsupportedInputType: (type: string): string =>
     `Unsupported input type. Expected Blob, File, ArrayBuffer, or Uint8Array. Got: ${type}`,
   DecoderInitFailed: (message: string): string => `Failed to initialize HEIC decoder: ${message}`,

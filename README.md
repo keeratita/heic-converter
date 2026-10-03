@@ -15,6 +15,7 @@ Designed specifically for environments with strict **Content Security Policy (CS
 - 📦 **No Bloat**: Zero external production dependencies. Small footprint.
 - 🎨 **Format Support**: Convert to `jpeg` (with quality configuration), `png`, `webp`, and `svg` (embedded lossless vector).
 - 📐 **Resize Support**: Downscale with `maxWidth`/`maxHeight` or apply a uniform `scale` factor during conversion.
+- 🧭 **EXIF-Orientation Aware**: Images stored rotated with an EXIF orientation flag come out upright, matching what viewers display. Opt out with `applyOrientation: false`.
 - 📚 **Batch Conversion**: Convert many images at once with bounded concurrency via `convertMany`.
 - 🧵 **Web Worker Helper**: Offload conversions to a Web Worker with `convertHeicInWorker` to keep the UI thread responsive.
 
@@ -186,8 +187,11 @@ async function convertNode() {
   });
   await decoder.initialize();
 
-  // Decodes to { width, height, data: Uint8ClampedArray (RGBA) }.
+  // Decodes to { width, height, data: Uint8ClampedArray (RGBA), orientation? }.
   // data is an independent copy — safe to use after decoder.free().
+  // orientation 2-8 means the stored pixels need a rotation for display
+  // (convertHeic applies it automatically; raw-decode consumers must do it
+  // themselves, e.g. by rotating the buffer or passing it to sharp).
   const { width, height, data } = await decoder.decode(heicData);
 
   // Process raw pixels using sharp
@@ -254,7 +258,28 @@ const halfSizeBlob = await convertHeic(heicBlob, {
 > [!NOTE]
 > Target dimensions are validated before any decoding work: `scale`, `maxWidth`, and `maxHeight` must be positive finite numbers (otherwise an `invalid_resize` error is thrown), and the resulting target size must not exceed **16384 px** on either side — the canvas/WASM ceiling shared with the decoder's own security limits.
 
-### 8. Batch Conversion
+### 8. Orientation (EXIF) Handling
+
+Some HEIC files are stored rotated, with the intended display rotation recorded in the EXIF orientation tag (274). Browsers, Photos, and most image viewers apply that rotation when displaying — so `convertHeic` uprights the output for you during rendering:
+
+```typescript
+import { convertHeic } from '@keeratita/heic-converter';
+
+// Upright according to the source's EXIF orientation (default: applyOrientation: true)
+const jpeg = await convertHeic(heicFile);
+
+// Keep the exact stored-pixel geometry instead (the pre-0.5 behavior):
+const unrotated = await convertHeic(heicFile, { applyOrientation: false });
+```
+
+How it works:
+
+- HEIF's native display-transform boxes (`irot`/`imir`) are applied by the decoder itself during `decode()` — `convertHeic` never stacks a second rotation on top, so Apple-style files are never double-rotated.
+- When a file carries only the EXIF tag (the class written by tools that just rewrite metadata), `convertHeic` applies the rotation/flip via a canvas transform.
+- `LibheifDecoder.decode()` returns the raw **stored** pixels and reports a pending rotation via the optional `orientation` field (EXIF semantics `1`–`8`; absent or `1` means nothing is pending). If you encode the pixels yourself (e.g. Node.js + `sharp`), apply the rotation yourself.
+- A non-boolean `applyOrientation` value is rejected up front with an `invalid_input` error.
+
+### 9. Batch Conversion
 
 Convert many images at once with bounded concurrency (default `4`). Results are returned in input order; if any conversion fails, the promise rejects as soon as the failure is known with an error that identifies the failing item:
 
@@ -279,7 +304,7 @@ Batch semantics worth knowing:
 - `onProgress` only fires for items that succeed; a failing item never reports 100%.
 - `concurrency` must be a positive integer; the default is `4`.
 
-### 9. Web Worker Conversion
+### 10. Web Worker Conversion
 
 Run the conversion inside a Web Worker so the main thread stays responsive. Create a worker script that uses this library:
 
@@ -356,6 +381,7 @@ Converts a HEIC image file to a standard web format.
   - `maxWidth`: `number` (Downscale to fit within this width, preserving aspect ratio. Never upscales)
   - `maxHeight`: `number` (Downscale to fit within this height, preserving aspect ratio. Never upscales)
   - `scale`: `number` (Uniform scale factor, e.g. `0.5` halves the image. Takes precedence over `maxWidth`/`maxHeight`)
+  - `applyOrientation`: `boolean` (Rotate/flip the output to match the source's EXIF orientation. `irot`/`imir` transforms are already applied by the decoder and never stacked. Default: `true`)
 - **Returns**: `Promise<Blob>`
 
 ### `convertMany(inputs, options?)`
@@ -371,7 +397,7 @@ Converts multiple HEIC images with bounded concurrency. Results are returned in 
 
 ### `convertHeicInWorker(input, options)`
 
-Converts a HEIC image inside a Web Worker. The worker script must implement the message protocol shown in [Usage section 9](#9-web-worker-conversion). Browser-only; rejects in Node.js.
+Converts a HEIC image inside a Web Worker. The worker script must implement the message protocol shown in [Usage section 10](#10-web-worker-conversion). Browser-only; rejects in Node.js.
 
 - **`input`**: `Blob | File | ArrayBuffer | Uint8Array`
 - **`options`**: `WorkerConvertOptions` — same as `ConvertOptions` but without `decoder` (cannot be structured-cloned; passing one rejects with `invalid_input`), plus:
@@ -391,7 +417,7 @@ The default WASM-based implementation of `IHeicDecoder`.
   - `moduleOverrides`: `Record<string, unknown>` (Advanced: merged into the Emscripten module arguments, e.g. `instantiateWasm`)
 - **Methods**:
   - `initialize(): Promise<void>`: Loads and initializes the WASM wrapper. Safe to call concurrently; the module loads at most once per instance.
-  - `decode(data: Uint8Array, onProgress?: (percent: number) => void): Promise<DecodedImage>`: Decodes the HEIC bytes to raw RGBA, with optional progress callback (normalized to finite `0`–`100`). Returns JS-owned pixel data — safe to use after `free()`. Safe to call after `free()`: the instance transparently re-initializes.
+  - `decode(data: Uint8Array, onProgress?: (percent: number) => void): Promise<DecodedImage>`: Decodes the HEIC bytes to raw RGBA, with optional progress callback (normalized to finite `0`–`100`). Returns JS-owned pixel data — safe to use after `free()`. The result carries an optional `orientation` field (`2`–`8`, EXIF semantics) when the stored pixels need a rotation for display that the decoder did not itself apply (EXIF-tag-only files); absent or `1` means the pixels are upright. Safe to call after `free()`: the instance transparently re-initializes.
   - `free(): void`: Releases the WASM module and decoder instance. Idempotent, and safe to call while `initialize()` is in flight (the in-flight load is discarded).
 
 ### Error handling
@@ -400,7 +426,7 @@ All errors thrown by this library are `HeicConverterError` instances (`extends E
 
 | `code` | Thrown by | Meaning |
 | --- | --- | --- |
-| `invalid_input` | `convertHeic`, `convertMany`, `convertHeicInWorker` | Unsupported input type; or worker helper called with a `decoder` |
+| `invalid_input` | `convertHeic`, `convertMany`, `convertHeicInWorker` | Unsupported input type; non-boolean `applyOrientation`; or worker helper called with a `decoder` |
 | `invalid_quality` | `convertHeic`, `convertMany` | `quality` outside `0.0`–`1.0` or not a finite number |
 | `invalid_resize` | `convertHeic`, `convertMany` | `scale`/`maxWidth`/`maxHeight` not positive finite numbers, or target size exceeds 16384 px |
 | `invalid_format` | `convertHeic`, `convertMany` | Unknown `to` value |

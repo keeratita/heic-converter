@@ -17,6 +17,7 @@ _(nothing yet)_
 - **`convertHeicInWorker` concurrency control**: concurrent conversions are now bounded per worker script via a new `maxConcurrentWorkers` option (default: `navigator.hardwareConcurrency` clamped to 1–8); calls beyond the cap queue and start as slots free. Passing the (non-cloneable) `decoder` option now rejects immediately with `invalid_input` instead of being silently stripped; `WorkerConvertOptions` omits `decoder` at the type level.
 - **Early environment & option checks**: `convertHeic`/`convertMany` now validate the format, options, and canvas availability *before* loading the WASM module or decoding, so Node.js users get `unsupported_environment` immediately instead of a wrapped decode-stage failure.
 - **WASM artifact verification**: new `npm run verify:wasm` (`build-scripts/verify-wasm-artifacts.mjs`) checks the committed glue/binary against pinned SHA-256 hashes (`build-scripts/wasm-artifacts.json`, regenerated with `npm run wasm:hashes`) and scans the Emscripten glue for `eval`/`new Function` — wired into CI. Dependabot now bumps GitHub Actions and npm dependencies.
+- **EXIF orientation support**: `convertHeic`/`convertMany` upright images whose intended display rotation lives only in the EXIF orientation tag (274), matching how browsers, Photos, and other viewers display such files. Controlled by the new `applyOrientation` option (default `true`; non-boolean values reject with `invalid_input`). `LibheifDecoder.decode()` exposes the pending rotation to raw-decode consumers via the optional `DecodedImage.orientation` field (`2`–`8`, absent when nothing is pending). HEIF `irot`/`imir` transforms remain applied by libheif at decode and are never stacked with the EXIF tag: files carrying those boxes report no pending orientation, so Apple-style files are never double-rotated. The C++ wrapper reads the tag from the Exif item's IFD0 with a bounds-checked TIFF parser (conservative: any parse anomaly falls back to "upright"; oversized metadata blocks are skipped).
 
 ### Changed
 
@@ -29,6 +30,7 @@ _(nothing yet)_
 
 ### Fixed
 
+- **Sideways output for EXIF-rotated HEIC**: files whose pixels are stored rotated with only an EXIF orientation tag (no `irot`/`imir` boxes — written by tools that just rewrite metadata) previously converted to rotated output; they now come out upright like every viewer shows them (see the `applyOrientation` option and the Orientation section in the README).
 - `convertHeic` no longer rejects with a misleading decode error in environments without canvas APIs, and `onProgress: null`/non-function values are treated as absent instead of throwing mid-decode.
 - `convertMany` frees decoders of in-flight items when the batch rejects early, reports every failed item (not just the first) in the summary, and attributes `null` rejections with the item index.
 

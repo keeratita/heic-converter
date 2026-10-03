@@ -41,6 +41,17 @@ function validateQuality(quality: number): void {
 }
 
 /**
+ * Validates the applyOrientation flag up front (must be boolean when
+ * present), so a typo surfaces as `invalid_input` before any decode work
+ * instead of being silently ignored.
+ */
+function validateApplyOrientation(applyOrientation: unknown): void {
+  if (applyOrientation !== undefined && typeof applyOrientation !== 'boolean') {
+    throw new HeicConverterError('invalid_input', Messages.ApplyOrientationInvalid(applyOrientation));
+  }
+}
+
+/**
  * Resolves any supported input form to a Uint8Array, including cross-realm
  * Blob-likes (detected via `arrayBuffer()`) and other ArrayBufferViews.
  */
@@ -159,6 +170,7 @@ export async function convertHeic(
   if (options?.quality !== undefined) {
     validateQuality(options.quality);
   }
+  validateApplyOrientation(options?.applyOrientation);
   const format = options?.to ?? 'jpeg';
   validateFormat(format);
   const resizeOptions =
@@ -218,9 +230,13 @@ export async function convertHeic(
 
     let blob: Blob;
     try {
-      blob = resizeOptions
-        ? await renderAndEncode(decoded, format, quality, resizeOptions)
-        : await renderAndEncode(decoded, format, quality);
+      blob = await renderAndEncode(
+        decoded,
+        format,
+        quality,
+        resizeOptions,
+        options?.applyOrientation ?? true
+      );
     } catch (error) {
       throw new HeicConverterError(
         'render_encode_failed',
@@ -274,6 +290,7 @@ export async function convertMany(
   if (options?.quality !== undefined) {
     validateQuality(options.quality);
   }
+  validateApplyOrientation(options?.applyOrientation);
   validateResize(
     options?.maxWidth !== undefined || options?.maxHeight !== undefined || options?.scale !== undefined
       ? options

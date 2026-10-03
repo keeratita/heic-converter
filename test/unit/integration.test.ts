@@ -10,9 +10,15 @@ const __dirname = path.dirname(__filename);
 const WASM_PATH = path.resolve(__dirname, '../../dist/heic-decoder.wasm');
 const FIXTURE_PATH = path.resolve(__dirname, '../fixtures/example.heic');
 const ALPHA_FIXTURE_PATH = path.resolve(__dirname, '../fixtures/colors-with-alpha.heic');
+const ORIENTED_FIXTURE_PATH = path.resolve(__dirname, '../fixtures/exif-orientation-6.heic');
+const IROT_FIXTURE_PATH = path.resolve(__dirname, '../fixtures/irot-orientation-6.heic');
 
 const hasWasm = fs.existsSync(WASM_PATH);
-const hasFixture = fs.existsSync(FIXTURE_PATH) && fs.existsSync(ALPHA_FIXTURE_PATH);
+const hasFixture =
+  fs.existsSync(FIXTURE_PATH) &&
+  fs.existsSync(ALPHA_FIXTURE_PATH) &&
+  fs.existsSync(ORIENTED_FIXTURE_PATH) &&
+  fs.existsSync(IROT_FIXTURE_PATH);
 const isCI = typeof process !== 'undefined' && !!process.env.CI;
 
 if (!hasWasm || !hasFixture) {
@@ -126,6 +132,35 @@ describe.skipIf((!hasWasm || !hasFixture) && !isCI)('Integration Tests - Real WA
       expect(value).toBeGreaterThanOrEqual(0);
       expect(value).toBeLessThanOrEqual(100);
     });
+  });
+
+  it('reports EXIF orientation 6 for a file whose only display transform is the Exif tag', async () => {
+    // Fixture: stored 1600x1200 landscape, EXIF tag 274 = 6, no irot/imir
+    // boxes — the class produced by editors that only rewrite EXIF. libheif
+    // cannot apply a transform the container does not carry, so the wrapper
+    // surfaces the tag and the canvas layer applies it during rendering.
+    const decoder = new LibheifDecoder({ wasmBinary });
+    await decoder.initialize();
+    const decoded = await decoder.decode(new Uint8Array(fs.readFileSync(ORIENTED_FIXTURE_PATH)));
+
+    expect(decoded.width).toBe(1600);
+    expect(decoded.height).toBe(1200);
+    expect(decoded.orientation).toBe(6);
+    decoder.free();
+  });
+
+  it('reports no pending orientation when libheif already applied the irot transform', async () => {
+    // Fixture: same content stored landscape with an irot 90 box (+ EXIF tag).
+    // libheif applies irot at decode (dimensions come back swapped); the
+    // wrapper must not stack the EXIF tag on top — double-rotation guard.
+    const decoder = new LibheifDecoder({ wasmBinary });
+    await decoder.initialize();
+    const decoded = await decoder.decode(new Uint8Array(fs.readFileSync(IROT_FIXTURE_PATH)));
+
+    expect(decoded.width).toBe(1200);
+    expect(decoded.height).toBe(1600);
+    expect(decoded.orientation).toBeUndefined();
+    decoder.free();
   });
 
   it('should reject convertHeic in Node.js environments (no canvas) with a clear error', async () => {

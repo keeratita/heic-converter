@@ -131,7 +131,10 @@ describe('convertMany', () => {
     // forwarding: item options still reach the encoder untouched.
     await convertMany([new Uint8Array([1])], { concurrency: 3, to: 'png', quality: 0.4 });
 
-    expect(mockState.renderAndEncodeMock).toHaveBeenCalledWith(expect.any(Object), 'png', 0.4);
+    expect(mockState.renderAndEncodeMock).toHaveBeenCalledWith(expect.any(Object), 'png', 0.4,
+        undefined,
+        true
+      );
     expect(mockState.decoderInstances).toHaveLength(1);
   });
 
@@ -166,8 +169,10 @@ describe('convertMany', () => {
     expect(mockState.renderAndEncodeMock).toHaveBeenCalledWith(
       expect.any(Object),
       'png',
-      0.5
-    );
+      0.5,
+        undefined,
+        true
+      );
   });
 
   it('should pass through resize options', async () => {
@@ -177,7 +182,8 @@ describe('convertMany', () => {
       expect.any(Object),
       'jpeg',
       0.92,
-      expect.objectContaining({ scale: 0.5 })
+      expect.objectContaining({ scale: 0.5 }),
+      true
     );
   });
 

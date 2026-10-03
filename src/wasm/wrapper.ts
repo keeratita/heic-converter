@@ -34,6 +34,8 @@ interface HeicDecoderResult {
   width: number;
   height: number;
   data: Uint8Array;
+  /** EXIF orientation 1-8 (1 when absent or already applied by libheif). */
+  orientation?: number;
 }
 
 /**
@@ -223,6 +225,19 @@ export class LibheifDecoder implements IHeicDecoder {
     const width = result.width;
     const height = result.height;
 
+    // Validate the reported orientation before exposing it: anything outside
+    // EXIF's 1-8 range (or absent on an older glue) is identity. Only set the
+    // field when a rotation is actually pending, keeping the result shape
+    // backwards compatible.
+    const rawOrientation = result.orientation;
+    const orientation =
+      typeof rawOrientation === 'number' &&
+      Number.isInteger(rawOrientation) &&
+      rawOrientation >= 1 &&
+      rawOrientation <= 8
+        ? rawOrientation
+        : 1;
+
     // DecodedImage.data must outlive free(): the C++ wrapper allocates pixels
     // as a JS array, so wrap without copying when HEAPU8 proves it is not a
     // heap view; otherwise copy.
@@ -232,11 +247,15 @@ export class LibheifDecoder implements IHeicDecoder {
         ? new Uint8ClampedArray(result.data.buffer, result.data.byteOffset, result.data.byteLength)
         : new Uint8ClampedArray(result.data);
 
-    return {
+    const decoded: DecodedImage = {
       width,
       height,
       data: clampedData,
     };
+    if (orientation > 1) {
+      decoded.orientation = orientation;
+    }
+    return decoded;
   }
 
   /**

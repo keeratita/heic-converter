@@ -10,6 +10,7 @@ describe('Messages', () => {
   describe('index.ts builders', () => {
     it('formats the core validation messages', () => {
       expect(Messages.QualityInvalid(2)).toContain('Quality must be a number between 0.0 and 1.0, got: 2');
+      expect(Messages.ApplyOrientationInvalid('yes')).toBe('applyOrientation must be a boolean, got: yes');
       expect(Messages.UnsupportedInputType('[object Object]')).toContain('Got: [object Object]');
       expect(Messages.DecoderInitFailed('boom')).toBe('Failed to initialize HEIC decoder: boom');
       expect(Messages.RenderEncodeFailed('png', 'oops')).toContain('as png: oops');

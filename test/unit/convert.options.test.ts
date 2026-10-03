@@ -78,7 +78,9 @@ describe('convertHeic - Options', () => {
       expect(mockState.renderAndEncodeMock).toHaveBeenCalledWith(
         expect.any(Object),
         'jpeg',
-        0.0
+        0.0,
+        undefined,
+        true
       );
     });
 
@@ -88,7 +90,9 @@ describe('convertHeic - Options', () => {
       expect(mockState.renderAndEncodeMock).toHaveBeenCalledWith(
         expect.any(Object),
         'jpeg',
-        1.0
+        1.0,
+        undefined,
+        true
       );
     });
 
@@ -133,7 +137,9 @@ describe('convertHeic - Options', () => {
         expect(mockState.renderAndEncodeMock).toHaveBeenCalledWith(
           expect.any(Object),
           format,
-          0.92
+          0.92,
+          undefined,
+          true
         );
       }
     });
@@ -156,7 +162,9 @@ describe('convertHeic - Options', () => {
       expect(mockState.renderAndEncodeMock).toHaveBeenCalledWith(
         expect.any(Object),
         'jpeg',
-        0.92
+        0.92,
+        undefined,
+        true
       );
     });
 
@@ -195,7 +203,9 @@ describe('convertHeic - Options', () => {
       expect(mockState.renderAndEncodeMock).toHaveBeenCalledWith(
         expect.any(Object),
         'jpeg',
-        0.92
+        0.92,
+        undefined,
+        true
       );
     });
 
@@ -206,7 +216,9 @@ describe('convertHeic - Options', () => {
       expect(mockState.renderAndEncodeMock).toHaveBeenCalledWith(
         expect.any(Object),
         'jpeg',
-        0.92
+        0.92,
+        undefined,
+        true
       );
     });
 
@@ -233,7 +245,9 @@ describe('convertHeic - Options', () => {
       expect(mockState.renderAndEncodeMock).toHaveBeenCalledWith(
         expect.any(Object),
         'jpeg',
-        0.92
+        0.92,
+        undefined,
+        true
       );
     });
 
@@ -241,5 +255,61 @@ describe('convertHeic - Options', () => {
       const result = await convertHeic(new Uint8Array([1]), null as any);
       expect(result).toBeInstanceOf(Blob);
     });
+  });
+});
+
+describe('convertHeic - applyOrientation', () => {
+  beforeEach(() => {
+    resetConvertMocks();
+  });
+
+  it.each([['yes'], [1], [0], [null], [{}, 'object'], [[], 'array']])(
+    'rejects non-boolean applyOrientation %p with invalid_input',
+    async (value) => {
+      const error = await convertHeic(new Uint8Array([1]), {
+        applyOrientation: value as unknown as boolean,
+      }).catch((e) => e);
+      expect(error).toBeInstanceOf(Error);
+      expect(error.code).toBe('invalid_input');
+      expect(error.message).toContain('applyOrientation must be a boolean');
+    }
+  );
+
+  it('defaults applyOrientation to true for the renderer', async () => {
+    await convertHeic(new Uint8Array([1]));
+    expect(mockState.renderAndEncodeMock).toHaveBeenCalledWith(
+      expect.anything(),
+      'jpeg',
+      0.92,
+      undefined,
+      true
+    );
+  });
+
+  it('forwards applyOrientation: false to the renderer', async () => {
+    await convertHeic(new Uint8Array([1]), { applyOrientation: false });
+    expect(mockState.renderAndEncodeMock).toHaveBeenCalledWith(
+      expect.anything(),
+      'jpeg',
+      0.92,
+      undefined,
+      false
+    );
+  });
+
+  it('passes the decoded orientation through to the renderer', async () => {
+    resetConvertMocks({
+      decodedImage: {
+        width: 2,
+        height: 1,
+        data: new Uint8ClampedArray(2 * 4),
+        orientation: 6,
+      },
+    });
+
+    await convertHeic(new Uint8Array([1]));
+
+    const [decoded] = mockState.renderAndEncodeMock.mock.calls[0];
+    expect(decoded.orientation).toBe(6);
   });
 });

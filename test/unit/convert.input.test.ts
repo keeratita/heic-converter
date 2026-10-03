@@ -42,6 +42,8 @@ describe('convertHeic - Input Types', () => {
       expect.objectContaining({ width: 1, height: 1 }),
       'jpeg',
       0.92,
+      undefined,
+      true
     );
   });
 
@@ -69,6 +71,8 @@ describe('convertHeic - Input Types', () => {
       expect.objectContaining({ width: 1, height: 1 }),
       'png',
       0.5,
+      undefined,
+      true
     );
   });
 

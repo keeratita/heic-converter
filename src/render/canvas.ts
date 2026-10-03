@@ -256,13 +256,56 @@ function writeImageData(
 }
 
 /**
+ * Canvas transform matrices mapping stored `w×h` pixels into their
+ * EXIF-orientation display space (orientations 2–8; 5–8 swap the axes).
+ * Returns null for orientation 1 (identity). Composed with the resize scale
+ * before `setTransform`, so rotation and downscale share one drawImage.
+ */
+function orientationMatrix(
+  orientation: number,
+  w: number,
+  h: number
+): readonly [number, number, number, number, number, number] | null {
+  switch (orientation) {
+    case 2:
+      return [-1, 0, 0, 1, w, 0];
+    case 3:
+      return [-1, 0, 0, -1, w, h];
+    case 4:
+      return [1, 0, 0, -1, 0, h];
+    case 5:
+      return [0, 1, 1, 0, 0, 0];
+    case 6:
+      return [0, 1, -1, 0, h, 0];
+    case 7:
+      return [0, -1, -1, 0, h, w];
+    case 8:
+      return [0, -1, 1, 0, 0, w];
+    default:
+      return null;
+  }
+}
+
+/**
+ * Normalizes a DecodedImage orientation to a usable EXIF value (1-8).
+ * Anything else (absent, injected decoder, garbage) means identity.
+ */
+function effectiveOrientation(orientation: number | undefined, apply: boolean): number {
+  if (!apply || typeof orientation !== 'number' || !Number.isInteger(orientation)) {
+    return 1;
+  }
+  return orientation >= 1 && orientation <= 8 ? orientation : 1;
+}
+
+/**
  * Renders DecodedImage pixel data onto a canvas and encodes it into the target format.
  */
 export async function renderAndEncode(
   decoded: DecodedImage,
   format: ImageFormat,
   quality: number,
-  resize?: ResizeOptions
+  resize?: ResizeOptions,
+  applyOrientation = true
 ): Promise<Blob> {
   // Reject unknown formats before any canvas/pixel work happens.
   validateFormat(format);
@@ -284,8 +327,14 @@ export async function renderAndEncode(
     );
   }
 
-  const target = computeTargetSize(width, height, resize);
-  const needsResize = target.width !== width || target.height !== height;
+  const orientation = effectiveOrientation(decoded.orientation, applyOrientation);
+  const matrix = orientationMatrix(orientation, width, height);
+  const swapsAxes = orientation >= 5;
+  const displayWidth = swapsAxes ? height : width;
+  const displayHeight = swapsAxes ? width : height;
+
+  const target = computeTargetSize(displayWidth, displayHeight, resize);
+  const needsResize = target.width !== displayWidth || target.height !== displayHeight;
 
   const canvas = createCanvas(target.width, target.height);
   const ctx = canvas.getContext('2d') as CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null;
@@ -293,16 +342,33 @@ export async function renderAndEncode(
     throw new HeicConverterError('render_encode_failed', Messages.ContextUnavailable);
   }
 
-  if (needsResize) {
-    // Draw the full-resolution pixels onto a source canvas, then scale it
-    // into the target canvas so the browser's high-quality resampling applies.
+  if (needsResize || matrix) {
+    // Pixels land on a full-resolution source canvas first; the browser's
+    // high-quality resampling (and, when pending, the EXIF orientation) is
+    // applied by scaling/transforming it into the target canvas.
     const sourceCanvas = createCanvas(width, height);
     const sourceCtx = sourceCanvas.getContext('2d') as CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null;
     if (!sourceCtx) {
       throw new HeicConverterError('render_encode_failed', Messages.ContextUnavailable);
     }
     writeImageData(sourceCtx, data, width, height);
-    ctx.drawImage(sourceCanvas, 0, 0, target.width, target.height);
+    if (matrix) {
+      // Compose scale (resize) after the orientation matrix, then draw the
+      // source through it with the canvas transform doing the work.
+      const sx = target.width / displayWidth;
+      const sy = target.height / displayHeight;
+      ctx.setTransform(
+        matrix[0] * sx,
+        matrix[1] * sx,
+        matrix[2] * sy,
+        matrix[3] * sy,
+        matrix[4] * sx,
+        matrix[5] * sy
+      );
+      ctx.drawImage(sourceCanvas, 0, 0);
+    } else {
+      ctx.drawImage(sourceCanvas, 0, 0, target.width, target.height);
+    }
     // The full-resolution source canvas is no longer needed; release it
     // before the (potentially slow) encode step to cap peak memory.
     releaseCanvas(sourceCanvas);

@@ -36,7 +36,7 @@ async function waitForServer(timeoutMs = 20000) {
  * blob with the requested format, a valid resolution, and a non-zero size.
  */
 async function runSandboxConversions(page) {
-  const runConversion = async (fileName, format, quality) => {
+  const runConversion = async (fileName, format, quality, expectedResolution) => {
     console.log(`\n--- Sandbox: ${fileName} -> ${format.toUpperCase()} (quality=${quality ?? 'default'}) ---`);
 
     await page.locator('#fileInput').setInputFiles(path.join(ROOT_DIR, 'test/fixtures', fileName));
@@ -74,6 +74,13 @@ async function runSandboxConversions(page) {
       fail(`resolution: got "${outResolution}"`);
     }
 
+    if (expectedResolution !== undefined) {
+      const [ew, eh] = expectedResolution.split('x').map((v) => Number(v.trim()));
+      if (Number(match?.[1]) !== ew || Number(match?.[2]) !== eh) {
+        fail(`orientation: expected output ${expectedResolution}, got "${outResolution}"`);
+      }
+    }
+
     if (!outSize || outSize === '0 Bytes') {
       fail(`size: got "${outSize}"`);
     }
@@ -84,6 +91,11 @@ async function runSandboxConversions(page) {
   await runConversion('colors-with-alpha.heic', 'png');
   await runConversion('example.heic', 'jpeg', 0.5);
   await runConversion('colors-no-alpha.heic', 'svg');
+  // Orientation: the EXIF-only file must be emitted upright PORTRAIT (the
+  // canvas layer applies tag 274); the irot file proves libheif's applied
+  // transform is never stacked with the EXIF tag (no double rotation).
+  await runConversion('exif-orientation-6.heic', 'jpeg', undefined, '1200x1600');
+  await runConversion('irot-orientation-6.heic', 'png', undefined, '1200x1600');
 }
 
 /**

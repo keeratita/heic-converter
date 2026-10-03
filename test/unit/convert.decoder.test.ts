@@ -44,6 +44,8 @@ describe('convertHeic - Decoder Lifecycle', () => {
       expect.objectContaining({ width: 2, height: 2 }),
       'svg',
       0.92,
+      undefined,
+      true
     );
   });
 
@@ -190,7 +192,9 @@ describe('convertHeic - Decoder Lifecycle', () => {
       expect(mockState.renderAndEncodeMock).toHaveBeenCalledWith(
         expect.objectContaining({ width: -1, height: -1 }),
         'jpeg',
-        0.92
+        0.92,
+        undefined,
+        true
       );
     });
 

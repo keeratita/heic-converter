@@ -11,6 +11,19 @@ export interface DecodedImage {
    * overload that requires `Uint8ClampedArray<ArrayBuffer>` under TS >= 5.7.
    */
   data: Uint8ClampedArray;
+
+  /**
+   * EXIF orientation of the **stored** pixels (1–8, EXIF tag 274 semantics;
+   * 1 = upright). Absent or 1 means no rotation is pending.
+   *
+   * libheif already applies `irot`/`imir` container transforms during
+   * decode — for those files this is 1 and the pixels are upright. A value
+   * > 1 means the orientation comes only from the Exif item: `convertHeic`
+   * applies it automatically (unless `applyOrientation: false`), while raw
+   * `decode()` consumers get stored pixels and must apply it themselves.
+   * Decoders that do not report orientation may omit this field.
+   */
+  orientation?: number;
 }
 
 /**
@@ -119,6 +132,16 @@ export interface ConvertOptions extends ResizeOptions {
    * throws rejects the conversion with `progress_callback_failed`.
    */
   onProgress?: (percent: number) => void;
+
+  /**
+   * Rotate/flip the output so it matches the source's EXIF orientation
+   * (applied as a canvas transform during rendering; `irot`/`imir` container
+   * transforms are already applied by the decoder and never stacked on top).
+   * Set `false` to keep the exact stored-pixel geometry. A non-boolean value
+   * is rejected up front with `invalid_input`.
+   * @default true
+   */
+  applyOrientation?: boolean;
 }
 
 export interface ConvertManyOptions extends Omit<ConvertOptions, 'onProgress'> {

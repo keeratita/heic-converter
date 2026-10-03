@@ -647,3 +647,47 @@ describe('LibheifDecoder (mocked glue)', () => {
     });
   });
 });
+describe('LibheifDecoder (mocked glue) - orientation reporting', () => {
+  beforeEach(() => {
+    mockState.mockModuleFactory.mockResolvedValue(mockState.mockModule);
+    mockState.mockDecoderInstance.decode.mockReset();
+  });
+
+  const mockResultWithOrientation = (orientation?: unknown): void => {
+    const result: Record<string, unknown> = {
+      width: 4,
+      height: 2,
+      data: new Uint8Array(4 * 2 * 4),
+    };
+    if (orientation !== undefined) {
+      result.orientation = orientation;
+    }
+    mockState.mockDecoderInstance.decode.mockReturnValue(result);
+  };
+
+  const decodeWith = async (orientation?: unknown): Promise<DecodedImageLike> => {
+    mockResultWithOrientation(orientation);
+    const decoder = new LibheifDecoder();
+    await decoder.initialize();
+    return decoder.decode(new Uint8Array([1, 2, 3, 4]));
+  };
+
+  type DecodedImageLike = { orientation?: number };
+
+  it('passes through a valid EXIF orientation', async () => {
+    const decoded = await decodeWith(6);
+    expect(decoded.orientation).toBe(6);
+  });
+
+  it('omits the field for identity (1) or when an older glue reports nothing', async () => {
+    expect((await decodeWith(1)).orientation).toBeUndefined();
+    expect((await decodeWith(undefined)).orientation).toBeUndefined();
+  });
+
+  it('normalizes out-of-range, fractional, and non-numeric orientations to identity', async () => {
+    for (const garbage of [0, 9, 1.5, '6', NaN, Infinity, null, true]) {
+      const decoded = await decodeWith(garbage);
+      expect(decoded.orientation).toBeUndefined();
+    }
+  });
+});

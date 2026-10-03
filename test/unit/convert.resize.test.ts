@@ -36,7 +36,8 @@ describe('convertHeic - Resize options', () => {
       expect.any(Object),
       'jpeg',
       0.92,
-      { maxWidth: undefined, maxHeight: undefined, scale: 0.5 }
+      { maxWidth: undefined, maxHeight: undefined, scale: 0.5 },
+      true
     );
   });
 
@@ -47,7 +48,8 @@ describe('convertHeic - Resize options', () => {
       expect.any(Object),
       'jpeg',
       0.92,
-      { maxWidth: 800, maxHeight: undefined, scale: undefined }
+      { maxWidth: 800, maxHeight: undefined, scale: undefined },
+      true
     );
   });
 
@@ -58,7 +60,8 @@ describe('convertHeic - Resize options', () => {
       expect.any(Object),
       'jpeg',
       0.92,
-      { maxWidth: undefined, maxHeight: 600, scale: undefined }
+      { maxWidth: undefined, maxHeight: 600, scale: undefined },
+      true
     );
   });
 
@@ -69,7 +72,8 @@ describe('convertHeic - Resize options', () => {
       expect.any(Object),
       'jpeg',
       0.92,
-      { maxWidth: 800, maxHeight: 600, scale: 0.5 }
+      { maxWidth: 800, maxHeight: 600, scale: 0.5 },
+      true
     );
   });
 
@@ -79,7 +83,9 @@ describe('convertHeic - Resize options', () => {
     expect(mockState.renderAndEncodeMock).toHaveBeenCalledWith(
       expect.any(Object),
       'jpeg',
-      0.92
+      0.92,
+      undefined,
+      true
     );
   });
 
@@ -93,7 +99,9 @@ describe('convertHeic - Resize options', () => {
     expect(mockState.renderAndEncodeMock).toHaveBeenCalledWith(
       expect.any(Object),
       'jpeg',
-      0.92
+      0.92,
+      undefined,
+      true
     );
   });
 
@@ -159,7 +167,8 @@ describe('convertHeic - Resize options', () => {
       expect.any(Object),
       'webp',
       0.5,
-      expect.objectContaining({ scale: 2 })
+      expect.objectContaining({ scale: 2 }),
+      true
     );
   });
 });
