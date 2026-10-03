@@ -1,6 +1,6 @@
 # @keeratita/heic-converter
 
-A modern, lightweight TypeScript library to convert `.heic` and `.heif` images to standard web formats (JPEG, PNG, WebP, SVG) client-side in the browser or on the backend in Node.js.
+A modern, lightweight TypeScript library to convert `.heic` and `.heif` images to standard web formats (JPEG, PNG, WebP, AVIF, SVG) client-side in the browser or on the backend in Node.js.
 
 Designed specifically for environments with strict **Content Security Policy (CSP)** rules, it is built with WebAssembly compiled **without** dynamic code execution (`eval()` or `new Function()`).
 
@@ -10,14 +10,16 @@ Designed specifically for environments with strict **Content Security Policy (CS
 
 - 🔒 **CSP Compliant**: Emscripten glue code is compiled with `-s DYNAMIC_EXECUTION=0`. Safe to run without `'unsafe-eval'`.
 - 🧩 **Dependency Injection Architecture**: Swap the decoder module easily by implementing a simple `IHeicDecoder` interface.
-- ⚡ **Optimized Performance**: A fresh decoder instance is created and released per conversion — memory is reclaimed promptly and concurrent conversions never share mutable WASM state.
+- ⚡ **Optimized Performance**: A fresh decoder instance is created and released per conversion — memory is reclaimed promptly and concurrent conversions never share mutable WASM state. `convertMany({ reuseDecoders: true })` amortizes WASM init across batch items.
 - 🌐 **Isomorphic / Universal**: Runs in Node.js (decoding) and browser (decoding & canvas-based encoding).
 - 📦 **No Bloat**: Zero external production dependencies. Small footprint.
-- 🎨 **Format Support**: Convert to `jpeg` (with quality configuration), `png`, `webp`, and `svg` (embedded lossless vector).
-- 📐 **Resize Support**: Downscale with `maxWidth`/`maxHeight` or apply a uniform `scale` factor during conversion.
+- 🎨 **Format Support**: Convert to `jpeg` (with quality configuration), `png`, `webp`, `avif`, and `svg` (embedded lossless vector). AVIF degrades gracefully with a clear `format_unsupported` error where the canvas cannot encode it.
+- 📐 **Resize & Crop**: Downscale with `maxWidth`/`maxHeight` or apply a uniform `scale` factor; cut any region with `crop` (in display pixels, composed with orientation).
 - 🧭 **EXIF-Orientation Aware**: Images stored rotated with an EXIF orientation flag come out upright, matching what viewers display. Opt out with `applyOrientation: false`.
-- 📚 **Batch Conversion**: Convert many images at once with bounded concurrency via `convertMany`.
-- 🧵 **Web Worker Helper**: Offload conversions to a Web Worker with `convertHeicInWorker` to keep the UI thread responsive.
+- 🗂 **Metadata Preservation**: `preserveExif: true` keeps the source EXIF block in JPEG (APP1) and PNG (`eXIf`) output; raw-decode consumers get the block via `DecodedImage.exif`.
+- 📚 **Batch Conversion**: Convert many images at once with bounded concurrency via `convertMany` — with per-item results (`continueOnError`) and pooled decoders (`reuseDecoders`) for large batches.
+- 🧵 **Web Worker Helpers**: Offload single conversions (`convertHeicInWorker`) or whole batches (`convertManyInWorker`) to Web Workers to keep the UI thread responsive.
+- 🎛 **Output Shapes & Cancellation**: Return Blobs, base64 data URLs, or ArrayBuffers (`output`), and cancel in-flight work with an `AbortSignal` (`signal`) — worker conversions terminate immediately.
 
 ---
 
@@ -187,19 +189,24 @@ async function convertNode() {
   });
   await decoder.initialize();
 
-  // Decodes to { width, height, data: Uint8ClampedArray (RGBA), orientation? }.
+  // Decodes to { width, height, data: Uint8ClampedArray (RGBA), orientation?, exif? }.
   // data is an independent copy — safe to use after decoder.free().
-  // orientation 2-8 means the stored pixels need a rotation for display
+  // orientation 2-8 means the stored pixels need a rotation/flip for display
   // (convertHeic applies it automatically; raw-decode consumers must do it
-  // themselves, e.g. by rotating the buffer or passing it to sharp).
-  const { width, height, data } = await decoder.decode(heicData);
+  // themselves — rotate the buffer, or set the orientation tag in `exif`
+  // before handing it to sharp so viewers apply it).
+  // exif is the source EXIF block ("Exif\0\0" + TIFF) when the file carries
+  // one — pass it to sharp.withMetadata({ exif }) to keep camera metadata.
+  const { width, height, data, exif } = await decoder.decode(heicData);
 
   // Process raw pixels using sharp
-  await sharp(Buffer.from(data), {
+  let pipeline = sharp(Buffer.from(data), {
     raw: { width, height, channels: 4 },
-  })
-    .toFormat('jpeg')
-    .toFile('output.jpg');
+  });
+  if (exif) {
+    pipeline = pipeline.withMetadata({ exif: Buffer.from(exif) });
+  }
+  await pipeline.toFormat('jpeg').toFile('output.jpg');
 
   // Clean up WASM memory
   decoder.free();
@@ -279,7 +286,65 @@ How it works:
 - `LibheifDecoder.decode()` returns the raw **stored** pixels and reports a pending rotation via the optional `orientation` field (EXIF semantics `1`–`8`; absent or `1` means nothing is pending). If you encode the pixels yourself (e.g. Node.js + `sharp`), apply the rotation yourself.
 - A non-boolean `applyOrientation` value is rejected up front with an `invalid_input` error.
 
-### 9. Batch Conversion
+### 9. Cropping
+
+Cut a rectangle out of the image during conversion. Crop coordinates are in **post-orientation display pixels** — the geometry the image is shown in (after any EXIF/irot correction), which is what "top-left corner" means to a user. The crop is applied before `scale`/`maxWidth`/`maxHeight`, which then downscale the cropped region:
+
+```typescript
+import { convertHeic } from '@keeratita/heic-converter';
+
+declare const heicBlob: Blob; // your HEIC file/blob
+
+const thumbnail = await convertHeic(heicBlob, {
+  to: 'jpeg',
+  crop: { x: 200, y: 100, width: 640, height: 480 }, // x/y default to 0
+  maxWidth: 320, // downscale the crop, not the whole image
+});
+```
+
+Cropping semantics:
+
+- `width`/`height` are required positive integers; `x`/`y` are optional non-negative integers. Malformed values reject with `invalid_crop` **before** any decoding; a rectangle that exceeds the image rejects with `invalid_crop` naming the actual display size.
+- Crop, orientation, and resize compose into a single canvas transform — no intermediate copies.
+- With `applyOrientation: false`, crop coordinates address the **stored** pixels instead (geometry as decoded).
+
+### 10. Output Shapes (Blob, data URL, ArrayBuffer)
+
+By default conversions return a `Blob`. Choose another representation with `output` — the return type follows the option:
+
+```typescript
+const dataUrl = await convertHeic(heicBlob, { to: 'png', output: 'dataUrl' });
+// string: "data:image/png;base64,…" — ready for <img src>
+
+const bytes = await convertHeic(heicBlob, { to: 'webp', output: 'arrayBuffer' });
+// ArrayBuffer — for uploads (fetch body), WebCodecs, custom pipelines
+
+const blob = await convertHeic(heicBlob, { to: 'jpeg' }); // default Blob
+```
+
+`output` applies to `convertMany` and `convertManyInWorker` too (in the worker case the chosen representation travels back through the worker protocol — `arrayBuffer` results are transferred, not stringified). Invalid values reject with `invalid_input`.
+
+### 11. Canceling a Conversion (AbortSignal)
+
+Pass an `AbortSignal` to cancel pending work. Cancellation is checked at stage boundaries (after input read, before/after decode, before encode), so a queued or in-flight conversion stops promptly and rejects with the `aborted` code:
+
+```typescript
+import { convertHeic, convertHeicInWorker } from '@keeratita/heic-converter';
+
+const controller = new AbortController();
+setTimeout(() => controller.abort(), 2000); // give up after 2s
+
+await convertHeic(heicBlob, { signal: controller.signal }); // rejects with code 'aborted'
+await convertMany(files, { signal: controller.signal }); // aborts remaining items
+await convertHeicInWorker(heicBlob, { workerUrl, signal: controller.signal }); // terminates the worker
+```
+
+> [!NOTE]
+> - Worker-based conversions abort **immediately**: the worker is terminated, since it runs off the main thread.
+> - The synchronous WASM `decode()` on the main thread cannot be preempted mid-call — cancellation takes effect at the next boundary after it finishes.
+> - In `convertMany`, an aborted batch rejects with `aborted` (cancellation is the outcome you asked for, and it wins over item-failure aggregation). With `continueOnError`, already-started items record `aborted` errors per item.
+
+### 12. Batch Conversion
 
 Convert many images at once with bounded concurrency (default `4`). Results are returned in input order; if any conversion fails, the promise rejects as soon as the failure is known with an error that identifies the failing item:
 
@@ -304,7 +369,33 @@ Batch semantics worth knowing:
 - `onProgress` only fires for items that succeed; a failing item never reports 100%.
 - `concurrency` must be a positive integer; the default is `4`.
 
-### 10. Web Worker Conversion
+**Keeping going after failures** — with `continueOnError: true` the batch never rejects for item failures. Every item runs, and you get a result entry per item in input order:
+
+```typescript
+const results = await convertMany(files, { to: 'png', continueOnError: true });
+// Array<{ index: number; ok: true; result: Blob } | { index: number; ok: false; error: Error }>
+
+const failures = results.filter((r) => !r.ok);
+if (failures.length > 0) {
+  console.warn(`${failures.length} file(s) failed`, failures.map((f) => f.index));
+}
+```
+
+Up-front validation mistakes (bad format, bad `concurrency`, …) still reject normally — a typo is a caller bug, not an item failure.
+
+**Pooling decoders for big batches** — by default each item gets its own decoder instance (created, WASM-initialized, freed per item). For batches much larger than the concurrency, `reuseDecoders: true` hands each batch runner one pooled instance that is reused across items — the WASM module load is amortized while the exclusive-use invariant holds (an instance never decodes two things at once):
+
+```typescript
+const blobs = await convertMany(thousandFiles, {
+  to: 'webp',
+  concurrency: 4,
+  reuseDecoders: true, // one LibheifDecoder per runner instead of one per item
+});
+```
+
+Ignored when you inject your own `decoder` (yours is used for all items, per the injection contract).
+
+### 13. Web Worker Conversion
 
 Run the conversion inside a Web Worker so the main thread stays responsive. Create a worker script that uses this library:
 
@@ -351,6 +442,22 @@ const jpegBlob = await convertHeicInWorker(heicBlob, {
 > - `timeoutMs` (default `60000`) bounds how long the promise waits for a result; set `0` to disable. A timeout rejects with a `worker_timeout` error whose message includes diagnostics — how many progress messages arrived, the last percent, and any unrecognized message type (the usual sign the worker script doesn't implement the protocol).
 > - This helper is **browser-only**: it rejects in Node.js, where there is no global `Worker`.
 
+**Batch inside workers** — `convertManyInWorker` mirrors `convertMany` (input order, `batch_item_failed` aggregation or `continueOnError` per-item results) while each item runs in a worker; real concurrency is bounded by `maxConcurrentWorkers`:
+
+```typescript
+import { convertManyInWorker } from '@keeratita/heic-converter';
+
+const blobs = await convertManyInWorker(files, {
+  workerUrl: new URL('./converter.worker.js', import.meta.url),
+  workerType: 'module',
+  to: 'webp',
+  maxConcurrentWorkers: 3,
+  onProgress: (index, percent) => console.log(`Image ${index}: ${Math.round(percent)}%`),
+});
+```
+
+Every option of `convertHeicInWorker` applies (`output`, `signal`, `crop`, `preserveExif`, `timeoutMs`, …); `onProgress` receives the item `index` in addition to the percent, and a mid-batch abort terminates the running workers.
+
 ---
 
 ## 🔒 Content Security Policy (CSP)
@@ -374,30 +481,36 @@ Converts a HEIC image file to a standard web format.
 
 - **`input`**: `Blob | File | ArrayBuffer | Uint8Array`
 - **`options`**: (optional) `ConvertOptions`
-  - `to`: `'jpeg' | 'jpg' | 'png' | 'webp' | 'svg'` (Default: `'jpeg'`)
-  - `quality`: `number` (0.0 to 1.0, applicable to JPEG and WebP. Default: `0.92`)
+  - `to`: `'jpeg' | 'jpg' | 'png' | 'webp' | 'avif' | 'svg'` (Default: `'jpeg'`; `avif` rejects with `format_unsupported` where the canvas cannot encode it)
+  - `quality`: `number` (0.0 to 1.0, applicable to JPEG, WebP, and AVIF. Default: `0.92`)
   - `decoder`: `IHeicDecoder` (Inject custom decoder instance)
   - `onProgress`: `(percent: number) => void` (Optional callback, receives progress percentage from `0` to `100` during decoding)
   - `maxWidth`: `number` (Downscale to fit within this width, preserving aspect ratio. Never upscales)
   - `maxHeight`: `number` (Downscale to fit within this height, preserving aspect ratio. Never upscales)
   - `scale`: `number` (Uniform scale factor, e.g. `0.5` halves the image. Takes precedence over `maxWidth`/`maxHeight`)
   - `applyOrientation`: `boolean` (Rotate/flip the output to match the source's EXIF orientation. `irot`/`imir` transforms are already applied by the decoder and never stacked. Default: `true`)
-- **Returns**: `Promise<Blob>`
+  - `crop`: `{ x?, y?, width, height }` (Cut a rectangle in post-orientation display pixels before resize. Default: none)
+  - `preserveExif`: `boolean` (Re-inject the source EXIF block into JPEG (APP1) / PNG (`eXIf`) output. Metadata may contain GPS — opt-in. Default: `false`)
+  - `output`: `'blob' | 'dataUrl' | 'arrayBuffer'` (Result representation. Default: `'blob'`; see [Usage section 10](#10-output-shapes-blob-data-url-arraybuffer))
+  - `signal`: `AbortSignal` (Cancel pending work; rejects with `aborted`. Default: none)
+- **Returns**: `Promise<Blob>` — or `Promise<string>` / `Promise<ArrayBuffer>` with the typed `output` overloads
 
 ### `convertMany(inputs, options?)`
 
-Converts multiple HEIC images with bounded concurrency. Results are returned in input order; rejects with the first failure in time — a `batch_item_failed` error whose `message` names the failing item and whose fields describe the batch (`itemIndex` 0-based, `itemTotal`, `failedCount`, `cause`).
+Converts multiple HEIC images with bounded concurrency. Results are returned in input order; rejects with the first failure in time — a `batch_item_failed` error whose `message` names the failing item and whose fields describe the batch (`itemIndex` 0-based, `itemTotal`, `failedCount`, `cause`). With `continueOnError` the promise fulfills with per-item results instead.
 
 - **`inputs`**: `Array<Blob | File | ArrayBuffer | Uint8Array>`
 - **`options`**: (optional) `ConvertManyOptions` — same as `ConvertOptions`, except `onProgress` uses the batch signature below; plus:
   - `concurrency`: `number` (Maximum concurrent conversions. Default: `4`)
   - `onProgress`: `(index: number, percent: number) => void` (Per-item progress callback; fires only for successful items)
-  - `decoder`: `IHeicDecoder` (Optional. When provided, the same instance is shared by all concurrent conversions and must be safe for concurrent `decode()` calls; the library never frees an injected decoder)
-- **Returns**: `Promise<Blob[]>`
+  - `decoder`: `IHeicDecoder` (Optional. When provided, the same instance is shared by all concurrent conversions and must be safe for concurrent `decode()` calls; the library never frees an injected decoder; `reuseDecoders` is ignored)
+  - `continueOnError`: `boolean` (Return per-item `{ index, ok, result | error }` entries instead of rejecting on the first failure. Default: `false`)
+  - `reuseDecoders`: `boolean` (Hand each batch runner one pooled `LibheifDecoder` reused across items — amortizes WASM init for large batches while keeping exclusive use. Default: `false`)
+- **Returns**: `Promise<Blob[]>` — or `Promise<string[]>` / `Promise<ArrayBuffer[]>` with the typed `output` overloads; `Promise<ConvertItemResult[]>` with `continueOnError` (also typed by `output`)
 
 ### `convertHeicInWorker(input, options)`
 
-Converts a HEIC image inside a Web Worker. The worker script must implement the message protocol shown in [Usage section 10](#10-web-worker-conversion). Browser-only; rejects in Node.js.
+Converts a HEIC image inside a Web Worker. The worker script must implement the message protocol shown in [Usage section 13](#13-web-worker-conversion). Browser-only; rejects in Node.js.
 
 - **`input`**: `Blob | File | ArrayBuffer | Uint8Array`
 - **`options`**: `WorkerConvertOptions` — same as `ConvertOptions` but without `decoder` (cannot be structured-cloned; passing one rejects with `invalid_input`), plus:
@@ -405,7 +518,18 @@ Converts a HEIC image inside a Web Worker. The worker script must implement the 
   - `workerType`: `'classic' | 'module'` (Worker script type. Default: `'classic'`; use `'module'` for scripts with ES imports)
   - `timeoutMs`: `number` (Maximum wait for the result in milliseconds. Default: `60000`; `0` disables)
   - `maxConcurrentWorkers`: `number` (Concurrent workers per `workerUrl` + type; extra calls queue. Default: `navigator.hardwareConcurrency` clamped to 1–8)
-- **Returns**: `Promise<Blob>`
+- **Returns**: `Promise<Blob>` — or `Promise<string>` / `Promise<ArrayBuffer>` with the typed `output` overloads. Aborting via `signal` terminates the worker immediately.
+
+### `convertManyInWorker(inputs, options)`
+
+Converts multiple HEIC images, each inside a Web Worker, with `convertMany` semantics (input order, `batch_item_failed` aggregation, `continueOnError` per-item results). Browser-only; rejects in Node.js.
+
+- **`inputs`**: `Array<Blob | File | ArrayBuffer | Uint8Array>`
+- **`options`**: `WorkerConvertManyOptions` — same as `convertHeicInWorker`'s `WorkerConvertOptions` (including `output`, `crop`, `preserveExif`, `signal`), except `onProgress` uses the batch signature below; plus:
+  - `onProgress`: `(index: number, percent: number) => void` (Per-item progress callback)
+  - `maxConcurrentWorkers`: `number` (Real concurrency — each in-flight item occupies one semaphore slot. Default: `navigator.hardwareConcurrency` clamped to 1–8)
+  - `continueOnError`: `boolean` (Per-item `{ index, ok, result | error }` entries instead of rejecting on the first failure. Default: `false`)
+- **Returns**: `Promise<Blob[]>` — typed overloads mirror `convertMany` (`output` / `continueOnError` combinations)
 
 ### `LibheifDecoder(options?)`
 
@@ -426,22 +550,25 @@ All errors thrown by this library are `HeicConverterError` instances (`extends E
 
 | `code` | Thrown by | Meaning |
 | --- | --- | --- |
-| `invalid_input` | `convertHeic`, `convertMany`, `convertHeicInWorker` | Unsupported input type; non-boolean `applyOrientation`; or worker helper called with a `decoder` |
+| `invalid_input` | all conversion APIs | Unsupported input type; non-boolean `applyOrientation`/`continueOnError`/`reuseDecoders`/`preserveExif`, unknown `output`, malformed `signal`; or worker helper called with a `decoder` |
 | `invalid_quality` | `convertHeic`, `convertMany` | `quality` outside `0.0`–`1.0` or not a finite number |
 | `invalid_resize` | `convertHeic`, `convertMany` | `scale`/`maxWidth`/`maxHeight` not positive finite numbers, or target size exceeds 16384 px |
 | `invalid_format` | `convertHeic`, `convertMany` | Unknown `to` value |
+| `invalid_crop` | `convertHeic`, `convertMany` | `crop` with non-integer/non-positive dimensions, negative offsets, or a rectangle beyond the image's display size |
 | `invalid_concurrency` | `convertMany` | `concurrency` not a positive integer |
 | `decoder_init_failed` | `convertHeic`, `convertMany` | WASM module could not be loaded (missing asset, CSP block) |
 | `decode_failed` | `convertHeic`, `convertMany` | Invalid/corrupt HEIC bytes |
-| `unsupported_environment` | `convertHeic`, `convertMany`, `convertHeicInWorker` | No canvas APIs (e.g. Node.js) or no `Worker` global; decode raw RGBA via `LibheifDecoder` instead |
+| `unsupported_environment` | all conversion APIs | No canvas APIs (e.g. Node.js) or no `Worker` global; decode raw RGBA via `LibheifDecoder` instead |
 | `render_encode_failed` | `convertHeic`, `convertMany` | Canvas render/encode failure (bad dimensions, `toBlob` returned null) |
+| `format_unsupported` | `convertHeic`, `convertMany` | The canvas cannot encode the requested format (e.g. `avif` on Safari) |
+| `aborted` | all conversion APIs | The `AbortSignal` was aborted before the work completed |
 | `progress_callback_failed` | all conversion APIs | The host `onProgress` callback threw; message attributes the failure |
-| `worker_unsupported` | `convertHeicInWorker` | No global `Worker` (e.g. Node.js) |
-| `worker_create_failed` | `convertHeicInWorker` | `new Worker(...)` threw (wrong URL, MIME type) |
-| `worker_post_failed` | `convertHeicInWorker` | `postMessage` threw (non-cloneable option) |
-| `worker_timeout` | `convertHeicInWorker` | No result within `timeoutMs`; message includes progress/protocol diagnostics |
-| `worker_failed` | `convertHeicInWorker` | Worker reported `{ type: 'result', ok: false, error }` |
-| `batch_item_failed` | `convertMany` | One or more items failed; see `itemIndex`/`itemTotal`/`failedCount`/`cause` |
+| `worker_unsupported` | `convertHeicInWorker`, `convertManyInWorker` | No global `Worker` (e.g. Node.js) |
+| `worker_create_failed` | `convertHeicInWorker`, `convertManyInWorker` | `new Worker(...)` threw (wrong URL, MIME type) |
+| `worker_post_failed` | `convertHeicInWorker`, `convertManyInWorker` | `postMessage` threw (non-cloneable option) |
+| `worker_timeout` | `convertHeicInWorker`, `convertManyInWorker` | No result within `timeoutMs`; message includes progress/protocol diagnostics |
+| `worker_failed` | `convertHeicInWorker`, `convertManyInWorker` | Worker reported `{ type: 'result', ok: false, error }` |
+| `batch_item_failed` | `convertMany`, `convertManyInWorker` | One or more items failed; see `itemIndex`/`itemTotal`/`failedCount`/`cause` |
 
 ```typescript
 import { convertHeic, type HeicConverterErrorCode } from '@keeratita/heic-converter';
