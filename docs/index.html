@@ -256,8 +256,28 @@
             line-height: 1.5;
         }
 
-        input[type="file"] {
-            display: none;
+        /* Visually hidden but still rendered: Safari refuses to open the
+           picker for display:none inputs, and role=button clicks are treated
+           as untrusted gestures on WebKit. */
+        .visually-hidden-file {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            padding: 0;
+            margin: -1px;
+            overflow: hidden;
+            clip: rect(0 0 0 0);
+            clip-path: inset(50%);
+            white-space: nowrap;
+            border: 0;
+        }
+
+        .upload-btn {
+            display: block;
+            width: 100%;
+            height: 100%;
+            cursor: pointer;
+            color: inherit;
         }
 
         @media (max-width: 900px) {
@@ -286,10 +306,12 @@
             </p>
 
             <div class="upload" id="dropzone" role="button" tabindex="0" aria-label="Choose a HEIC file">
-                <strong>Drop a .heic or .heif file here</strong>
-                <small>or click to browse</small>
+                <label class="upload-btn" for="fileInput">
+                    <strong>Drop a .heic or .heif file here</strong>
+                    <small>or click to browse</small>
+                </label>
+                <input id="fileInput" class="visually-hidden-file" type="file" accept=".heic,.heif,image/heic,image/heif">
             </div>
-            <input id="fileInput" type="file" accept=".heic,.heif,image/heic,image/heif">
 
             <div class="meta" id="fileMeta" hidden>
                 <div><strong>Name:</strong> <span id="metaName">-</span></div>

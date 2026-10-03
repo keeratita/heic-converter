@@ -142,8 +142,9 @@ async function setFile(file) {
   setStatus('File ready. Choose output settings and convert.');
 }
 
-dropzone.addEventListener('click', () => fileInput.click());
-
+// Clicks are handled natively by the <label for="fileInput"> wrapper — a
+// JS click handler here would double-open the picker, and role=button
+// clicks alone are treated as untrusted gestures on WebKit.
 dropzone.addEventListener('keydown', (event) => {
   if (event.key === 'Enter' || event.key === ' ') {
     event.preventDefault();

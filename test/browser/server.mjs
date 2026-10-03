@@ -39,8 +39,9 @@ const EXACT_ROUTES = new Map([
   ['/api-test.js', path.join(__dirname, 'api-test.js')],
   ['/worker.js', path.join(__dirname, 'worker.js')],
   // GitHub Pages demo (docs/) — served with ./dist/ next to it, like the
-  // deployed site artifact.
-  ['/demo', path.join(ROOT_DIR, 'docs/index.html')],
+  // deployed site artifact. '/demo' (no slash) redirects to '/demo/' below:
+  // relative asset URLs (./demo.js, ./dist/*, ./worker.js) must resolve
+  // under /demo/, or the demo's JS silently 404s.
   ['/demo/', path.join(ROOT_DIR, 'docs/index.html')],
   ['/demo/demo.js', path.join(ROOT_DIR, 'docs/demo.js')],
   ['/demo/worker.js', path.join(ROOT_DIR, 'docs/worker.js')],
@@ -77,6 +78,14 @@ const server = http.createServer((req, res) => {
   if (reqUrl.split('/').includes('..')) {
     res.writeHead(403, { 'Content-Type': 'text/plain' });
     res.end('Forbidden');
+    return;
+  }
+
+  // '/demo' without a trailing slash would resolve the page's relative
+  // assets (./demo.js) against the root and 404 them; canonicalize.
+  if (reqUrl === '/demo') {
+    res.writeHead(302, { Location: '/demo/' });
+    res.end();
     return;
   }
 
