@@ -1,5 +1,6 @@
 import type { IHeicDecoder, DecodedImage } from '../types';
 import { Messages } from '../messages';
+import { clampPercent } from '../progress';
 import { HeicConverterError } from '../errors';
 
 export interface LibheifDecoderOptions {
@@ -152,10 +153,7 @@ export class LibheifDecoder implements IHeicDecoder {
     }
     if (!this.module || !this.decoderInstance) {
       // A concurrent free() (or a raced initialization) dropped the instance.
-      throw new HeicConverterError(
-        'decode_failed',
-        'Decoder was freed before decoding completed; call initialize() again.'
-      );
+      throw new HeicConverterError('decode_failed', Messages.DecoderFreedDuringDecode);
     }
 
     // Contain host progress exceptions (unwinding through embind would abort
@@ -164,8 +162,7 @@ export class LibheifDecoder implements IHeicDecoder {
     const wrappedProgress = onProgress
       ? (percent: number): void => {
           try {
-            const numeric = Number(percent);
-            onProgress(Number.isFinite(numeric) ? Math.min(100, Math.max(0, numeric)) : 0);
+            onProgress(clampPercent(percent));
           } catch (error) {
             progressError = progressError ?? error;
           }
@@ -186,6 +183,12 @@ export class LibheifDecoder implements IHeicDecoder {
       data.buffer !== module.HEAPU8.buffer
     ) {
       const ptr = module._malloc(data.byteLength);
+      if (ptr === 0) {
+        throw new HeicConverterError(
+          'decode_failed',
+          Messages.DecodeInputAllocFailed(data.byteLength)
+        );
+      }
       try {
         module.HEAPU8.set(data, ptr);
         result = instance.decodeFromPointer(ptr, data.byteLength, wrappedProgress);

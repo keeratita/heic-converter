@@ -498,6 +498,19 @@ describe('LibheifDecoder (mocked glue)', () => {
       expect((fastModule as { _free: ReturnType<typeof vi.fn> })._free).toHaveBeenCalledWith(16);
     });
 
+    it('should report an allocation failure when _malloc returns 0', async () => {
+      (fastModule._malloc as ReturnType<typeof vi.fn>).mockReturnValue(0);
+
+      const decoder = new LibheifDecoder();
+      await decoder.initialize();
+      const error = await decoder.decode(new Uint8Array([1, 2, 3, 4])).catch((e) => e);
+
+      expect(error.code).toBe('decode_failed');
+      expect(error.message).toContain('allocate');
+      expect(fastInstance.decodeFromPointer).not.toHaveBeenCalled();
+      expect(fastModule._free).not.toHaveBeenCalled();
+    });
+
     it('should copy pixel data that is a view into the WASM heap', async () => {
       // Glue builds that return a heap view must not leak the view to callers.
       const heapView = new Uint8Array(heap, 0, 4);

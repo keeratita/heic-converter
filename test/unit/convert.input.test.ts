@@ -72,18 +72,58 @@ describe('convertHeic - Input Types', () => {
     );
   });
 
-  it('should normalize out-of-range progress values before reaching the caller', async () => {
+  it('should normalize out-of-range progress values and gate 100% on success', async () => {
     const progress = vi.fn();
+    resetConvertMocks({
+      decodeImpl: async (_data, onProgress) => {
+        onProgress?.(150); // clamps to 100, but 100% is withheld...
+        onProgress?.(-20); // -> 0
+        onProgress?.(Number.NaN); // -> 0
+        onProgress?.(100); // end-of-decode value: also withheld
+        return { width: 1, height: 1, data: new Uint8ClampedArray(4) };
+      },
+    });
 
     await convertHeic(new Uint8Array([1]), { onProgress: progress });
 
-    const decodeProgress = mockState.decoderInstances[0].decode.mock.calls[0][1];
-    decodeProgress(150);
-    decodeProgress(-20);
-    decodeProgress(Number.NaN);
-    // First 100: the mock decoder's own onProgress?.(100) call.
-    // Then clamped 150→100, -20→0, NaN→0.
-    expect(progress.mock.calls.map(([percent]) => percent)).toEqual([100, 100, 0, 0]);
+    // Only the clamped sub-100 values pass through during decode; the final
+    // 100% is emitted once, after the conversion succeeded.
+    expect(progress.mock.calls.map(([percent]) => percent)).toEqual([0, 0, 100]);
+  });
+
+  it('should surface a throwing onProgress as progress_callback_failed', async () => {
+    resetConvertMocks({
+      decodeImpl: async (_data, onProgress) => {
+        onProgress?.(50);
+        return { width: 1, height: 1, data: new Uint8ClampedArray(4) };
+      },
+    });
+    const hostError = new Error('progress host exploded');
+
+    const error = await convertHeic(new Uint8Array([1]), {
+      onProgress: () => {
+        throw hostError;
+      },
+    }).catch((e) => e);
+
+    expect(error.code).toBe('progress_callback_failed');
+    expect(error.message).toContain('progress host exploded');
+    expect(error.cause).toBe(hostError);
+    // The owned decoder is still released despite the callback failure.
+    expect(mockState.decoderInstances[0].free).toHaveBeenCalledTimes(1);
+  });
+
+  it('should surface a throw from the final 100% callback', async () => {
+    const error = await convertHeic(new Uint8Array([1]), {
+      onProgress: (percent) => {
+        if (percent >= 100) {
+          throw new Error('late crash');
+        }
+      },
+    }).catch((e) => e);
+
+    expect(error.code).toBe('progress_callback_failed');
+    expect(error.message).toContain('late crash');
   });
 
   it('should throw on unsupported input type', async () => {

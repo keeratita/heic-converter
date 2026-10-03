@@ -49,6 +49,10 @@ export const Messages = {
   UnsupportedFormat: (format: string): string => `Unsupported output format: ${format}`,
 
   // wasm/wrapper.ts
+  DecoderFreedDuringDecode:
+    'Decoder was freed before decoding completed; call initialize() again.',
+  DecodeInputAllocFailed: (bytes: number): string =>
+    `Failed to allocate ${bytes} bytes in the WASM heap for decode input`,
   DecodeFailed: (bytes: number): string =>
     `HEIC decoding failed (no result returned; input: ${bytes} bytes — is the file truncated or empty?)`,
   DecodeFailedWithDetail: (detail: string, bytes: number): string =>

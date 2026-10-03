@@ -1,5 +1,6 @@
 import type { ConvertOptions, HeicInput } from './types';
 import { Messages } from './messages';
+import { clampPercent } from './progress';
 import { HeicConverterError } from './errors';
 
 export interface WorkerConvertOptions extends Omit<ConvertOptions, 'decoder'> {
@@ -129,6 +130,14 @@ function reserveWorkerSlot(key: string, max: number, start: (release: () => void
   return release;
 }
 
+function toProgressCallbackError(error: unknown): HeicConverterError {
+  return new HeicConverterError(
+    'progress_callback_failed',
+    Messages.ProgressCallbackThrew(error instanceof Error ? error.message : String(error)),
+    { cause: error }
+  );
+}
+
 /** @internal Semaphore unit-test hooks; not part of the public API. */
 export const __semaphoreTestHooks = {
   reserveWorkerSlot,
@@ -243,15 +252,17 @@ export function convertHeicInWorker(
       const message = event.data as Partial<WorkerMessage> | undefined;
       if (message?.type === 'progress') {
         stats.progressMessages += 1;
+        const normalized = clampPercent(message.percent);
+        stats.lastPercent = normalized;
+        if (normalized >= 100) {
+          return; // 100% is emitted on success only
+        }
         try {
-          const percent = Number(message.percent);
-          const normalized = Number.isFinite(percent) ? Math.min(100, Math.max(0, percent)) : 0;
-          stats.lastPercent = normalized;
           options.onProgress?.(normalized);
         } catch (error) {
           // A throwing progress callback must not leak the worker.
           cleanup();
-          reject(error instanceof Error ? error : new Error(String(error)));
+          reject(toProgressCallbackError(error));
         }
         return;
       }
@@ -264,6 +275,12 @@ export function convertHeicInWorker(
       }
       cleanup();
       if (message.ok && message.blob) {
+        try {
+          options.onProgress?.(100);
+        } catch (error) {
+          reject(toProgressCallbackError(error));
+          return;
+        }
         resolve(message.blob);
       } else {
         reject(
@@ -287,12 +304,15 @@ export function convertHeicInWorker(
       cleanup();
       const detail = event.data;
       reject(
-        detail instanceof Error
-          ? detail
-          : new HeicConverterError(
-              'worker_failed',
-              detail !== undefined ? String(detail) : Messages.WorkerFailed(options.workerUrl)
-            )
+        new HeicConverterError(
+          'worker_failed',
+          detail instanceof Error
+            ? detail.message
+            : detail !== undefined
+              ? String(detail)
+              : Messages.WorkerFailed(options.workerUrl),
+          { cause: detail }
+        )
       );
     };
 

@@ -4,9 +4,9 @@ export interface DecodedImage {
   /**
    * RGBA pixel data, interleaved, row-major, 4 bytes per pixel.
    *
-   * The buffer is always a freshly allocated, plain `ArrayBuffer` owned by
-   * the returned array (never a view into the WASM heap), so it stays valid
-   * after `LibheifDecoder.free()` and can be passed directly to
+   * The buffer is always a plain `ArrayBuffer` owned by the returned array
+   * (never a view into the WASM heap), so it stays valid after
+   * `LibheifDecoder.free()` and can be passed directly to
    * `new ImageData(...)` / `putImageData` — including the `ImageData`
    * overload that requires `Uint8ClampedArray<ArrayBuffer>` under TS >= 5.7.
    */
@@ -114,7 +114,9 @@ export interface ConvertOptions extends ResizeOptions {
 
   /**
    * Optional progress callback that receives the progress percentage during
-   * decoding. Values are normalized and clamped to the range 0 to 100.
+   * decoding. Values are normalized and clamped to the range 0 to 100; the
+   * final 100% is emitted only when the conversion succeeds. A callback that
+   * throws rejects the conversion with `progress_callback_failed`.
    */
   onProgress?: (percent: number) => void;
 }

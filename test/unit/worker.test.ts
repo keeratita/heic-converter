@@ -79,7 +79,9 @@ describe('convertHeicInWorker', () => {
     const worker = MockWorker.instances[0];
     worker.emit('message', { data: { type: 'result', ok: false, error: 'boom' } });
 
-    await expect(promise).rejects.toThrow('boom');
+    const error = await promise.catch((e) => e);
+    expect(error.code).toBe('worker_failed');
+    expect(error.message).toContain('boom');
     expect(worker.terminated).toBe(true);
   });
 
@@ -269,11 +271,14 @@ describe('convertHeicInWorker', () => {
     const worker = MockWorker.instances[0];
     worker.emit('messageerror', { data: new Error('deserialization failed') });
 
-    await expect(promise).rejects.toThrow('deserialization failed');
+    const error = await promise.catch((e) => e);
+    expect(error.code).toBe('worker_failed');
+    expect(error.message).toContain('deserialization failed');
+    expect((error.cause as Error).message).toBe('deserialization failed');
     expect(worker.terminated).toBe(true);
   });
 
-  it('should reject with the raw detail when messageerror carries a non-Error value', async () => {
+  it('should reject with the detail message when messageerror carries a non-Error value', async () => {
     const promise = convertHeicInWorker(new Uint8Array([1]), { workerUrl: '/worker.js' });
 
     const worker = MockWorker.instances[0];
@@ -316,12 +321,34 @@ describe('convertHeicInWorker', () => {
     worker.emit('message', { data: { type: 'progress', percent: '50' } });
     worker.emit('message', { data: { type: 'progress', percent: NaN } });
 
-    expect(onProgress).toHaveBeenCalledWith(100);
-    expect(onProgress).toHaveBeenCalledWith(50);
+    // 150 clamps to 100, which is withheld until success; -5 and NaN clamp
+    // to 0, '50' coerces to 50.
+    expect(onProgress).not.toHaveBeenCalledWith(100);
     expect(onProgress).toHaveBeenCalledWith(0);
+    expect(onProgress).toHaveBeenCalledWith(50);
 
     worker.emit('message', { data: { type: 'result', ok: true, blob: new Blob() } });
     await promise;
+    expect(onProgress).toHaveBeenLastCalledWith(100);
+  });
+
+  it('should reject with progress_callback_failed when onProgress throws on the final 100', async () => {
+    const onProgress = vi.fn((percent: number) => {
+      if (percent >= 100) {
+        throw new Error('late crash');
+      }
+    });
+    const promise = convertHeicInWorker(new Uint8Array([1]), {
+      workerUrl: '/worker.js',
+      onProgress,
+    });
+
+    const worker = MockWorker.instances[0];
+    worker.emit('message', { data: { type: 'result', ok: true, blob: new Blob() } });
+
+    const error = await promise.catch((e) => e);
+    expect(error.code).toBe('progress_callback_failed');
+    expect(error.message).toContain('late crash');
   });
 
   it('should ignore progress messages after the result', async () => {
@@ -364,7 +391,9 @@ describe('convertHeicInWorker', () => {
     const worker = MockWorker.instances[0];
     worker.emit('message', { data: { type: 'progress', percent: 50 } });
 
-    await expect(promise).rejects.toThrow('progress handler crashed');
+    const error = await promise.catch((e) => e);
+    expect(error.code).toBe('progress_callback_failed');
+    expect(error.message).toContain('progress handler crashed');
     expect(worker.terminated).toBe(true);
   });
 
@@ -380,7 +409,10 @@ describe('convertHeicInWorker', () => {
     const worker = MockWorker.instances[0];
     worker.emit('message', { data: { type: 'progress', percent: 50 } });
 
-    await expect(promise).rejects.toThrow('boom');
+    const error = await promise.catch((e) => e);
+    expect(error.code).toBe('progress_callback_failed');
+    expect(error.message).toContain('boom');
+    expect(error.cause).toBe('boom');
     expect(worker.terminated).toBe(true);
   });
 

@@ -1,6 +1,6 @@
 name: Publish
 
-# Tag pushes are the only publish path (release.js creates the tags).
+# Tag pushes are the only publish path (release.mjs creates the tags).
 # workflow_dispatch was removed on purpose: it let anyone with write access
 # publish arbitrary branch content to npm.
 on:

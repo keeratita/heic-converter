@@ -46,6 +46,10 @@ describe('Messages', () => {
       expect(Messages.DecodeFailedWithDetail('truncated', 6)).toContain('input: 6 bytes');
       expect(Messages.ProgressCallbackThrew('host')).toContain('onProgress callback threw');
       expect(Messages.ProgressCallbackThrew('host')).toContain('host');
+      expect(Messages.DecoderFreedDuringDecode).toContain(
+        'Decoder was freed before decoding completed'
+      );
+      expect(Messages.DecodeInputAllocFailed(1024)).toContain('1024 bytes');
     });
   });
 

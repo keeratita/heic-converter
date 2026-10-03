@@ -306,6 +306,28 @@ describe('convertMany', () => {
     );
   });
 
+  it('should reject invalid shared options at the top level, before any decode', async () => {
+    const inputs = [new Uint8Array([1]), new Uint8Array([2])];
+
+    const formatError = await convertMany(inputs, { to: 'gif' as never }).catch((e) => e);
+    expect(formatError.code).toBe('invalid_format');
+    const qualityError = await convertMany(inputs, { quality: 2 }).catch((e) => e);
+    expect(qualityError.code).toBe('invalid_quality');
+    const resizeError = await convertMany(inputs, { scale: 0 }).catch((e) => e);
+    expect(resizeError.code).toBe('invalid_resize');
+    expect(mockState.decoderInstances).toHaveLength(0);
+  });
+
+  it('should surface the canvas probe error instead of wrapping it per item', async () => {
+    mockState.assertEncodeEnvironmentMock.mockImplementation(() => {
+      throw new Error('Canvas is not supported');
+    });
+
+    const error = await convertMany([new Uint8Array([1])]).catch((e) => e);
+    expect(error.message).toContain('Canvas is not supported');
+    expect(mockState.decoderInstances).toHaveLength(0);
+  });
+
   it('should return an empty array for empty inputs', async () => {
     const results = await convertMany([]);
 

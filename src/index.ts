@@ -6,6 +6,7 @@ import {
   assertEncodeEnvironment,
 } from './render/canvas';
 import { Messages } from './messages';
+import { clampPercent } from './progress';
 import { HeicConverterError } from './errors';
 import type { ConvertManyOptions, ConvertOptions, HeicInput } from './types';
 import { DEFAULT_QUALITY } from './types';
@@ -76,19 +77,63 @@ async function resolveInputBytes(input: HeicInput): Promise<Uint8Array> {
 }
 
 /**
- * Normalizes host onProgress values to finite numbers clamped to 0-100 and
- * contains a throwing callback so it cannot break the conversion.
+ * Host onProgress wrapper enforcing the callback contract on every path:
+ * values are clamped to 0-100, a throwing host callback never breaks the
+ * pipeline (it is recorded and surfaced as `progress_callback_failed`), and
+ * 100% is withheld until `complete()` confirms success — a failed conversion
+ * never reports completion.
  */
-function normalizeProgressCallback(
+function createProgressReporter(
   onProgress?: (percent: number) => void
-): ((percent: number) => void) | undefined {
+): { report: (percent: number) => void; complete: () => void } | undefined {
   // Non-function values (e.g. null) are treated as absent.
   if (typeof onProgress !== 'function') {
     return undefined;
   }
-  return (percent: number): void => {
-    const numeric = Number(percent);
-    onProgress(Number.isFinite(numeric) ? Math.min(100, Math.max(0, numeric)) : 0);
+  let done = false;
+  let hostError: unknown;
+  const invokeHost = (percent: number): void => {
+    try {
+      onProgress(percent);
+    } catch (error) {
+      throw new HeicConverterError(
+        'progress_callback_failed',
+        Messages.ProgressCallbackThrew(error instanceof Error ? error.message : String(error)),
+        { cause: error }
+      );
+    }
+  };
+  return {
+    report: (percent: number): void => {
+      if (done) {
+        return;
+      }
+      const value = clampPercent(percent);
+      if (value >= 100) {
+        return; // withheld; emitted by complete()
+      }
+      try {
+        onProgress(value);
+      } catch (error) {
+        hostError = hostError ?? error;
+      }
+    },
+    complete: (): void => {
+      if (done) {
+        return;
+      }
+      done = true;
+      if (hostError !== undefined) {
+        throw new HeicConverterError(
+          'progress_callback_failed',
+          Messages.ProgressCallbackThrew(
+            hostError instanceof Error ? hostError.message : String(hostError)
+          ),
+          { cause: hostError }
+        );
+      }
+      invokeHost(100);
+    },
   };
 }
 
@@ -161,7 +206,8 @@ export async function convertHeic(
       );
     }
 
-    const decoded = await decoder.decode(buffer, normalizeProgressCallback(options?.onProgress));
+    const progress = createProgressReporter(options?.onProgress);
+    const decoded = await decoder.decode(buffer, progress ? progress.report : undefined);
 
     // Pixel data is heap-independent (see LibheifDecoder), so freeing the
     // decoder here is safe.
@@ -170,12 +216,11 @@ export async function convertHeic(
     // 5. Render to canvas and encode to target format
     const quality = options?.quality !== undefined ? options.quality : DEFAULT_QUALITY;
 
+    let blob: Blob;
     try {
-      if (resizeOptions) {
-
-        return await renderAndEncode(decoded, format, quality, resizeOptions);
-      }
-      return await renderAndEncode(decoded, format, quality);
+      blob = resizeOptions
+        ? await renderAndEncode(decoded, format, quality, resizeOptions)
+        : await renderAndEncode(decoded, format, quality);
     } catch (error) {
       throw new HeicConverterError(
         'render_encode_failed',
@@ -186,6 +231,8 @@ export async function convertHeic(
         { cause: error }
       );
     }
+    progress?.complete(); // emits the withheld 100% (or the recorded host error)
+    return blob;
   } finally {
     freeDecoder();
   }
@@ -219,6 +266,20 @@ export async function convertMany(
   if (!Number.isInteger(concurrency) || concurrency < 1) {
     throw new HeicConverterError('invalid_concurrency', Messages.ConcurrencyInvalid(concurrency));
   }
+
+  // Validate the shared options once, up front, so invalid values (and a
+  // canvas-less environment) surface their own error code instead of being
+  // wrapped in batch_item_failed by the first failing item.
+  validateFormat(options?.to ?? 'jpeg');
+  if (options?.quality !== undefined) {
+    validateQuality(options.quality);
+  }
+  validateResize(
+    options?.maxWidth !== undefined || options?.maxHeight !== undefined || options?.scale !== undefined
+      ? options
+      : undefined
+  );
+  assertEncodeEnvironment();
 
   const results: Blob[] = new Array(inputs.length);
   // Keep batch-only knobs out of the per-item options spread.
