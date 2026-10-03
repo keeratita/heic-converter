@@ -17,3 +17,14 @@ updates:
     groups:
       dev-dependencies:
         dependency-type: development
+        patterns:
+          - '*'
+          - '!typescript'
+      # TypeScript gets its own PR: its majors (e.g. the 7.x native port)
+      # outrun the peer ranges of typescript-eslint (currently
+      # typescript >=4.8.4 <6.1.0) and tsup's dts pipeline, and bundling
+      # them into the dev-dependencies group breaks `npm ci` on every
+      # monthly batch (see the ERESOLVE failure in PR #9).
+      typescript:
+        patterns:
+          - 'typescript'
