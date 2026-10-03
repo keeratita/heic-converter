@@ -262,20 +262,27 @@ export class LibheifDecoder implements IHeicDecoder {
       decoded.orientation = orientation;
     }
     // Expose the raw EXIF block for metadata preservation (preserveExif) and
-    // for raw-decode consumers (e.g. Node + sharp). Defensive copy so the
-    // block provably outlives free() like `data`; require at least a marker
-    // plus a minimal TIFF header to be useful.
+    // for raw-decode consumers (e.g. Node + sharp). Same ownership rule as
+    // `data`: the block must outlive free(), so copy only when HEAPU8 shows it
+    // is a live heap view — the C++ wrapper hands back a JS-allocated array,
+    // so this is normally a zero-copy wrap (it was previously an extra full
+    // copy of a payload that can reach 4 MB). Require at least a marker plus a
+    // minimal TIFF header to be useful.
     const rawExif = result.exif;
     if (rawExif instanceof Uint8Array && rawExif.length >= 14) {
-      decoded.exif = new Uint8Array(rawExif);
+      decoded.exif =
+        heapBuffer !== undefined && rawExif.buffer !== heapBuffer
+          ? new Uint8Array(rawExif.buffer, rawExif.byteOffset, rawExif.byteLength)
+          : new Uint8Array(rawExif);
     }
     return decoded;
   }
 
   /**
    * Cleans up the WebAssembly decoder instance and resources.
-   * Idempotent: safe to call multiple times. After free(), the instance must
-   * be re-initialized (createHeicDecoderModule runs again on the next call).
+   * Idempotent: safe to call multiple times. After free(), the next
+   * initialize() — or decode() directly, which re-initializes transparently
+   * — loads a fresh module.
    *
    * free() is also safe to call while initialize() is in flight: a load that
    * completes after free() discards its fresh instance instead of leaking it.

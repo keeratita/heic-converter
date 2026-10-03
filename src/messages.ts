@@ -14,11 +14,16 @@ export const Messages = {
     `applyOrientation must be a boolean, got: ${value}`,
   UnsupportedInputType: (type: string): string =>
     `Unsupported input type. Expected Blob, File, ArrayBuffer, or Uint8Array. Got: ${type}`,
-  DecoderInitFailed: (message: string): string => `Failed to initialize HEIC decoder: ${message}`,
+  DecoderInitFailed: (message: string): string =>
+    `Failed to initialize HEIC decoder: ${message} — verify heic-decoder.wasm is served (dist/heic-decoder.wasm; see the README "Serving and Locating WASM" section / locateFile option) and that your CSP allows 'wasm-unsafe-eval'`,
   RenderEncodeFailed: (format: string, message: string): string =>
     `Failed to render and encode image as ${format}: ${message}`,
   ConcurrencyInvalid: (value: unknown): string =>
     `Concurrency must be a positive integer, got: ${value}`,
+  MaxConcurrentWorkersInvalid: (value: unknown): string =>
+    `maxConcurrentWorkers must be a positive integer, got: ${value}`,
+  TimeoutInvalid: (value: unknown): string =>
+    `timeoutMs must be a finite number >= 0 (0 disables the timeout), got: ${value}`,
   InputsMustBeArray: 'Inputs must be an array of HEIC images',
   OutputShapeInvalid: (value: unknown): string =>
     `output must be one of 'blob', 'dataUrl', 'arrayBuffer', got: ${value}`,
@@ -35,6 +40,11 @@ export const Messages = {
     `Conversion of item ${index} of ${total} failed: ${message}`,
   ConvertManyExtraFailures: (failedCount: number, total: number): string =>
     ` (${failedCount} of ${total} items failed in total)`,
+  ConvertManyOtherErrors: (messages: string[]): string =>
+    `; other errors: ${messages.join(' | ')}`,
+  BatchItemProducedNoResult: (index: number | undefined): string =>
+    `Item ${String(index)} produced no result`,
+  BatchEndedWithoutResult: 'Batch ended without a result',
 
   // render/canvas.ts
   ScaleInvalid: (value: unknown): string =>

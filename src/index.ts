@@ -1,10 +1,8 @@
 import { LibheifDecoder } from './wasm';
 import {
   renderAndEncode,
-  validateResize,
-  validateCrop,
-  validateFormat,
   assertEncodeEnvironment,
+  assertEncodeCapability,
   blobToBase64,
 } from './render/canvas';
 import { Messages } from './messages';
@@ -13,13 +11,8 @@ import { HeicConverterError } from './errors';
 import { runBoundedBatch } from './batch';
 import {
   throwIfAborted,
-  validateApplyOrientation,
-  validateContinueOnError,
-  validateOutputShape,
-  validatePreserveExif,
-  validateQuality,
-  validateReuseDecoders,
-  validateSignal,
+  validateBatchOptions,
+  validateConvertOptions,
 } from './validate';
 import type {
   ConvertItemResult,
@@ -190,26 +183,21 @@ export async function convertHeic<S extends OutputShape = 'blob'>(
   options?: ConvertOptions & { output?: S }
 ): Promise<ConvertResult<S>> {
   // 1. Validate options first so invalid values fail before any I/O or decode.
-  if (options?.quality !== undefined) {
-    validateQuality(options.quality);
-  }
-  validateApplyOrientation(options?.applyOrientation);
-  validateOutputShape(options?.output);
-  validateSignal(options?.signal);
-  validateCrop(options?.crop);
-  validatePreserveExif(options?.preserveExif);
   const format = options?.to ?? 'jpeg';
-  validateFormat(format);
+  validateConvertOptions(options);
+  // Probe the environment before the expensive WASM load so the error names
+  // the real cause (no canvas) instead of a decode-stage failure; the AVIF
+  // capability probe runs here too so unsupported engines never pay for a
+  // decode (renderAndEncode keeps a defensive re-check for worker realms).
+  assertEncodeEnvironment();
+  await assertEncodeCapability(format);
+  const signal = options?.signal;
+  throwIfAborted(signal);
+
   const resizeOptions =
     options?.maxWidth !== undefined || options?.maxHeight !== undefined || options?.scale !== undefined
       ? options
       : undefined;
-  validateResize(resizeOptions);
-  // Probe the environment before the expensive WASM load so the error names
-  // the real cause (no canvas) instead of a decode-stage failure.
-  assertEncodeEnvironment();
-  const signal = options?.signal;
-  throwIfAborted(signal);
 
   // 2. Resolve input to a Uint8Array
   const buffer = await resolveInputBytes(input);
@@ -287,8 +275,10 @@ export async function convertHeic<S extends OutputShape = 'blob'>(
         { cause: error }
       );
     }
-    progress?.complete(); // emits the withheld 100% (or the recorded host error)
+    // Aborted conversions must not report completion: check cancellation
+    // before releasing the withheld 100%.
     throwIfAborted(signal);
+    progress?.complete(); // emits the withheld 100% (or the recorded host error)
     return shapeOutput(blob, (options?.output ?? 'blob') as S);
   } finally {
     freeDecoder();
@@ -314,6 +304,12 @@ class DecoderPool {
     this.max = Math.max(1, max);
   }
 
+  /**
+   * Callers must not acquire after `dispose()`: the batch runner loop
+   * guarantees this (no new items are claimed once the batch settles).
+   * Waiters parked here can only exist if the pool's max ever drops below
+   * the runner count (today both are min(concurrency, inputs.length)).
+   */
   async acquire(): Promise<LibheifDecoder> {
     const idle = this.idle.pop();
     if (idle) {
@@ -328,6 +324,8 @@ class DecoderPool {
 
   release(decoder: LibheifDecoder): void {
     if (this.disposed) {
+      // Pool is dead: free instead of re-parking. `leasedCount` is
+      // intentionally frozen — it no longer bounds anything.
       try {
         decoder.free();
       } catch {
@@ -353,17 +351,14 @@ class DecoderPool {
       }
     }
     this.idle.length = 0;
+    // Defensive: never leave an acquire() parked forever. Handed-out
+    // instances are freed by release() on the disposed branch.
+    for (const resolve of this.waiters.splice(0)) {
+      resolve(new LibheifDecoder());
+    }
   }
 }
 
-export function convertMany<S extends OutputShape = 'blob'>(
-  inputs: HeicInput[],
-  options: ConvertManyOptions & { output?: S; continueOnError: true }
-): Promise<ConvertItemResult<ConvertResult<S>>[]>;
-export function convertMany<S extends OutputShape = 'blob'>(
-  inputs: HeicInput[],
-  options?: ConvertManyOptions & { output?: S }
-): Promise<ConvertResult<S>[]>;
 /**
  * Converts multiple HEIC images to a standard web format.
  *
@@ -374,13 +369,27 @@ export function convertMany<S extends OutputShape = 'blob'>(
  * `batch_item_failed` HeicConverterError carrying `itemIndex`, `itemTotal`,
  * and `failedCount` — a batch is all-or-nothing. With
  * `options.continueOnError: true` the promise instead fulfills with
- * per-item `ConvertItemResult` entries and all items run to completion.
+ * per-item `ConvertItemResult` entries and all items run to completion
+ * (a mid-batch abort completes not-yet-started items with `aborted`
+ * entries instead of launching them).
  *
  * @param inputs HEIC images as Blobs, Files, ArrayBuffers, or Uint8Arrays.
  * @param options Batch conversion options (see {@link ConvertManyOptions}).
  * @returns The converted images in input order: results array by default,
  *   or per-item result entries when `continueOnError: true`.
  */
+export function convertMany<S extends OutputShape = 'blob'>(
+  inputs: HeicInput[],
+  options: ConvertManyOptions & { output?: S; continueOnError: true }
+): Promise<ConvertItemResult<ConvertResult<S>>[]>;
+export function convertMany<S extends OutputShape = 'blob'>(
+  inputs: HeicInput[],
+  options?: ConvertManyOptions & { output?: S; continueOnError?: false }
+): Promise<ConvertResult<S>[]>;
+export function convertMany<S extends OutputShape = 'blob'>(
+  inputs: HeicInput[],
+  options: ConvertManyOptions & { output?: S; continueOnError: boolean }
+): Promise<Array<ConvertResult<S> | ConvertItemResult<ConvertResult<S>>>>;
 export async function convertMany<S extends OutputShape = 'blob'>(
   inputs: HeicInput[],
   options?: ConvertManyOptions & { output?: S }
@@ -395,25 +404,12 @@ export async function convertMany<S extends OutputShape = 'blob'>(
   }
 
   // Validate the shared options once, up front, so invalid values (and a
-  // canvas-less environment) surface their own error code instead of being
-  // wrapped in batch_item_failed by the first failing item.
-  validateFormat(options?.to ?? 'jpeg');
-  if (options?.quality !== undefined) {
-    validateQuality(options.quality);
-  }
-  validateApplyOrientation(options?.applyOrientation);
-  validateOutputShape(options?.output);
-  validateSignal(options?.signal);
-  validateCrop(options?.crop);
-  validatePreserveExif(options?.preserveExif);
-  validateReuseDecoders(options?.reuseDecoders);
-  validateContinueOnError(options?.continueOnError);
-  validateResize(
-    options?.maxWidth !== undefined || options?.maxHeight !== undefined || options?.scale !== undefined
-      ? options
-      : undefined
-  );
+  // canvas-less or AVIF-incapable environment) surface their own error code
+  // instead of being wrapped in batch_item_failed by the first failing item.
+  validateConvertOptions(options);
+  validateBatchOptions(options);
   assertEncodeEnvironment();
+  await assertEncodeCapability(options?.to ?? 'jpeg');
 
   // Keep batch-only knobs out of the per-item options spread.
   const {

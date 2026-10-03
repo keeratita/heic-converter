@@ -17,6 +17,7 @@ import type { DecodedImage } from '../../../src/types';
  *     ...actual,
  *     renderAndEncode: mockState.renderAndEncodeMock,
  *     assertEncodeEnvironment: mockState.assertEncodeEnvironmentMock,
+ *     assertEncodeCapability: mockState.assertEncodeCapabilityMock,
  *   };
  * });
  *
@@ -41,6 +42,7 @@ export interface MockDecoderInstance {
 interface ConvertMockState {
   renderAndEncodeMock: ReturnType<typeof vi.fn>;
   assertEncodeEnvironmentMock: ReturnType<typeof vi.fn>;
+  assertEncodeCapabilityMock: ReturnType<typeof vi.fn>;
   defaultDecodedImage: DecodedImage;
   decoderInstances: MockDecoderInstance[];
   decodeImpl: DecodeImpl | null;
@@ -53,6 +55,7 @@ const defaultBlob = (): Blob => new Blob(['converted'], { type: 'image/png' });
 export const mockState: ConvertMockState = {
   renderAndEncodeMock: vi.fn(async () => defaultBlob()),
   assertEncodeEnvironmentMock: vi.fn(),
+  assertEncodeCapabilityMock: vi.fn(),
   defaultDecodedImage: {
     width: 1,
     height: 1,
@@ -104,6 +107,7 @@ export function resetConvertMocks(overrides?: {
   mockState.renderAndEncodeMock.mockReset();
   mockState.renderAndEncodeMock.mockImplementation(overrides?.renderAndEncode ?? (async () => defaultBlob()));
   mockState.assertEncodeEnvironmentMock.mockReset();
+  mockState.assertEncodeCapabilityMock.mockReset();
   mockState.decoderInstances.length = 0;
   mockState.decodeImpl = overrides?.decodeImpl ?? null;
   mockState.initializeShouldThrow = false;

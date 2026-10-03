@@ -8,6 +8,7 @@ vi.mock('../../src/render/canvas', async (importOriginal) => {
     ...actual,
     renderAndEncode: mockState.renderAndEncodeMock,
     assertEncodeEnvironment: mockState.assertEncodeEnvironmentMock,
+    assertEncodeCapability: mockState.assertEncodeCapabilityMock,
   };
 });
 
@@ -533,6 +534,17 @@ describe('convertMany - reuseDecoders (pool)', () => {
     expect(mockState.decoderInstances[0].free).toHaveBeenCalledTimes(1);
   });
 
+  it('each pooled item decodes its own payload (leased instances are not cross-used)', async () => {
+    await convertMany(okInputs([10, 11, 12, 13]), { concurrency: 2, reuseDecoders: true });
+
+    // The default decode mock echoes the first input byte into the decoded
+    // pixels: the renderer must have seen one distinct payload per item.
+    const seen = mockState.renderAndEncodeMock.mock.calls
+      .map((call) => (call[0] as { data: Uint8ClampedArray }).data[0])
+      .sort((a, b) => a - b);
+    expect(seen).toEqual([10, 11, 12, 13]);
+  });
+
   it('an injected decoder disables the pool entirely', async () => {
     const injected = {
       initialize: vi.fn(async () => undefined),
@@ -635,5 +647,41 @@ describe('convertMany - AbortSignal', () => {
       convertMany([new Uint8Array([10])], { signal: {} as unknown as AbortSignal })
     ).rejects.toMatchObject({ code: 'invalid_input' });
     expect(mockState.decoderInstances).toHaveLength(0);
+  });
+
+  it('continueOnError stops launching items after an abort and fills the rest with aborted entries', async () => {
+    const controller = new AbortController();
+    let decodes = 0;
+    mockState.decodeImpl = async (data) => {
+      decodes += 1;
+      if (decodes === 1) {
+        controller.abort();
+      }
+      return { width: 1, height: 1, data: new Uint8ClampedArray([data[0], 0, 0, 255]) };
+    };
+
+    const results = await convertMany(
+      [new Uint8Array([10]), new Uint8Array([11]), new Uint8Array([12]), new Uint8Array([13])],
+      { signal: controller.signal, continueOnError: true, concurrency: 1 }
+    );
+
+    expect(results).toHaveLength(4);
+    for (const entry of results) {
+      expect(entry.ok).toBe(false);
+      expect((entry as { error: { code: string } }).error.code).toBe('aborted');
+    }
+    // The not-yet-started items were completed without being launched.
+    expect(decodes).toBe(1);
+  });
+
+  it('continueOnError passed as a widened boolean still fulfills with per-item entries', async () => {
+    const flag: boolean = true;
+    const results = await convertMany([new Uint8Array([10]), new Uint8Array([5])], {
+      continueOnError: flag,
+      concurrency: 2,
+    });
+    expect(results).toHaveLength(2);
+    expect((results[0] as { ok: boolean }).ok).toBe(true);
+    expect((results[1] as { ok: boolean }).ok).toBe(false);
   });
 });

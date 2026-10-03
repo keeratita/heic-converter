@@ -165,9 +165,9 @@ export interface ConvertOptions extends ResizeOptions {
   to?: ImageFormat;
 
   /**
-   * Quality of the converted image, strictly between 0.0 and 1.0.
-   * Applicable for 'jpeg', 'jpg', and 'webp' formats — but validated for
-   * every format: passing an out-of-range value (e.g. `90` from a 0-100
+   * Quality of the converted image, between 0.0 and 1.0 (inclusive).
+   * Applicable for 'jpeg', 'jpg', 'webp', and 'avif' formats — but validated
+   * for every format: passing an out-of-range value (e.g. `90` from a 0-100
    * scale) throws regardless of `to`.
    * @default 0.92
    */

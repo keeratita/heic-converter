@@ -50,6 +50,70 @@ function readU32BE(bytes: Uint8Array, at: number): number {
 }
 
 /**
+ * Rewrite the TIFF orientation tag (274) in a `"Exif\0\0" + TIFF` block to
+ * `1` (normal) and return a modified copy. Needed because the converted
+ * raster is already upright — the EXIF/orientation transform was applied at
+ * render (or by libheif for `irot`/`imir` files) — so carrying the source
+ * tag verbatim would tell EXIF-respecting consumers to rotate the image a
+ * second time. Fail-safe: anything malformed returns the block untouched,
+ * and the input array is never mutated.
+ */
+export function normalizeOrientationTag(block: Uint8Array): Uint8Array {
+  try {
+    if (!hasExifMarker(block)) {
+      return block;
+    }
+    const tiff = EXIF_MARKER.length;
+    const littleEndian = block[tiff] === 0x49; // 'II' (MM handled by hasExifMarker)
+    const u16 = (at: number): number =>
+      littleEndian
+        ? block[at] | (block[at + 1] << 8)
+        : (block[at] << 8) | block[at + 1];
+    const u32 = (at: number): number =>
+      littleEndian
+        ? ((block[at + 3] << 24) | (block[at + 2] << 16) | (block[at + 1] << 8) | block[at]) >>> 0
+        : ((block[at] << 24) | (block[at + 1] << 16) | (block[at + 2] << 8) | block[at + 3]) >>> 0;
+
+    const ifd0Off = u32(tiff + 4);
+    // IFD0 must sit inside the block; entry count is its first field.
+    if (ifd0Off < 8 || tiff + ifd0Off + 2 > block.length) {
+      return block;
+    }
+    const ifd0 = tiff + ifd0Off;
+    const entries = u16(ifd0);
+    for (let i = 0; i < entries; i++) {
+      const entry = ifd0 + 2 + i * 12;
+      if (entry + 12 > block.length) {
+        return block; // truncated entry table — do not touch
+      }
+      if (u16(entry) !== 0x0112) {
+        continue;
+      }
+      const type = u16(entry + 2);
+      const count = u32(entry + 4);
+      if (type !== 3 || count !== 1) {
+        return block; // non-standard encoding of orientation — leave as-is
+      }
+      const value = littleEndian
+        ? block[entry + 8] | (block[entry + 9] << 8)
+        : (block[entry + 8] << 8) | block[entry + 9];
+      if (value === 1) {
+        return block; // already normal
+      }
+      const out = block.slice();
+      out[entry + 8] = littleEndian ? 1 : 0;
+      out[entry + 9] = littleEndian ? 0 : 1;
+      out[entry + 10] = 0;
+      out[entry + 11] = 0;
+      return out;
+    }
+    return block; // no orientation entry
+  } catch {
+    return block;
+  }
+}
+
+/**
  * Insert the EXIF block as a JPEG APP1 segment, positioned after SOI and any
  * leading APPn/COM segments (the conventional slot right after the JFIF
  * APP0). Returns the original bytes unchanged when the JPEG does not parse,

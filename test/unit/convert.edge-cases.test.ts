@@ -8,6 +8,7 @@ vi.mock('../../src/render/canvas', async (importOriginal) => {
     ...actual,
     renderAndEncode: mockState.renderAndEncodeMock,
     assertEncodeEnvironment: mockState.assertEncodeEnvironmentMock,
+    assertEncodeCapability: mockState.assertEncodeCapabilityMock,
   };
 });
 

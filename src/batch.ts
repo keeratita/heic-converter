@@ -50,11 +50,13 @@ export async function runBoundedBatch<T>(
   let firstErrorIndex = -1;
   let failedCount = 0;
   const otherErrorMessages: string[] = [];
-  let notifyError: (() => void) | undefined;
-  const errorNotifier = new Promise<void>((resolve) => {
-    notifyError = resolve;
+  // Single early-settle channel for BOTH the first item failure and abort —
+  // the race below distinguishes the two cases after the fact.
+  let notifySettle: (() => void) | undefined;
+  const settleEarly = new Promise<void>((resolve) => {
+    notifySettle = resolve;
   });
-  const onAbort = (): void => notifyError?.();
+  const onAbort = (): void => notifySettle?.();
   if (signal && !continueOnError) {
     // Aborting mid-batch settles the race; in-flight items stop at their
     // next boundary check and no new items are launched.
@@ -66,6 +68,17 @@ export async function runBoundedBatch<T>(
       const index = nextIndex;
       nextIndex += 1;
       if (index >= inputs.length) {
+        return;
+      }
+      if (continueOnError && signal?.aborted) {
+        // Cancellation also honors continueOnError batches: stop launching
+        // new items and complete every not-yet-started entry as aborted
+        // (started items still settle normally).
+        const abortError = new HeicConverterError('aborted', Messages.Aborted);
+        for (let i = index; i < inputs.length; i++) {
+          results[i] = { index: i, ok: false, error: abortError };
+        }
+        nextIndex = inputs.length;
         return;
       }
       try {
@@ -86,7 +99,7 @@ export async function runBoundedBatch<T>(
           failed = true;
           firstError = error;
           firstErrorIndex = index;
-          notifyError?.();
+          notifySettle?.();
         } else if (otherErrorMessages.length < 2) {
           // Cap at two extra messages: distinguishes one bad file from a
           // systemic failure without dumping the whole batch.
@@ -107,13 +120,16 @@ export async function runBoundedBatch<T>(
 
     // Reject on the first failure; in-flight items settle in the background
     // and release their own resources.
-    await Promise.race([Promise.all(runners), errorNotifier]);
+    await Promise.race([Promise.all(runners), settleEarly]);
 
     if (completedCount === inputs.length) {
       return results.map((entry) => {
         if (!entry || !entry.ok) {
           // Unreachable: any failure throws below; any success is recorded.
-          throw new HeicConverterError('batch_item_failed', `Item ${entry?.index} produced no result`);
+          throw new HeicConverterError(
+            'batch_item_failed',
+            Messages.BatchItemProducedNoResult(entry?.index)
+          );
         }
         return entry.result;
       });
@@ -129,7 +145,7 @@ export async function runBoundedBatch<T>(
       if (failedCount > 1) {
         text += Messages.ConvertManyExtraFailures(failedCount, inputs.length);
         if (otherErrorMessages.length > 0) {
-          text += `; other errors: ${otherErrorMessages.join(' | ')}`;
+          text += Messages.ConvertManyOtherErrors(otherErrorMessages);
         }
       }
       throw new HeicConverterError('batch_item_failed', text, {
@@ -140,7 +156,7 @@ export async function runBoundedBatch<T>(
       });
     }
     // Unreachable: the race only settles via completion, failure, or abort.
-    throw new HeicConverterError('batch_item_failed', 'Batch ended without a result');
+    throw new HeicConverterError('batch_item_failed', Messages.BatchEndedWithoutResult);
   } finally {
     signal?.removeEventListener('abort', onAbort);
   }

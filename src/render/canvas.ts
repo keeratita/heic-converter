@@ -1,8 +1,17 @@
 import type { CropOptions, DecodedImage, ImageFormat, ResizeOptions } from '../types';
-import { SUPPORTED_FORMATS } from '../types';
 import { Messages } from '../messages';
 import { HeicConverterError } from '../errors';
-import { injectExifIntoJpeg, injectExifIntoPng } from './exif';
+import { validateCrop, validateFormat, validateResize } from '../validate';
+import {
+  injectExifIntoJpeg,
+  injectExifIntoPng,
+  normalizeOrientationTag,
+} from './exif';
+
+// Option validators live in src/validate.ts (single source of truth shared
+// with the orchestration layer); re-exported here for the render stage's own
+// up-front re-checks.
+export { validateCrop, validateFormat, validateResize } from '../validate';
 
 /**
  * Maximum supported canvas dimension per side. Browsers cap canvas sizes
@@ -26,65 +35,6 @@ export function assertEncodeEnvironment(): void {
 }
 
 /**
- * Validates resize options. Throws if any value is not a positive finite number.
- */
-export function validateResize(resize?: ResizeOptions): void {
-  if (!resize) {
-    return;
-  }
-  const { maxWidth, maxHeight, scale } = resize;
-  if (scale !== undefined && (typeof scale !== 'number' || !Number.isFinite(scale) || scale <= 0)) {
-    throw new HeicConverterError('invalid_resize', Messages.ScaleInvalid(scale));
-  }
-  if (
-    maxWidth !== undefined &&
-    (typeof maxWidth !== 'number' || !Number.isFinite(maxWidth) || maxWidth <= 0)
-  ) {
-    throw new HeicConverterError('invalid_resize', Messages.MaxWidthInvalid(maxWidth));
-  }
-  if (
-    maxHeight !== undefined &&
-    (typeof maxHeight !== 'number' || !Number.isFinite(maxHeight) || maxHeight <= 0)
-  ) {
-    throw new HeicConverterError('invalid_resize', Messages.MaxHeightInvalid(maxHeight));
-  }
-}
-
-/**
- * Validates that a requested output format is supported (case-insensitive).
- */
-export function validateFormat(format: ImageFormat): void {
-  const normalized = String(format).toLowerCase();
-  if (!(SUPPORTED_FORMATS as readonly string[]).includes(normalized)) {
-    throw new HeicConverterError('invalid_format', Messages.UnsupportedFormat(String(format)));
-  }
-}
-
-/**
- * Validates the crop rectangle *shape* (integer, positive, non-negative).
- * Range checking against the image size happens in `renderAndEncode`, once
- * the post-orientation display dimensions are known.
- */
-export function validateCrop(crop?: CropOptions): void {
-  if (!crop) {
-    return;
-  }
-  const { x = 0, y = 0, width, height } = crop;
-  if (!Number.isInteger(width) || width <= 0) {
-    throw new HeicConverterError('invalid_crop', Messages.CropInvalid('width', width));
-  }
-  if (!Number.isInteger(height) || height <= 0) {
-    throw new HeicConverterError('invalid_crop', Messages.CropInvalid('height', height));
-  }
-  if (!Number.isInteger(x) || x < 0) {
-    throw new HeicConverterError('invalid_crop', Messages.CropInvalid('x', x));
-  }
-  if (!Number.isInteger(y) || y < 0) {
-    throw new HeicConverterError('invalid_crop', Messages.CropInvalid('y', y));
-  }
-}
-
-/**
  * Environment probe: some browsers cannot encode AVIF via canvas (e.g.
  * Safari), and per spec `toBlob` silently falls back to PNG for unknown
  * types — so trusting the requested type would emit a PNG under an AVIF
@@ -93,20 +43,52 @@ export function validateCrop(crop?: CropOptions): void {
  */
 let avifSupport: Promise<boolean> | null = null;
 
+/** How long the probe's toBlob may take before the attempt is deemed indeterminate. */
+const AVIF_PROBE_TIMEOUT_MS = 5000;
+
+async function runAvifProbe(): Promise<boolean> {
+  const probe = createCanvas(1, 1);
+  const pending = canvasToBlob(probe, 'image/avif');
+  // toBlob callbacks can be starved (backgrounded tabs, memory pressure):
+  // race against a deadline so a wedged probe can neither hang every later
+  // AVIF conversion nor poison the cache with a false negative.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(() => resolve('timeout'), AVIF_PROBE_TIMEOUT_MS);
+  });
+  try {
+    const result = await Promise.race([pending, deadline]);
+    if (result === 'timeout') {
+      // Indeterminate: leave the cache unset so the next call re-probes.
+      avifSupport = null;
+      return false;
+    }
+    return result.type === 'image/avif' && result.size > 0;
+  } finally {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
+    releaseCanvas(probe);
+  }
+}
+
 export function canEncodeAvif(): Promise<boolean> {
   if (avifSupport === null) {
-    avifSupport = (async () => {
-      try {
-        const probe = createCanvas(1, 1);
-        const blob = await canvasToBlob(probe, 'image/avif');
-        releaseCanvas(probe);
-        return blob.type === 'image/avif' && blob.size > 0;
-      } catch {
-        return false;
-      }
-    })();
+    avifSupport = runAvifProbe().catch(() => false);
   }
   return avifSupport;
+}
+
+/**
+ * Up-front capability gate for the chosen output format, safe to call before
+ * an expensive decode. `renderAndEncode` keeps a defensive re-check at
+ * encode time (worker realms and engines that ignore unknown types).
+ */
+export async function assertEncodeCapability(format: ImageFormat): Promise<void> {
+  validateFormat(format);
+  if (String(format).toLowerCase() === 'avif' && !(await canEncodeAvif())) {
+    throw new HeicConverterError('format_unsupported', Messages.FormatUnsupported('avif'));
+  }
 }
 
 /** @internal Reset the cached AVIF capability probe (tests only). */
@@ -196,7 +178,14 @@ export async function blobToBase64(blob: Blob): Promise<string> {
           reject(new HeicConverterError('render_encode_failed', Messages.BlobToBase64Failed));
         }
       };
-      reader.onerror = () => reject(reader.error);
+      reader.onerror = () =>
+      reject(
+        new HeicConverterError(
+          'render_encode_failed',
+          Messages.BlobToBase64FailedWithCause(reader.error?.message ?? 'FileReader failed'),
+          { cause: reader.error ?? undefined }
+        )
+      );
       reader.readAsDataURL(blob);
     });
   }
@@ -362,12 +351,19 @@ async function withExif(
   blob: Blob,
   decoded: DecodedImage,
   preserveExif: boolean,
-  kind: 'jpeg' | 'png'
+  kind: 'jpeg' | 'png',
+  normalizeOrientation: boolean
 ): Promise<Blob> {
-  const exif = decoded.exif;
-  if (!preserveExif || !exif || exif.length === 0) {
+  const rawExif = decoded.exif;
+  if (!preserveExif || !rawExif || rawExif.length === 0) {
     return blob;
   }
+  // The rendered raster is already upright whenever the pending rotation was
+  // applied (or none was pending): the orientation tag must then say "normal"
+  // or consumers would rotate the image a second time. With
+  // `applyOrientation: false` the stored geometry is preserved and the tag
+  // legitimately describes it — keep it verbatim.
+  const exif = normalizeOrientation ? normalizeOrientationTag(rawExif) : rawExif;
   const bytes = new Uint8Array(await blob.arrayBuffer());
   const injected =
     kind === 'jpeg' ? injectExifIntoJpeg(bytes, exif) : injectExifIntoPng(bytes, exif);
@@ -420,6 +416,13 @@ export async function renderAndEncode(
   }
 
   const orientation = effectiveOrientation(decoded.orientation, applyOrientation);
+  // Whether the injected EXIF may keep its orientation tag verbatim: only
+  // when a pending rotation was NOT applied (applyOrientation:false keeps the
+  // stored geometry, which the tag describes). In every other case the
+  // output raster is upright and tag 274 must be normalized to 1.
+  const pendingRotation =
+    decoded.orientation !== undefined && decoded.orientation >= 2 && decoded.orientation <= 8;
+  const normalizeExifOrientation = !pendingRotation || applyOrientation;
   const matrix = orientationMatrix(orientation, width, height);
   const swapsAxes = orientation >= 5;
   const displayWidth = swapsAxes ? height : width;
@@ -485,12 +488,12 @@ export async function renderAndEncode(
   if (normalizedFormat === 'png') {
     const blob = await canvasToBlob(canvas, 'image/png');
     releaseCanvas(canvas);
-    return withExif(blob, decoded, preserveExif, 'png');
+    return withExif(blob, decoded, preserveExif, 'png', normalizeExifOrientation);
   }
   if (normalizedFormat === 'jpeg' || normalizedFormat === 'jpg') {
     const blob = await canvasToBlob(canvas, 'image/jpeg', quality);
     releaseCanvas(canvas);
-    return withExif(blob, decoded, preserveExif, 'jpeg');
+    return withExif(blob, decoded, preserveExif, 'jpeg', normalizeExifOrientation);
   }
   if (normalizedFormat === 'webp') {
     const blob = await canvasToBlob(canvas, 'image/webp', quality);

@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { injectExifIntoJpeg, injectExifIntoPng } from '../../src/render/exif';
+import {
+  injectExifIntoJpeg,
+  injectExifIntoPng,
+  normalizeOrientationTag,
+} from '../../src/render/exif';
 
 // --- fixtures -------------------------------------------------------------
 
@@ -267,5 +271,80 @@ describe('injectExifIntoPng', () => {
   it('rejects an EXIF block without the Exif\\0\\0 marker', () => {
     const pngBytes = png(IHDR, IDAT, IEND);
     expect(injectExifIntoPng(pngBytes, TIFF)).toBe(pngBytes);
+  });
+});
+
+// --- normalizeOrientationTag ----------------------------------------------
+
+/** Absolute index of the orientation value field inside EXIF_BLOCK. */
+const ORIENT_AT = 6 + 18; // "Exif\0\0" (6) + TIFF IFD0 entry value field
+
+describe('normalizeOrientationTag', () => {
+  const blockWith = (tiff: number[]) => new Uint8Array([0x45, 0x78, 0x69, 0x66, 0x00, 0x00, ...tiff]);
+
+  it('rewrites orientation 6 to 1 (little-endian) returning a copy', () => {
+    const out = normalizeOrientationTag(EXIF_BLOCK);
+    expect(out).not.toBe(EXIF_BLOCK);
+    expect(out[ORIENT_AT]).toBe(1);
+    expect(out[ORIENT_AT + 1]).toBe(0);
+    expect(out[ORIENT_AT + 2]).toBe(0);
+    expect(out[ORIENT_AT + 3]).toBe(0);
+    // Input array is never mutated.
+    expect(EXIF_BLOCK[ORIENT_AT]).toBe(6);
+  });
+
+  it('returns the same reference when the tag already says normal', () => {
+    const tiff = Uint8Array.from(TIFF);
+    tiff[18] = 1;
+    const block = blockWith(Array.from(tiff));
+    expect(normalizeOrientationTag(block)).toBe(block);
+  });
+
+  it('returns the same reference when no orientation entry exists', () => {
+    const noEntries = blockWith([
+      0x49, 0x49, 0x2a, 0x00, // II + magic
+      0x08, 0x00, 0x00, 0x00, // IFD0 at 8
+      0x00, 0x00, // 0 entries
+      0x00, 0x00, 0x00, 0x00, // next IFD: none
+    ]);
+    expect(normalizeOrientationTag(noEntries)).toBe(noEntries);
+  });
+
+  it('rewrites a big-endian (Motorola) orientation entry', () => {
+    const mm = blockWith([
+      0x4d, 0x4d, 0x00, 0x2a, // MM + magic
+      0x00, 0x00, 0x00, 0x08, // IFD0 at 8
+      0x00, 0x01, // 1 entry
+      0x01, 0x12, 0x00, 0x03, 0x00, 0x00, 0x00, 0x01, 0x00, 0x06, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, // next IFD: none
+    ]);
+    const out = normalizeOrientationTag(mm);
+    expect(out).not.toBe(mm);
+    expect(out[ORIENT_AT]).toBe(0);
+    expect(out[ORIENT_AT + 1]).toBe(1);
+    expect(mm[ORIENT_AT + 1]).toBe(6); // original untouched
+  });
+
+  it('leaves a non-SHORT orientation encoding untouched', () => {
+    const longTyped = Uint8Array.from(TIFF);
+    longTyped[12] = 0x04; // type LONG instead of SHORT
+    const block = blockWith(Array.from(longTyped));
+    expect(normalizeOrientationTag(block)).toBe(block);
+  });
+
+  it('fails safe on a truncated entry table', () => {
+    const truncated = Uint8Array.from(EXIF_BLOCK.subarray(0, ORIENT_AT + 2)); // entry cut mid-value
+    expect(normalizeOrientationTag(truncated)).toBe(truncated);
+  });
+
+  it('fails safe on an out-of-range IFD0 offset', () => {
+    const badOffset = Uint8Array.from(TIFF);
+    badOffset[4] = 0xff; // IFD0 far beyond the block
+    const block = blockWith(Array.from(badOffset));
+    expect(normalizeOrientationTag(block)).toBe(block);
+  });
+
+  it('fails safe when the Exif marker is missing', () => {
+    expect(normalizeOrientationTag(TIFF)).toBe(TIFF);
   });
 });

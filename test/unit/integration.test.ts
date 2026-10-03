@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { convertHeic, LibheifDecoder } from '../../src/index';
+import { normalizeOrientationTag } from '../../src/render/exif';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -227,6 +228,39 @@ describe.skipIf((!hasWasm || !hasFixture) && !isCI)('Integration Tests - Real WA
       // dangling WASM-heap view (which would read zeros after memory reuse).
       expect(decoded.exif && Array.from(decoded.exif)).toEqual(copy);
       expect(copy && copy.length).toBeGreaterThanOrEqual(14);
+    });
+
+    it('normalizes the real fixture orientation tag to 1 without mutating the source', async () => {
+      // Guards normalizeOrientationTag against the production TIFF: real
+      // IFD offsets, real entry table, byte order as libheif emits it.
+      const { decoder, decoded } = await decodeFixture(ORIENTED_FIXTURE_PATH);
+      const block = expectExifBlock(decoded.exif);
+
+      const readOrientation = (b: Uint8Array): number | undefined => {
+        const le = b[6] === 0x49;
+        const u16 = (at: number): number =>
+          le ? b[at] | (b[at + 1] << 8) : (b[at] << 8) | b[at + 1];
+        const u32 = (at: number): number =>
+          le
+            ? ((b[at + 3] << 24) | (b[at + 2] << 16) | (b[at + 1] << 8) | b[at]) >>> 0
+            : ((b[at] << 24) | (b[at + 1] << 16) | (b[at + 2] << 8) | b[at + 3]) >>> 0;
+        const ifd0 = 6 + u32(10);
+        const entries = u16(ifd0);
+        for (let i = 0; i < entries; i++) {
+          const entry = ifd0 + 2 + i * 12;
+          if (u16(entry) === 0x0112) {
+            return le ? b[entry + 8] | (b[entry + 9] << 8) : (b[entry + 8] << 8) | b[entry + 9];
+          }
+        }
+        return undefined;
+      };
+
+      expect(readOrientation(block)).toBe(6); // fixture's pinned property
+      const normalized = normalizeOrientationTag(block);
+      expect(normalized).not.toBe(block);
+      expect(readOrientation(normalized)).toBe(1);
+      expect(readOrientation(block)).toBe(6); // source block never mutated
+      decoder.free();
     });
   });
 

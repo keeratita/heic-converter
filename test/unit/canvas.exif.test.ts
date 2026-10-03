@@ -187,4 +187,61 @@ describe('renderAndEncode - preserveExif', () => {
     const blob = await renderAndEncode(decodedImage(EXIF_BLOCK), 'jpeg', 0.92, undefined, true, undefined, true);
     expect(blob.type).toBe('image/jpeg');
   });
+
+  // --- orientation-tag normalization (double-rotation prevention) ----------
+
+  const indexOfSequence = (bytes: Uint8Array, needle: number[]): number => {
+    outer: for (let i = 0; i + needle.length <= bytes.length; i++) {
+      for (let j = 0; j < needle.length; j++) {
+        if (bytes[i + j] !== needle[j]) continue outer;
+      }
+      return i;
+    }
+    return -1;
+  };
+
+  /** Little-endian orientation value inside the APP1 block spliced into bytes. */
+  const injectedOrientation = async (blob: Blob): Promise<number> => {
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    const at = indexOfSequence(bytes, EXIF_MARKER);
+    expect(at).toBeGreaterThan(-1);
+    const valueAt = at + 6 + 18; // marker + TIFF IFD0 entry value field
+    return bytes[valueAt] | (bytes[valueAt + 1] << 8);
+  };
+
+  it('normalizes the orientation tag to 1 when the pending rotation was applied', async () => {
+    const blob = await renderAndEncode(
+      { ...decodedImage(EXIF_BLOCK), orientation: 6 },
+      'jpeg',
+      0.92,
+      undefined,
+      true,
+      undefined,
+      true
+    );
+    expect(await injectedOrientation(blob)).toBe(1);
+    expect(EXIF_BLOCK[24]).toBe(6); // decoded block never mutated
+  });
+
+  it('normalizes the orientation tag when no pending orientation was reported (irot already applied)', async () => {
+    // No decoded.orientation: libheif applied irot/imir at decode, so the
+    // raster is already upright — the stale tag must not survive injection.
+    const blob = await renderAndEncode(decodedImage(EXIF_BLOCK), 'jpeg', 0.92, undefined, true, undefined, true);
+    expect(await injectedOrientation(blob)).toBe(1);
+  });
+
+  it('keeps the orientation tag verbatim when applyOrientation is false', async () => {
+    // applyOrientation:false keeps stored geometry — the tag legitimately
+    // describes it and consumers must still rotate.
+    const blob = await renderAndEncode(
+      { ...decodedImage(EXIF_BLOCK), orientation: 6 },
+      'jpeg',
+      0.92,
+      undefined,
+      false,
+      undefined,
+      true
+    );
+    expect(await injectedOrientation(blob)).toBe(6);
+  });
 });

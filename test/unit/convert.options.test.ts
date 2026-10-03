@@ -8,6 +8,7 @@ vi.mock('../../src/render/canvas', async (importOriginal) => {
     ...actual,
     renderAndEncode: mockState.renderAndEncodeMock,
     assertEncodeEnvironment: mockState.assertEncodeEnvironmentMock,
+    assertEncodeCapability: mockState.assertEncodeCapabilityMock,
   };
 });
 
@@ -525,5 +526,41 @@ describe('convertHeic - AbortSignal', () => {
     await expect(
       convertHeic(new Uint8Array([1]), { signal: controller.signal, quality: 5 })
     ).rejects.toMatchObject({ code: 'invalid_quality' });
+  });
+
+  it('rejects avif before decoding when the environment cannot encode it', async () => {
+    mockState.assertEncodeCapabilityMock.mockRejectedValueOnce(
+      new HeicConverterError('format_unsupported', 'no avif here')
+    );
+
+    const error = await convertHeic(new Uint8Array([1]), { to: 'avif' }).catch((e) => e);
+
+    expect(error).toMatchObject({ code: 'format_unsupported' });
+    expect(mockState.assertEncodeCapabilityMock).toHaveBeenCalledWith('avif');
+    expect(mockState.decoderInstances).toHaveLength(0);
+    expect(mockState.renderAndEncodeMock).not.toHaveBeenCalled();
+  });
+
+  it('does not emit 100% progress when the conversion is aborted during encoding', async () => {
+    const controller = new AbortController();
+    mockState.decodeImpl = async (_data, onProgress) => {
+      onProgress?.(50);
+      return { width: 1, height: 1, data: new Uint8ClampedArray([1, 0, 0, 255]) };
+    };
+    mockState.renderAndEncodeMock.mockImplementationOnce(async () => {
+      controller.abort(); // cancelled after encode started
+      return new Blob([new Uint8Array([0xff, 0xd9])], { type: 'image/jpeg' });
+    });
+    const onProgress = vi.fn();
+
+    const error = await convertHeic(new Uint8Array([1]), {
+      signal: controller.signal,
+      onProgress,
+    }).catch((e) => e);
+
+    expect(error).toMatchObject({ code: 'aborted' });
+    const percents = onProgress.mock.calls.map((call) => call[0]);
+    expect(percents).toContain(50);
+    expect(percents).not.toContain(100);
   });
 });

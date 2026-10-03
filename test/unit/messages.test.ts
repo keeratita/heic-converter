@@ -12,14 +12,23 @@ describe('Messages', () => {
       expect(Messages.QualityInvalid(2)).toContain('Quality must be a number between 0.0 and 1.0, got: 2');
       expect(Messages.ApplyOrientationInvalid('yes')).toBe('applyOrientation must be a boolean, got: yes');
       expect(Messages.UnsupportedInputType('[object Object]')).toContain('Got: [object Object]');
-      expect(Messages.DecoderInitFailed('boom')).toBe('Failed to initialize HEIC decoder: boom');
+      expect(Messages.DecoderInitFailed('boom')).toContain('Failed to initialize HEIC decoder: boom');
+      expect(Messages.DecoderInitFailed('boom')).toContain('wasm-unsafe-eval');
       expect(Messages.RenderEncodeFailed('png', 'oops')).toContain('as png: oops');
       expect(Messages.ConcurrencyInvalid(0)).toContain('got: 0');
+      expect(Messages.MaxConcurrentWorkersInvalid(1.5)).toContain(
+        'maxConcurrentWorkers must be a positive integer, got: 1.5'
+      );
+      expect(Messages.TimeoutInvalid(-1)).toContain('timeoutMs must be a finite number >= 0');
       expect(Messages.InputsMustBeArray).toBe('Inputs must be an array of HEIC images');
       expect(Messages.ConvertManyItemFailed(2, 3, 'nope')).toBe(
         'Conversion of item 2 of 3 failed: nope'
       );
       expect(Messages.ConvertManyExtraFailures(4, 5)).toBe(' (4 of 5 items failed in total)');
+      expect(Messages.ConvertManyOtherErrors(['a', 'b'])).toBe('; other errors: a | b');
+      expect(Messages.BatchItemProducedNoResult(2)).toBe('Item 2 produced no result');
+      expect(Messages.BatchItemProducedNoResult(undefined)).toBe('Item undefined produced no result');
+      expect(Messages.BatchEndedWithoutResult).toBe('Batch ended without a result');
     });
   });
 

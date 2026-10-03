@@ -9,14 +9,11 @@ import { Messages } from './messages';
 import { clampPercent } from './progress';
 import { HeicConverterError } from './errors';
 import { runBoundedBatch } from './batch';
-import { validateCrop, validateFormat } from './render/canvas';
 import {
-  validateApplyOrientation,
+  validateConvertOptions,
   validateContinueOnError,
-  validateOutputShape,
-  validatePreserveExif,
-  validateQuality,
-  validateSignal,
+  validateMaxConcurrentWorkers,
+  validateTimeoutMs,
 } from './validate';
 
 export interface WorkerConvertOptions extends Omit<ConvertOptions, 'decoder'> {
@@ -121,12 +118,16 @@ function reserveWorkerSlot(key: string, max: number, start: (release: () => void
       slot!.active -= 1;
       drainOrPrune();
     } else {
-      // Cancelled while still queued: drop our place in line.
+      // Cancelled while still queued: drop our place in line. No active slot
+      // was ever held, so we must NOT hand a grant to the next waiter — that
+      // would push `active` past `max`. Only collect an emptied slot entry.
       const idx = slot!.waiters.indexOf(grant);
       if (idx !== -1) {
         slot!.waiters.splice(idx, 1);
       }
-      drainOrPrune();
+      if (slot!.active === 0 && slot!.waiters.length === 0) {
+        workerSlots.delete(key);
+      }
     }
   };
 
@@ -230,7 +231,12 @@ export function convertHeicInWorker<S extends OutputShape = 'blob'>(
       return;
     }
     try {
-      validateSignal(options?.signal);
+      // Same up-front validation as the in-process APIs: a typo surfaces its
+      // own error code on the main thread instead of coming back stringified
+      // as worker_failed from inside the worker.
+      validateConvertOptions(options);
+      validateMaxConcurrentWorkers(options?.maxConcurrentWorkers);
+      validateTimeoutMs(options?.timeoutMs);
     } catch (error) {
       reject(error);
       return;
@@ -362,8 +368,15 @@ export function convertHeicInWorker<S extends OutputShape = 'blob'>(
     // structured-cloneable, and workerUrl/timeoutMs/workerType/
     // maxConcurrentWorkers are only needed on the main thread;
     // rest-destructuring forwards all remaining options.
-    const { workerUrl, onProgress: _onProgress, timeoutMs: _timeoutMs, workerType: _workerType, maxConcurrentWorkers: _max, signal: _signal, ...convertOptions } =
-      options;
+    const {
+      workerUrl,
+      onProgress: _onProgress,
+      timeoutMs: _timeoutMs,
+      workerType: _workerType,
+      maxConcurrentWorkers: _max,
+      signal: _signal,
+      ...convertOptions
+    } = options;
 
     const start = (release: () => void): void => {
       // Store the slot releaser first: every failure path below runs cleanup(),
@@ -471,8 +484,12 @@ export function convertManyInWorker<S extends OutputShape = 'blob'>(
 ): Promise<ConvertItemResult<ConvertResult<S>>[]>;
 export function convertManyInWorker<S extends OutputShape = 'blob'>(
   inputs: HeicInput[],
-  options: WorkerBatchOptions & { output?: S }
+  options: WorkerBatchOptions & { output?: S; continueOnError?: false }
 ): Promise<ConvertResult<S>[]>;
+export function convertManyInWorker<S extends OutputShape = 'blob'>(
+  inputs: HeicInput[],
+  options: WorkerBatchOptions & { output?: S; continueOnError: boolean }
+): Promise<Array<ConvertResult<S> | ConvertItemResult<ConvertResult<S>>>>;
 export async function convertManyInWorker<S extends OutputShape = 'blob'>(
   inputs: HeicInput[],
   options: WorkerBatchOptions & { output?: S }
@@ -489,16 +506,10 @@ export async function convertManyInWorker<S extends OutputShape = 'blob'>(
   // Same up-front shared validation as convertMany: option typos surface
   // their own code on the main thread instead of returning stringified as
   // worker_failed from inside the worker.
-  validateFormat(options?.to ?? 'jpeg');
-  if (options?.quality !== undefined) {
-    validateQuality(options.quality);
-  }
-  validateApplyOrientation(options?.applyOrientation);
-  validateOutputShape(options?.output);
-  validateSignal(options?.signal);
-  validateCrop(options?.crop);
+  validateConvertOptions(options);
   validateContinueOnError(options?.continueOnError);
-  validatePreserveExif(options?.preserveExif);
+  validateMaxConcurrentWorkers(options?.maxConcurrentWorkers);
+  validateTimeoutMs(options?.timeoutMs);
 
   // Batch-only knobs stay out of the per-item worker options.
   const { onProgress, continueOnError: _continueOnError, ...perItemOptions } = options ?? {};

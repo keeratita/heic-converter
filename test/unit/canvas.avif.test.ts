@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { renderAndEncode, __resetAvifProbe } from '../../src/render/canvas';
+import { renderAndEncode, canEncodeAvif, assertEncodeCapability, __resetAvifProbe } from '../../src/render/canvas';
 import type { DecodedImage } from '../../src/types';
 
 interface MockCanvasObject {
@@ -169,5 +169,41 @@ describe('renderAndEncode - AVIF capability probe', () => {
 
     const error = await renderAndEncode(decodedImage(100, 80), 'avif', 0.92).catch((e) => e);
     expect(error).toMatchObject({ code: 'format_unsupported' });
+  });
+
+  it('re-probes after a wedged (timed-out) probe instead of caching a false negative', async () => {
+    vi.useFakeTimers();
+    try {
+      toBlobImpl = () => {
+        // Wedged engine: the toBlob callback never fires (backgrounded tab,
+        // memory pressure). The deadline must unblock the probe.
+      };
+      const first = canEncodeAvif();
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(await first).toBe(false);
+
+      // Indeterminate results are NOT cached — a healthy next probe succeeds.
+      toBlobImpl = (_index, callback) => callback(new Blob(['ok'], { type: 'image/avif' }));
+      expect(await canEncodeAvif()).toBe(true);
+      expect(toBlobCalls.filter((call) => call.type === 'image/avif')).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('caches a definitive probe result (no re-probing on repeated calls)', async () => {
+    await canEncodeAvif();
+    await canEncodeAvif();
+    expect(toBlobCalls).toHaveLength(1);
+  });
+
+  it('assertEncodeCapability gates avif up-front and passes other formats through', async () => {
+    toBlobImpl = (_index, callback) => callback(new Blob(['x'], { type: 'image/png' }));
+
+    const error = await assertEncodeCapability('avif').catch((e) => e);
+    expect(error).toMatchObject({ code: 'format_unsupported' });
+    expect(await assertEncodeCapability('jpeg')).toBeUndefined();
+    // A non-avif format never triggers a probe; only the rejected avif call did.
+    expect(toBlobCalls).toHaveLength(1);
   });
 });

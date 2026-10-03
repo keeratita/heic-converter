@@ -141,6 +141,31 @@ async function runPreserveExifTest() {
     throw new Error('preserveExif: APP1 Exif segment missing');
   }
 
+  // The fixture is EXIF-orientation-6 and the raster is rendered upright:
+  // the injected tag must read 1, not the source's 6 — otherwise
+  // EXIF-respecting consumers would rotate the output a second time.
+  const markerAt = keptBytes.findIndex((_, i) => WITH.every((b, j) => keptBytes[i + j] === b));
+  const le = keptBytes[markerAt + 6] === 0x49;
+  const u16 = (at) => (le ? keptBytes[at] | (keptBytes[at + 1] << 8) : (keptBytes[at] << 8) | keptBytes[at + 1]);
+  const u32 = (at) =>
+    le
+      ? ((keptBytes[at + 3] << 24) | (keptBytes[at + 2] << 16) | (keptBytes[at + 1] << 8) | keptBytes[at]) >>> 0
+      : ((keptBytes[at] << 24) | (keptBytes[at + 1] << 16) | (keptBytes[at + 2] << 8) | keptBytes[at + 3]) >>> 0;
+  const ifd0 = markerAt + 6 + u32(markerAt + 10);
+  const entryCount = u16(ifd0);
+  let orientation;
+  for (let i = 0; i < entryCount; i++) {
+    const entry = ifd0 + 2 + i * 12;
+    if (u16(entry) === 0x0112) {
+      orientation = le
+        ? keptBytes[entry + 8] | (keptBytes[entry + 9] << 8)
+        : (keptBytes[entry + 8] << 8) | keptBytes[entry + 9];
+    }
+  }
+  if (orientation !== 1) {
+    throw new Error(`preserveExif: injected orientation tag is ${orientation}, expected 1`);
+  }
+
   const dropped = await convertHeic(blob, { to: 'jpeg' });
   const droppedBytes = new Uint8Array(await dropped.arrayBuffer());
   if (containsExifMarker(droppedBytes)) {

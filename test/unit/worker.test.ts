@@ -1050,3 +1050,111 @@ describe('convertManyInWorker', () => {
     expect(error).toMatchObject({ code: 'worker_unsupported' });
   });
 });
+
+describe('worker entry-point validation (main thread)', () => {
+  let originalWorker: typeof Worker;
+
+  beforeEach(() => {
+    originalWorker = globalThis.Worker;
+    globalThis.Worker = MockWorker as unknown as typeof Worker;
+    MockWorker.instances = [];
+    MockWorker.constructionError = null;
+    MockWorker.postError = null;
+  });
+
+  afterEach(() => {
+    globalThis.Worker = originalWorker;
+  });
+
+  const input = () => new Uint8Array([1]);
+  let validateUrlSeq = 0;
+  const validateUrl = () => `/validate-${validateUrlSeq++}.js`;
+
+  const cases: Array<[string, Record<string, unknown>, string]> = [
+    ['out-of-range quality', { quality: 5 }, 'invalid_quality'],
+    ['unknown format', { to: 'tiff' }, 'invalid_format'],
+    ['unknown output shape', { output: 'json' }, 'invalid_input'],
+    ['zero-width crop', { crop: { x: 0, y: 0, width: 0, height: 1 } }, 'invalid_crop'],
+    ['non-boolean preserveExif', { preserveExif: 'yes' }, 'invalid_input'],
+    ['non-positive scale', { scale: 0 }, 'invalid_resize'],
+    ['fractional maxConcurrentWorkers', { maxConcurrentWorkers: 1.5 }, 'invalid_concurrency'],
+    ['negative timeoutMs', { timeoutMs: -5 }, 'invalid_input'],
+  ];
+
+  it.each(cases)('convertHeicInWorker rejects %s on the main thread', async (_label, options, code) => {
+    const error = await convertHeicInWorker(input(), {
+      workerUrl: validateUrl(),
+      ...options,
+    } as never).catch((e) => e);
+    expect(error).toMatchObject({ code });
+    expect(MockWorker.instances).toHaveLength(0);
+  });
+
+  it.each(cases)('convertManyInWorker rejects %s on the main thread', async (_label, options, code) => {
+    const error = await convertManyInWorker([input()], {
+      workerUrl: validateUrl(),
+      ...options,
+    } as never).catch((e) => e);
+    expect(error).toMatchObject({ code });
+    expect(MockWorker.instances).toHaveLength(0);
+  });
+
+  it('timeoutMs: 0 (disabled) is accepted', async () => {
+    // No timeout scheduled and no reply from the mock worker: the call
+    // stays pending by design — validation is what this test pins.
+    void convertHeicInWorker(input(), { workerUrl: validateUrl(), timeoutMs: 0 }).catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(MockWorker.instances).toHaveLength(1);
+  });
+});
+
+describe('reserveWorkerSlot (semaphore)', () => {
+  afterEach(() => {
+    __semaphoreTestHooks.workerSlots.clear();
+  });
+
+  it('cancelling a queued waiter never grants past max', () => {
+    const { reserveWorkerSlot, workerSlots } = __semaphoreTestHooks;
+    const key = 'semaphore-cancel-queued';
+    const granted: number[] = [];
+    const done: Array<() => void> = [];
+
+    const releaseA = reserveWorkerSlot(key, 1, (finish) => {
+      granted.push(1);
+      done.push(finish);
+    });
+    const releaseB = reserveWorkerSlot(key, 1, (finish) => {
+      granted.push(2);
+      done.push(finish);
+    });
+    const releaseC = reserveWorkerSlot(key, 1, (finish) => {
+      granted.push(3);
+      done.push(finish);
+    });
+
+    expect(granted).toEqual([1]); // B and C queued behind A
+
+    releaseB(); // cancelled while queued: no slot was freed, nobody may start
+    expect(granted).toEqual([1]);
+
+    releaseA(); // A's real release hands the single slot to the next waiter
+    expect(granted).toEqual([1, 3]);
+
+    releaseC(); // C was granted by A's hand-off; now it finishes and the
+    // emptied slot entry is collected.
+    expect(granted).toEqual([1, 3]);
+    expect(workerSlots.has(key)).toBe(false);
+  });
+
+  it('release is idempotent', () => {
+    const { reserveWorkerSlot, workerSlots } = __semaphoreTestHooks;
+    const key = 'semaphore-idempotent';
+    const done: Array<() => void> = [];
+    const release = reserveWorkerSlot(key, 1, (finish) => done.push(finish));
+    expect(workerSlots.get(key)?.active).toBe(1);
+    release();
+    release();
+    expect(workerSlots.get(key)?.active ?? 0).toBe(0);
+    expect(workerSlots.has(key)).toBe(false);
+  });
+});
