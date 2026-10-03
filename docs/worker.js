@@ -1,8 +1,11 @@
 // HEIC conversion worker for the GitHub Pages demo.
 //
 // Protocol (implemented by convertHeicInWorker in src/worker.ts):
-//   in:  { input: ArrayBuffer, options: CloneableConvertOptions }
-//   out: { type: 'progress', percent } | { type: 'result', ok, blob | error }
+//   in:  { input: ArrayBuffer | Blob | TypedArray,
+//          options: cloneable subset of WorkerConvertOptions }
+//   out: { type: 'progress', percent }
+//      | { type: 'result', ok: true, blob: Blob | string | ArrayBuffer }
+//      | { type: 'result', ok: false, error: string }
 //
 // Keep in sync with test/browser/worker.js (same protocol, different import
 // path) — src/worker.ts validates this contract and reports timeouts when a
@@ -16,7 +19,11 @@ self.onmessage = async (event) => {
       ...options,
       onProgress: (percent) => self.postMessage({ type: 'progress', percent }),
     });
-    self.postMessage({ type: 'result', ok: true, blob });
+    // output:'arrayBuffer' results move out zero-copy via the transfer list.
+    self.postMessage(
+      { type: 'result', ok: true, blob },
+      blob instanceof ArrayBuffer ? [blob] : []
+    );
   } catch (error) {
     self.postMessage({
       type: 'result',

@@ -13,7 +13,7 @@ Designed specifically for environments with strict **Content Security Policy (CS
 - ⚡ **Optimized Performance**: A fresh decoder instance is created and released per conversion — memory is reclaimed promptly and concurrent conversions never share mutable WASM state. `convertMany({ reuseDecoders: true })` amortizes WASM init across batch items.
 - 🌐 **Isomorphic / Universal**: Runs in Node.js (decoding) and browser (decoding & canvas-based encoding).
 - 📦 **No Bloat**: Zero external production dependencies. Small footprint.
-- 🎨 **Format Support**: Convert to `jpeg` (with quality configuration), `png`, `webp`, `avif`, and `svg` (embedded lossless vector). AVIF degrades gracefully with a clear `format_unsupported` error where the canvas cannot encode it.
+- 🎨 **Format Support**: Convert to `jpeg` (with quality configuration), `png`, `webp`, `avif`, and `svg` (the encoded raster wrapped in an SVG document). AVIF degrades gracefully with a clear `format_unsupported` error where the canvas cannot encode it.
 - 📐 **Resize & Crop**: Downscale with `maxWidth`/`maxHeight` or apply a uniform `scale` factor; cut any region with `crop` (in display pixels, composed with orientation).
 - 🧭 **EXIF-Orientation Aware**: Images stored rotated with an EXIF orientation flag come out upright, matching what viewers display. Opt out with `applyOrientation: false`.
 - 🗂 **Metadata Preservation**: `preserveExif: true` keeps the source EXIF block in JPEG (APP1) and PNG (`eXIf`) output; raw-decode consumers get the block via `DecodedImage.exif`.
@@ -153,9 +153,9 @@ Fetching a `.gz`/`.br` variant URL directly will not work — see the compressio
 
 #### Reducing the download size
 
-The WASM binary (~1.2 MB) dominates the payload. Everything else is small and lazy: the Emscripten glue (~65 KB) is a separate chunk fetched only on the first decode, and the main entry is ~9 KB.
+The WASM binary (~1.3 MB) dominates the payload. Everything else is small and lazy: the Emscripten glue (~70 KB) is a separate chunk fetched only on the first decode, and the main entry is ~26 KB.
 
-`npm run build` also emits pre-compressed copies — `dist/heic-decoder.wasm.gz` (~397 KB) and `dist/heic-decoder.wasm.br` (~294 KB). Most static hosts and CDNs (GitHub Pages, Netlify, Vercel, Cloudflare) already compress `application/wasm` automatically when the browser sends `Accept-Encoding`; verify with:
+`npm run build` also emits pre-compressed copies — `dist/heic-decoder.wasm.gz` (~421 KB) and `dist/heic-decoder.wasm.br` (~312 KB). Most static hosts and CDNs (GitHub Pages, Netlify, Vercel, Cloudflare) already compress `application/wasm` automatically when the browser sends `Accept-Encoding`; verify with:
 
 ```bash
 curl -sI -H 'Accept-Encoding: br' https://your-site/heic-decoder.wasm | grep -i content-encoding
@@ -322,7 +322,7 @@ const bytes = await convertHeic(heicBlob, { to: 'webp', output: 'arrayBuffer' })
 const blob = await convertHeic(heicBlob, { to: 'jpeg' }); // default Blob
 ```
 
-`output` applies to `convertMany` and `convertManyInWorker` too (in the worker case the chosen representation travels back through the worker protocol — `arrayBuffer` results are transferred, not stringified). Invalid values reject with `invalid_input`.
+`output` applies to `convertMany` and `convertManyInWorker` too (in the worker case the chosen representation travels back through the worker protocol — `arrayBuffer` results arrive as a structured-clone copy, never a base64 round-trip; a custom worker script can additionally transfer the buffer with `postMessage(msg, [msg.blob])`). Invalid values reject with `invalid_input`.
 
 ### 11. Canceling a Conversion (AbortSignal)
 
@@ -410,7 +410,11 @@ self.onmessage = async (event) => {
       ...options,
       onProgress: (percent) => self.postMessage({ type: 'progress', percent }),
     });
-    self.postMessage({ type: 'result', ok: true, blob });
+    // With output: 'arrayBuffer' the payload is zero-copy via a transfer list.
+    self.postMessage(
+      { type: 'result', ok: true, blob },
+      blob instanceof ArrayBuffer ? [blob] : []
+    );
   } catch (error) {
     self.postMessage({ type: 'result', ok: false, error: error?.stack ?? error?.message ?? String(error) });
   }
@@ -438,8 +442,8 @@ const jpegBlob = await convertHeicInWorker(heicBlob, {
 > - `workerUrl` should be a compile-time constant; the script runs with the page's privileges.
 > - Only `progress` and `result` messages are understood; any other message type is ignored — but ignored messages are counted and surfaced in timeout diagnostics (see below).
 > - `decoder` cannot cross the worker boundary: passing it rejects immediately with an `invalid_input` error (it is also absent from `WorkerConvertOptions` at compile time). `onProgress` and `workerUrl` are stripped from the posted message; progress is forwarded through `{ type: 'progress', percent }` messages instead.
-> - Concurrent calls are bounded per worker script: calls beyond `maxConcurrentWorkers` queue and start as slots free. Default: `navigator.hardwareConcurrency` clamped to 1–8 (4 when unavailable).
-> - `timeoutMs` (default `60000`) bounds how long the promise waits for a result; set `0` to disable. A timeout rejects with a `worker_timeout` error whose message includes diagnostics — how many progress messages arrived, the last percent, and any unrecognized message type (the usual sign the worker script doesn't implement the protocol).
+> - Concurrent calls are bounded per worker script: calls beyond `maxConcurrentWorkers` queue and start as slots free. Must be a positive integer (`invalid_concurrency` otherwise). Default: `navigator.hardwareConcurrency` clamped to 1–8 (4 when unavailable).
+> - `timeoutMs` (default `60000`) bounds how long the promise waits for a result; must be a finite number ≥ 0, `0` disables. The deadline starts when the call is made, so time spent queued behind `maxConcurrentWorkers` counts toward it — raise `timeoutMs` or `maxConcurrentWorkers` for very large batches. A timeout rejects with a `worker_timeout` error whose message includes diagnostics — how many progress messages arrived, the last percent, and any unrecognized message type (the usual sign the worker script doesn't implement the protocol).
 > - This helper is **browser-only**: it rejects in Node.js, where there is no global `Worker`.
 
 **Batch inside workers** — `convertManyInWorker` mirrors `convertMany` (input order, `batch_item_failed` aggregation or `continueOnError` per-item results) while each item runs in a worker; real concurrency is bounded by `maxConcurrentWorkers`:
@@ -516,8 +520,8 @@ Converts a HEIC image inside a Web Worker. The worker script must implement the 
 - **`options`**: `WorkerConvertOptions` — same as `ConvertOptions` but without `decoder` (cannot be structured-cloned; passing one rejects with `invalid_input`), plus:
   - `workerUrl`: `string | URL` (URL of the worker script; should be a compile-time constant)
   - `workerType`: `'classic' | 'module'` (Worker script type. Default: `'classic'`; use `'module'` for scripts with ES imports)
-  - `timeoutMs`: `number` (Maximum wait for the result in milliseconds. Default: `60000`; `0` disables)
-  - `maxConcurrentWorkers`: `number` (Concurrent workers per `workerUrl` + type; extra calls queue. Default: `navigator.hardwareConcurrency` clamped to 1–8)
+  - `timeoutMs`: `number` (Maximum wait for the result in milliseconds, including time spent queued. Finite, ≥ 0; `0` disables. Default: `60000`)
+  - `maxConcurrentWorkers`: `number` (Positive integer. Concurrent workers per `workerUrl` + type; extra calls queue. Default: `navigator.hardwareConcurrency` clamped to 1–8)
 - **Returns**: `Promise<Blob>` — or `Promise<string>` / `Promise<ArrayBuffer>` with the typed `output` overloads. Aborting via `signal` terminates the worker immediately.
 
 ### `convertManyInWorker(inputs, options)`
@@ -525,9 +529,9 @@ Converts a HEIC image inside a Web Worker. The worker script must implement the 
 Converts multiple HEIC images, each inside a Web Worker, with `convertMany` semantics (input order, `batch_item_failed` aggregation, `continueOnError` per-item results). Browser-only; rejects in Node.js.
 
 - **`inputs`**: `Array<Blob | File | ArrayBuffer | Uint8Array>`
-- **`options`**: `WorkerConvertManyOptions` — same as `convertHeicInWorker`'s `WorkerConvertOptions` (including `output`, `crop`, `preserveExif`, `signal`), except `onProgress` uses the batch signature below; plus:
+- **`options`**: `WorkerBatchOptions` — same as `convertHeicInWorker`'s `WorkerConvertOptions` (including `output`, `crop`, `preserveExif`, `signal`), except `onProgress` uses the batch signature below; plus:
   - `onProgress`: `(index: number, percent: number) => void` (Per-item progress callback)
-  - `maxConcurrentWorkers`: `number` (Real concurrency — each in-flight item occupies one semaphore slot. Default: `navigator.hardwareConcurrency` clamped to 1–8)
+  - `maxConcurrentWorkers`: `number` (Positive integer. Real concurrency — each in-flight item occupies one semaphore slot. Default: `navigator.hardwareConcurrency` clamped to 1–8)
   - `continueOnError`: `boolean` (Per-item `{ index, ok, result | error }` entries instead of rejecting on the first failure. Default: `false`)
 - **Returns**: `Promise<Blob[]>` — typed overloads mirror `convertMany` (`output` / `continueOnError` combinations)
 
@@ -551,14 +555,14 @@ All errors thrown by this library are `HeicConverterError` instances (`extends E
 | `code` | Thrown by | Meaning |
 | --- | --- | --- |
 | `invalid_input` | all conversion APIs | Unsupported input type; non-boolean `applyOrientation`/`continueOnError`/`reuseDecoders`/`preserveExif`, unknown `output`, malformed `signal`; or worker helper called with a `decoder` |
-| `invalid_quality` | `convertHeic`, `convertMany` | `quality` outside `0.0`–`1.0` or not a finite number |
-| `invalid_resize` | `convertHeic`, `convertMany` | `scale`/`maxWidth`/`maxHeight` not positive finite numbers, or target size exceeds 16384 px |
-| `invalid_format` | `convertHeic`, `convertMany` | Unknown `to` value |
-| `invalid_crop` | `convertHeic`, `convertMany` | `crop` with non-integer/non-positive dimensions, negative offsets, or a rectangle beyond the image's display size |
-| `invalid_concurrency` | `convertMany` | `concurrency` not a positive integer |
+| `invalid_quality` | all conversion APIs | `quality` outside `0.0`–`1.0` or not a finite number |
+| `invalid_resize` | all conversion APIs | `scale`/`maxWidth`/`maxHeight` not positive finite numbers, or target size exceeds 16384 px |
+| `invalid_format` | all conversion APIs | Unknown `to` value |
+| `invalid_crop` | all conversion APIs | `crop` with non-integer/non-positive dimensions, negative offsets, or a rectangle beyond the image's display size |
+| `invalid_concurrency` | all conversion APIs | `concurrency` (batch) or `maxConcurrentWorkers` (worker APIs) not a positive integer |
 | `decoder_init_failed` | `convertHeic`, `convertMany` | WASM module could not be loaded (missing asset, CSP block) |
 | `decode_failed` | `convertHeic`, `convertMany` | Invalid/corrupt HEIC bytes |
-| `unsupported_environment` | all conversion APIs | No canvas APIs (e.g. Node.js) or no `Worker` global; decode raw RGBA via `LibheifDecoder` instead |
+| `unsupported_environment` | `convertHeic`, `convertMany` | No canvas APIs (e.g. Node.js); the worker APIs reject with `worker_unsupported` there instead. Decode raw RGBA via `LibheifDecoder` |
 | `render_encode_failed` | `convertHeic`, `convertMany` | Canvas render/encode failure (bad dimensions, `toBlob` returned null) |
 | `format_unsupported` | `convertHeic`, `convertMany` | The canvas cannot encode the requested format (e.g. `avif` on Safari) |
 | `aborted` | all conversion APIs | The `AbortSignal` was aborted before the work completed |
@@ -568,6 +572,8 @@ All errors thrown by this library are `HeicConverterError` instances (`extends E
 | `worker_post_failed` | `convertHeicInWorker`, `convertManyInWorker` | `postMessage` threw (non-cloneable option) |
 | `worker_timeout` | `convertHeicInWorker`, `convertManyInWorker` | No result within `timeoutMs`; message includes progress/protocol diagnostics |
 | `worker_failed` | `convertHeicInWorker`, `convertManyInWorker` | Worker reported `{ type: 'result', ok: false, error }` |
+
+Option validation for **all four** conversion APIs runs on the main thread before any worker is created, so a bad option always keeps its own code. Stage errors raised *inside* a worker (decode, render, unsupported format) come back stringified under `worker_failed` — the numeric `code` does not survive the worker boundary; match on the message instead.
 | `batch_item_failed` | `convertMany`, `convertManyInWorker` | One or more items failed; see `itemIndex`/`itemTotal`/`failedCount`/`cause` |
 
 ```typescript
@@ -629,9 +635,10 @@ npm run test
 
 ### Run Browser E2E Tests
 
-Real browser conversions against the CSP sandbox and the GitHub Pages demo (`docs/`):
+Real browser conversions against the CSP sandbox and the GitHub Pages demo (`docs/`). Build first — both servers serve `dist/`:
 
 ```bash
+npm run build
 npx playwright install chromium   # one-time
 npm run test:e2e
 ```
