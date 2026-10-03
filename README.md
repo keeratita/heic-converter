@@ -125,7 +125,7 @@ const jpegBlob = await convertHeic(heicBlob, {
 
 The WASM binary (~1.2 MB) dominates the payload. Everything else is small and lazy: the Emscripten glue (~65 KB) is a separate chunk fetched only on the first decode, and the main entry is ~9 KB.
 
-`npm run build` also emits pre-compressed copies — `dist/heic-decoder.wasm.gz` (~384 KB) and `dist/heic-decoder.wasm.br` (~285 KB). Most static hosts and CDNs (GitHub Pages, Netlify, Vercel, Cloudflare) already compress `application/wasm` automatically when the browser sends `Accept-Encoding`; verify with:
+`npm run build` also emits pre-compressed copies — `dist/heic-decoder.wasm.gz` (~397 KB) and `dist/heic-decoder.wasm.br` (~294 KB). Most static hosts and CDNs (GitHub Pages, Netlify, Vercel, Cloudflare) already compress `application/wasm` automatically when the browser sends `Accept-Encoding`; verify with:
 
 ```bash
 curl -sI -H 'Accept-Encoding: br' https://your-site/heic-decoder.wasm | grep -i content-encoding
