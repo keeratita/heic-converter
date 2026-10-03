@@ -174,7 +174,7 @@ fileInput.addEventListener('change', () => {
 });
 
 formatEl.addEventListener('change', () => {
-  qualityWrap.hidden = formatEl.value !== 'jpeg' && formatEl.value !== 'webp';
+  qualityWrap.hidden = !['jpeg', 'webp', 'avif'].includes(formatEl.value);
 });
 
 qualityEl.addEventListener('input', () => {
@@ -237,6 +237,7 @@ convertBtn.addEventListener('click', async () => {
       png: 'png',
       svg: 'svg',
       webp: 'webp',
+      avif: 'avif',
     };
     const ext = extMap[format] || format;
     const baseName = selectedFile.name.replace(/\.[^/.]+$/, '') || 'converted';

@@ -260,19 +260,21 @@ async function runDemoConversions(page) {
 }
 
 /**
- * API tests (test/browser/api-test.html): exercises the new APIs against a
- * real browser — resize bounds, batch conversion, and the full worker
- * message protocol with a real module worker.
+ * API tests (test/browser/api-test.html): exercises the public APIs against a
+ * real browser — resize bounds, batch conversion, the full worker message
+ * protocol with a real module worker, and the 0.5.0 feature set (avif
+ * graceful support, output shapes, continueOnError, abort, crop,
+ * preserveExif, worker batches, pooled decoders).
  */
 async function runApiTests(page) {
-  console.log('\n--- API tests: resize, batch, worker ---');
+  console.log('\n--- API tests: core + 0.5.0 features ---');
 
   await page.goto(`${BASE_URL}/api-test.html`);
 
   await page.waitForFunction(() => {
     const text = document.querySelector('#results')?.textContent;
     return text && text !== 'pending';
-  }, { timeout: 60000 });
+  }, { timeout: 90000 });
 
   const text = (await page.locator('#results').textContent())?.trim();
   let results;
@@ -294,8 +296,36 @@ async function runApiTests(page) {
   if (!results.worker) {
     fail('worker: conversion did not produce output');
   }
+  if (results.avif !== 'supported' && results.avif !== 'unsupported') {
+    fail(`avif: expected supported|unsupported, got ${JSON.stringify(results.avif)}`);
+  }
+  if (!results.outputShapes) {
+    fail('output shapes: dataUrl/arrayBuffer checks failed');
+  }
+  if (results.continueOnError !== 'decode_failed') {
+    fail(`continueOnError: expected decode_failed entry, got ${JSON.stringify(results.continueOnError)}`);
+  }
+  if (!results.abort) {
+    fail('abort: AbortSignal check failed');
+  }
+  if (!results.crop || results.crop.width !== 40 || results.crop.height !== 32) {
+    fail(`crop: expected 40x32, got ${JSON.stringify(results.crop)}`);
+  }
+  if (!results.preserveExif) {
+    fail('preserveExif: APP1 injection/default-drop checks failed');
+  }
+  if (!results.workerBatch) {
+    fail('worker batch: convertManyInWorker checks failed');
+  }
+  if (!results.pooledBatch) {
+    fail('pooled batch: reuseDecoders checks failed');
+  }
 
-  console.log(`✅ API tests OK: resize ${results.resize.width}x${results.resize.height}, batch ${results.batch}, worker ok`);
+  console.log(
+    `✅ API tests OK: resize ${results.resize.width}x${results.resize.height}, batch ${results.batch}, ` +
+      `worker ok, avif ${results.avif}, shapes ok, continueOnError ok, abort ok, ` +
+      `crop ${results.crop.width}x${results.crop.height}, exif kept, worker-batch ok, pooled ok`
+  );
 }
 
 async function runTest() {
