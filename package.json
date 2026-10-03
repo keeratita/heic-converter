@@ -59,8 +59,8 @@
   "homepage": "https://github.com/keeratita/heic-converter#readme",
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@vitest/browser": "^4.1.8",
-    "@vitest/coverage-v8": "^4.1.9",
+    "@vitest/browser": "^4.1.11",
+    "@vitest/coverage-v8": "^4.1.11",
     "eslint": "^10.4.1",
     "globals": "^17.6.0",
     "husky": "^9.1.7",
@@ -68,6 +68,6 @@
     "tsup": "^8.0.0",
     "typescript": "^5.0.0",
     "typescript-eslint": "^8.60.1",
-    "vitest": "^4.1.8"
+    "vitest": "^4.1.11"
   }
 }
