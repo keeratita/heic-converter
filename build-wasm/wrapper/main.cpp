@@ -51,9 +51,13 @@ public:
 
     // Fast path: the caller placed the file bytes in the WASM heap itself
     // (module._malloc + HEAPU8.set), avoiding embind's per-byte input
-    // marshalling. ptr/len are only valid for the duration of this call.
-    val decodeFromPointer(uint8_t* ptr, uint32_t len, val progress_callback) {
-        if (ptr == nullptr || len == 0) {
+    // marshalling. heap_ptr/len are only valid for the duration of this call.
+    // heap_ptr is a plain number, not a raw pointer: embind forbids binding
+    // raw pointer parameters (static_assert in wire.h), and the JS side
+    // already holds a numeric address from _malloc anyway.
+    val decodeFromPointer(uintptr_t heap_ptr, uint32_t len, val progress_callback) {
+        const uint8_t* ptr = reinterpret_cast<const uint8_t*>(heap_ptr);
+        if (heap_ptr == 0 || ptr == nullptr || len == 0) {
             return val("Empty decode input");
         }
         return decode_bytes(ptr, static_cast<size_t>(len), progress_callback);
