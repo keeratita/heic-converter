@@ -1,5 +1,7 @@
-import { IHeicDecoder, DecodedImage } from '../types';
+import type { IHeicDecoder, DecodedImage } from '../types';
 import { Messages } from '../messages';
+import { clampPercent } from '../progress';
+import { HeicConverterError } from '../errors';
 
 export interface LibheifDecoderOptions {
   /**
@@ -10,9 +12,19 @@ export interface LibheifDecoderOptions {
 
   /**
    * Raw WASM binary buffer. If provided, the library will use this buffer
-   * directly instead of attempting to fetch the WASM file.
+   * directly instead of attempting to fetch the WASM file. Accepts an
+   * `ArrayBuffer` or any `ArrayBufferView` (e.g. a Node.js `Buffer` from
+   * `fs.readFileSync`).
    */
-  wasmBinary?: ArrayBuffer;
+  wasmBinary?: ArrayBuffer | ArrayBufferView;
+
+  /**
+   * Advanced: extra properties merged into the Emscripten module argument
+   * object (e.g. `instantiateWasm` for streaming compilation). Prefer
+   * `locateFile`/`wasmBinary` for the common cases; keys provided here must
+   * not collide with them.
+   */
+  moduleOverrides?: Record<string, unknown>;
 }
 
 /**
@@ -22,6 +34,14 @@ interface HeicDecoderResult {
   width: number;
   height: number;
   data: Uint8Array;
+  /** EXIF orientation 1-8 (1 when absent or already applied by libheif). */
+  orientation?: number;
+  /**
+   * Raw EXIF block normalized to the JPEG APP1 payload form
+   * ("Exif\0\0" + TIFF), present when the file carries an Exif item
+   * (regardless of irot/imir). JS-owned, same as `data`.
+   */
+  exif?: Uint8Array;
 }
 
 /**
@@ -29,6 +49,16 @@ interface HeicDecoderResult {
  */
 interface HeicDecoderInstance {
   decode(data: Uint8Array, onProgress: ((percent: number) => void) | null): HeicDecoderResult | string | null;
+  /**
+   * Fast path available on newer builds: reads input already placed in the
+   * WASM heap by the caller, avoiding embind's per-byte std::string
+   * marshalling of the input file.
+   */
+  decodeFromPointer?(
+    ptr: number,
+    len: number,
+    onProgress: ((percent: number) => void) | null
+  ): HeicDecoderResult | string | null;
   delete(): void;
 }
 
@@ -37,11 +67,15 @@ interface HeicDecoderInstance {
  */
 interface HeicDecoderModule {
   HeicDecoder: new () => HeicDecoderInstance;
+  /** Present on newer glue builds (EXPORTED_FUNCTIONS/RuntimeMethods). */
+  _malloc?: (size: number) => number;
+  _free?: (ptr: number) => void;
+  HEAPU8?: Uint8Array;
 }
 
-interface ModuleInitOptions {
+interface ModuleInitOptions extends Record<string, unknown> {
   locateFile?: LibheifDecoderOptions['locateFile'];
-  wasmBinary?: ArrayBuffer;
+  wasmBinary?: ArrayBuffer | ArrayBufferView;
 }
 
 export class LibheifDecoder implements IHeicDecoder {
@@ -51,8 +85,15 @@ export class LibheifDecoder implements IHeicDecoder {
   /**
    * Memoized module-loading promise so concurrent initialize()/decode() calls
    * on the same instance never instantiate (or mutate) the module twice.
+   * Resolves null when a concurrent free() discarded the freshly created
+   * instance (see initGeneration).
    */
-  private initPromise: Promise<HeicDecoderModule> | null = null;
+  private initPromise: Promise<HeicDecoderModule | null> | null = null;
+  /**
+   * Generation counter for init/free races: a load that finishes after a
+   * concurrent free() must not resurrect module/decoderInstance.
+   */
+  private initGeneration = 0;
 
   constructor(options?: LibheifDecoderOptions) {
     this.options = options;
@@ -64,7 +105,11 @@ export class LibheifDecoder implements IHeicDecoder {
    */
   async initialize(): Promise<void> {
     if (!this.initPromise) {
+      const generation = ++this.initGeneration;
       const moduleArgs: ModuleInitOptions = {};
+      if (this.options?.moduleOverrides) {
+        Object.assign(moduleArgs, this.options.moduleOverrides);
+      }
       if (this.options?.locateFile) {
         moduleArgs.locateFile = this.options.locateFile;
       }
@@ -72,22 +117,30 @@ export class LibheifDecoder implements IHeicDecoder {
         moduleArgs.wasmBinary = this.options.wasmBinary;
       }
 
-      // Lazy-load the Emscripten glue so it stays out of the main bundle and
-      // is only fetched on the first actual decode (not on import).
-      this.initPromise = import('./wrapper/heic-decoder.js')
+      // Lazy-load the glue so it is fetched on first decode, not on import.
+      const promise = import('./wrapper/heic-decoder.js')
         .then(({ default: createHeicDecoderModule }) =>
           createHeicDecoderModule(moduleArgs)
         )
         .then((module) => {
+          const instance = new module.HeicDecoder();
+          if (generation !== this.initGeneration) {
+            // free() ran during the load: drop it instead of resurrecting.
+            instance.delete();
+            return null;
+          }
           this.module = module;
-          this.decoderInstance = new module.HeicDecoder();
+          this.decoderInstance = instance;
           return module;
         })
         .catch((error) => {
-          // Reset so a failed load (e.g. transient WASM fetch failure) can be retried.
-          this.initPromise = null;
+          // Allow a failed load to retry — but never clobber a newer init.
+          if (this.initPromise === promise) {
+            this.initPromise = null;
+          }
           throw error;
         });
+      this.initPromise = promise;
     }
 
     await this.initPromise;
@@ -96,7 +149,8 @@ export class LibheifDecoder implements IHeicDecoder {
   /**
    * Decodes HEIC binary data into raw RGBA pixel data.
    * @param data The HEIC file contents as a Uint8Array.
-   * @param onProgress Optional progress callback.
+   * @param onProgress Optional progress callback (receives a normalized
+   * percentage clamped to 0-100).
    */
   async decode(
     data: Uint8Array,
@@ -105,45 +159,143 @@ export class LibheifDecoder implements IHeicDecoder {
     if (!this.module || !this.decoderInstance) {
       await this.initialize();
     }
-
-    const result = this.decoderInstance!.decode(data, onProgress ?? null);
-    if (!result) {
-      throw new Error(Messages.DecodeFailed);
+    if (!this.module || !this.decoderInstance) {
+      // A concurrent free() (or a raced initialization) dropped the instance.
+      throw new HeicConverterError('decode_failed', Messages.DecoderFreedDuringDecode);
     }
+
+    // Contain host progress exceptions (unwinding through embind would abort
+    // the module) and normalize values to the documented [0, 100] range.
+    let progressError: unknown;
+    const wrappedProgress = onProgress
+      ? (percent: number): void => {
+          try {
+            onProgress(clampPercent(percent));
+          } catch (error) {
+            progressError = progressError ?? error;
+          }
+        }
+      : null;
+
+    const module = this.module;
+    const instance = this.decoderInstance;
+    let result: HeicDecoderResult | string | null;
+
+    // Fast path when the glue exports the pointer API: one HEAPU8.set instead
+    // of embind's per-byte marshalling; otherwise use the std::string path.
+    if (
+      typeof instance.decodeFromPointer === 'function' &&
+      typeof module._malloc === 'function' &&
+      typeof module._free === 'function' &&
+      module.HEAPU8 instanceof Uint8Array &&
+      data.buffer !== module.HEAPU8.buffer
+    ) {
+      const ptr = module._malloc(data.byteLength);
+      if (ptr === 0) {
+        throw new HeicConverterError(
+          'decode_failed',
+          Messages.DecodeInputAllocFailed(data.byteLength)
+        );
+      }
+      try {
+        module.HEAPU8.set(data, ptr);
+        result = instance.decodeFromPointer(ptr, data.byteLength, wrappedProgress);
+      } finally {
+        module._free(ptr);
+      }
+    } else {
+      result = instance.decode(data, wrappedProgress);
+    }
+
     if (typeof result === 'string') {
-      throw new Error(Messages.DecodeFailedWithDetail(result));
+      throw new HeicConverterError(
+        'decode_failed',
+        Messages.DecodeFailedWithDetail(result, data.byteLength)
+      );
+    }
+    if (!result) {
+      throw new HeicConverterError('decode_failed', Messages.DecodeFailed(data.byteLength));
+    }
+
+    if (progressError !== undefined) {
+      // Decode succeeded but the host callback threw — report it with cause.
+      throw new HeicConverterError(
+        'progress_callback_failed',
+        Messages.ProgressCallbackThrew(
+          progressError instanceof Error ? progressError.message : String(progressError)
+        ),
+        { cause: progressError }
+      );
     }
 
     const width = result.width;
     const height = result.height;
 
-    // Copy the pixels into an owned Uint8ClampedArray. The current C++ build
-    // already returns an owned Uint8Array, but this copy keeps DecodedImage
-    // independent of the WASM implementation (e.g. if main.cpp ever switches
-    // to an embind typed_memory_view over the heap), so results stay valid
-    // after free() and after a later decode on the same instance.
-    const clampedData = new Uint8ClampedArray(result.data);
+    // Validate the reported orientation before exposing it: anything outside
+    // EXIF's 1-8 range (or absent on an older glue) is identity. Only set the
+    // field when a rotation is actually pending, keeping the result shape
+    // backwards compatible.
+    const rawOrientation = result.orientation;
+    const orientation =
+      typeof rawOrientation === 'number' &&
+      Number.isInteger(rawOrientation) &&
+      rawOrientation >= 1 &&
+      rawOrientation <= 8
+        ? rawOrientation
+        : 1;
 
-    return {
+    // DecodedImage.data must outlive free(): the C++ wrapper allocates pixels
+    // as a JS array, so wrap without copying when HEAPU8 proves it is not a
+    // heap view; otherwise copy.
+    const heapBuffer = module.HEAPU8 instanceof Uint8Array ? module.HEAPU8.buffer : undefined;
+    const clampedData =
+      heapBuffer !== undefined && result.data.buffer !== heapBuffer
+        ? new Uint8ClampedArray(result.data.buffer, result.data.byteOffset, result.data.byteLength)
+        : new Uint8ClampedArray(result.data);
+
+    const decoded: DecodedImage = {
       width,
       height,
       data: clampedData,
     };
+    if (orientation > 1) {
+      decoded.orientation = orientation;
+    }
+    // Expose the raw EXIF block for metadata preservation (preserveExif) and
+    // for raw-decode consumers (e.g. Node + sharp). Same ownership rule as
+    // `data`: the block must outlive free(), so copy only when HEAPU8 shows it
+    // is a live heap view — the C++ wrapper hands back a JS-allocated array,
+    // so this is normally a zero-copy wrap (it was previously an extra full
+    // copy of a payload that can reach 4 MB). Require at least a marker plus a
+    // minimal TIFF header to be useful.
+    const rawExif = result.exif;
+    if (rawExif instanceof Uint8Array && rawExif.length >= 14) {
+      decoded.exif =
+        heapBuffer !== undefined && rawExif.buffer !== heapBuffer
+          ? new Uint8Array(rawExif.buffer, rawExif.byteOffset, rawExif.byteLength)
+          : new Uint8Array(rawExif);
+    }
+    return decoded;
   }
 
   /**
    * Cleans up the WebAssembly decoder instance and resources.
-   * Idempotent: safe to call multiple times. After free(), the instance must
-   * be re-initialized (createHeicDecoderModule runs again on the next call).
+   * Idempotent: safe to call multiple times. After free(), the next
+   * initialize() — or decode() directly, which re-initializes transparently
+   * — loads a fresh module.
+   *
+   * free() is also safe to call while initialize() is in flight: a load that
+   * completes after free() discards its fresh instance instead of leaking it.
    */
   free(): void {
+    // Invalidate any in-flight initialization so it cannot resurrect state.
+    this.initGeneration += 1;
     if (this.decoderInstance) {
       this.decoderInstance.delete();
       this.decoderInstance = null;
     }
     this.module = null;
-    // Drop the module reference so the WASM instance/heap can be garbage
-    // collected, and allow a later initialize() to load a fresh module.
+    // Release the module so a later initialize() loads a fresh one.
     this.initPromise = null;
   }
 }

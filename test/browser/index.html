@@ -148,6 +148,11 @@
       box-shadow: 0 0 15px rgba(138, 43, 226, 0.1);
     }
 
+    .dropzone:focus-visible {
+      outline: 2px solid var(--primary-hover);
+      outline-offset: 2px;
+    }
+
     .dropzone-icon {
       font-size: 3rem;
       color: var(--text-muted);
@@ -382,7 +387,9 @@
     }
 
     .log-time {
-      color: #585c89;
+      /* var(--text-muted) keeps the timestamp readable on the console's
+         near-black background (the previous #585c89 was ~3:1 contrast). */
+      color: var(--text-muted);
       flex-shrink: 0;
     }
 
@@ -434,10 +441,10 @@
         <span>Upload & settings</span>
       </div>
 
-      <div class="dropzone" id="dropzone">
-        <div class="dropzone-icon">☁️</div>
+      <div class="dropzone" id="dropzone" role="button" tabindex="0" aria-label="Upload a HEIC image: drag and drop, or press Enter to choose a file from your device">
+        <div class="dropzone-icon" aria-hidden="true">☁️</div>
         <div class="dropzone-text">Drag & drop your .heic image here</div>
-        <div class="dropzone-subtext">or click to choose file from your device</div>
+        <div class="dropzone-subtext">or click (or press Enter) to choose file from your device</div>
         <input type="file" id="fileInput" accept=".heic,.heif" style="display: none;">
       </div>
 
@@ -455,12 +462,13 @@
         <select id="formatSelect">
           <option value="jpeg">JPEG (Lossy)</option>
           <option value="png">PNG (Lossless)</option>
+          <option value="webp">WebP (Lossy)</option>
           <option value="svg">SVG (Embedded Raster Vector)</option>
         </select>
       </div>
 
       <div class="form-group" id="qualityGroup">
-        <label for="qualityRange">JPEG Quality</label>
+        <label for="qualityRange">Lossy Quality (JPEG/WebP)</label>
         <input type="range" id="qualityRange" min="0" max="1" step="0.05" value="0.9">
         <div class="range-val" id="qualityVal">90%</div>
       </div>
@@ -473,6 +481,8 @@
       <div id="progressContainer" style="display: none; width: 100%; margin-top: 1.25rem; background: rgba(255, 255, 255, 0.1); border-radius: 100px; height: 8px; overflow: hidden; border: 1px solid var(--border);">
         <div id="progressBar" style="background: linear-gradient(90deg, #8a2be2, #da70d6); height: 100%; width: 0%; transition: width 0.1s ease-out; border-radius: 100px;"></div>
       </div>
+
+      <p id="sandboxStatus" role="status" aria-live="polite" style="min-height: 1.25em; font-size: 0.875rem; color: var(--text-muted);"></p>
     </div>
 
     <!-- Right column: Preview and output details -->

@@ -5,18 +5,17 @@ export default defineConfig({
   format: ['cjs', 'esm'],
   dts: true,
   clean: true,
+  // Copies src/wasm/public/* (the decoder binary) into dist/ as a static
+  // asset so it can be served next to the bundle.
   publicDir: 'src/wasm/public',
-  // Optimization settings for smaller bundle size
   minify: true,
   treeshake: true,
   // Emit the dynamically-imported Emscripten glue as a separate chunk so the
-  // main entry stays small and the glue is only fetched on first decode.
+  // main entry stays small (~9 KB) and the glue is only fetched on first decode.
   splitting: true,
-  // Exclude large WASM from main bundle
+  // The WASM binary is referenced by URL at runtime (locateFile/wasmBinary),
+  // never inlined into the JS bundle.
   external: ['heic-decoder.wasm'],
-  // Add sourcemaps for debugging (separate file)
+  // Separate-file sourcemaps; disabled to keep the published bundle minimal.
   sourcemap: false,
-  // Reduce bundle size by removing comments
-  banner: {},
-  footer: {},
 });

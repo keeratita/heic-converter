@@ -36,7 +36,7 @@ async function waitForServer(timeoutMs = 20000) {
  * blob with the requested format, a valid resolution, and a non-zero size.
  */
 async function runSandboxConversions(page) {
-  const runConversion = async (fileName, format, quality) => {
+  const runConversion = async (fileName, format, quality, expectedResolution) => {
     console.log(`\n--- Sandbox: ${fileName} -> ${format.toUpperCase()} (quality=${quality ?? 'default'}) ---`);
 
     await page.locator('#fileInput').setInputFiles(path.join(ROOT_DIR, 'test/fixtures', fileName));
@@ -74,6 +74,13 @@ async function runSandboxConversions(page) {
       fail(`resolution: got "${outResolution}"`);
     }
 
+    if (expectedResolution !== undefined) {
+      const [ew, eh] = expectedResolution.split('x').map((v) => Number(v.trim()));
+      if (Number(match?.[1]) !== ew || Number(match?.[2]) !== eh) {
+        fail(`orientation: expected output ${expectedResolution}, got "${outResolution}"`);
+      }
+    }
+
     if (!outSize || outSize === '0 Bytes') {
       fail(`size: got "${outSize}"`);
     }
@@ -84,6 +91,40 @@ async function runSandboxConversions(page) {
   await runConversion('colors-with-alpha.heic', 'png');
   await runConversion('example.heic', 'jpeg', 0.5);
   await runConversion('colors-no-alpha.heic', 'svg');
+  // Orientation: the EXIF-only file must be emitted upright PORTRAIT (the
+  // canvas layer applies tag 274); the irot file proves libheif's applied
+  // transform is never stacked with the EXIF tag (no double rotation).
+  await runConversion('exif-orientation-6.heic', 'jpeg', undefined, '1200x1600');
+  await runConversion('irot-orientation-6.heic', 'png', undefined, '1200x1600');
+}
+
+/**
+ * Run one conversion on the GitHub Pages demo and wait for it to settle.
+ * Returns the rendered preview width for follow-up assertions.
+ */
+async function convertOnDemo(page, { format, quality, maxWidth, worker } = {}) {
+  if (format !== undefined) {
+    await page.selectOption('#format', format);
+  }
+  if (quality !== undefined) {
+    await page.fill('#quality', String(quality));
+  }
+  if (maxWidth !== undefined) {
+    await page.selectOption('#maxWidth', String(maxWidth));
+  }
+  if (worker !== undefined) {
+    await page.selectOption('#worker', worker);
+  }
+  await page.click('#convert');
+
+  await page.waitForFunction(() =>
+    document.querySelector('#status')?.textContent?.includes('Conversion complete.'), { timeout: 30000 });
+  // The preview is rendered via an <img> that loads the blob URL asynchronously.
+  await page.waitForFunction(() => {
+    const img = document.querySelector('#previewImg');
+    return img && img.naturalWidth > 0;
+  }, { timeout: 10000 });
+  return page.locator('#previewImg').evaluate((img) => img.naturalWidth);
 }
 
 /**
@@ -98,21 +139,12 @@ async function runDemoConversions(page) {
   // directory, so it must be served as /demo/, not /demo.
   await page.goto(`${BASE_URL}/demo/`);
 
-  // Happy path: select fixture, convert to PNG.
+  // Happy path: select fixture, convert to PNG on the main thread (the
+  // worker path is exercised later; the select defaults to Web Worker).
   await page.locator('#fileInput').setInputFiles(path.join(ROOT_DIR, 'test/fixtures', 'example.heic'));
   await page.waitForFunction(() =>
     document.querySelector('#status')?.textContent?.includes('File ready'));
-  await page.selectOption('#format', 'png');
-  await page.click('#convert');
-
-  await page.waitForFunction(() =>
-    document.querySelector('#status')?.textContent?.includes('Conversion complete.'), { timeout: 30000 });
-
-  // The preview is rendered via an <img> that loads the blob URL asynchronously.
-  await page.waitForFunction(() => {
-    const img = document.querySelector('#previewImg');
-    return img && img.naturalWidth > 0;
-  }, { timeout: 10000 });
+  await convertOnDemo(page, { format: 'png', worker: 'main' });
 
   const previewWidth = await page.locator('#previewImg').evaluate((img) => img.naturalWidth);
   if (previewWidth <= 0) {
@@ -151,6 +183,19 @@ async function runDemoConversions(page) {
     fail('file meta must be hidden after a rejected file');
   }
 
+  // Content sniffing: a .heic extension over non-HEIC bytes must be rejected
+  // by the ftyp/HEIF brand check, not just the file name.
+  await page.locator('#fileInput').setInputFiles({
+    name: 'fake.heic',
+    mimeType: 'image/heic',
+    buffer: Buffer.from('this has a .heic name but no HEIF header at all'),
+  });
+  await page.waitForFunction(() =>
+    document.querySelector('#status')?.textContent?.includes('does not look like a HEIC/HEIF image'));
+  if (!(await page.locator('#convert').isDisabled())) {
+    fail('convert button must be disabled after a fake .heic file');
+  }
+
   // Re-selecting a valid file must still work after a rejection.
   await page.locator('#fileInput').setInputFiles(path.join(ROOT_DIR, 'test/fixtures', 'example.heic'));
   await page.waitForFunction(() =>
@@ -162,10 +207,7 @@ async function runDemoConversions(page) {
   console.log('✅ Demo rejection path OK: stale state cleared, re-selection works');
 
   // Verify a WebP conversion with quality on the demo, and its download name.
-  await page.selectOption('#format', 'webp');
-  await page.click('#convert');
-  await page.waitForFunction(() =>
-    document.querySelector('#status')?.textContent?.includes('Conversion complete.'), { timeout: 30000 });
+  await convertOnDemo(page, { format: 'webp', quality: 0.5 });
 
   const webpDownloadAttr = await page.locator('#download').getAttribute('download');
   if (webpDownloadAttr !== 'example.webp') {
@@ -178,51 +220,61 @@ async function runDemoConversions(page) {
   console.log('✅ Demo WebP conversion OK');
 
   // Resize: convert with maxWidth 400 and assert the output is bounded.
-  await page.selectOption('#format', 'png');
-  await page.selectOption('#maxWidth', '400');
-  await page.click('#convert');
-  await page.waitForFunction(() =>
-    document.querySelector('#status')?.textContent?.includes('Conversion complete.'), { timeout: 30000 });
-  await page.waitForFunction(() => {
-    const img = document.querySelector('#previewImg');
-    return img && img.naturalWidth > 0;
-  }, { timeout: 10000 });
-  const resizedWidth = await page.locator('#previewImg').evaluate((img) => img.naturalWidth);
+  const resizedWidth = await convertOnDemo(page, { format: 'png', maxWidth: 400 });
   if (resizedWidth <= 0 || resizedWidth > 400) {
     fail(`resize: expected width <= 400, got ${resizedWidth}`);
   }
   console.log(`✅ Demo resize OK: output width ${resizedWidth}`);
 
   // Worker: convert with the Web Worker execution option.
-  await page.selectOption('#worker', 'worker');
-  await page.click('#convert');
-  await page.waitForFunction(() =>
-    document.querySelector('#status')?.textContent?.includes('Conversion complete.'), { timeout: 30000 });
-  await page.waitForFunction(() => {
-    const img = document.querySelector('#previewImg');
-    return img && img.naturalWidth > 0;
-  }, { timeout: 10000 });
-  const workerWidth = await page.locator('#previewImg').evaluate((img) => img.naturalWidth);
+  const workerWidth = await convertOnDemo(page, { worker: 'worker' });
   if (workerWidth <= 0 || workerWidth > 400) {
     fail(`worker: expected width <= 400, got ${workerWidth}`);
   }
   console.log(`✅ Demo worker conversion OK: output width ${workerWidth}`);
+
+  // Cancel: a running conversion must surface the Cancel control, and
+  // cancelling must restore the form. A fast conversion may finish before
+  // the click lands, so accept either terminal state — but never a form
+  // stuck disabled or a Cancel control stuck visible.
+  if (!(await page.locator('#cancel').isHidden())) {
+    fail('cancel control must be hidden while idle');
+  }
+  await page.click('#convert');
+  try {
+    await page.waitForSelector('#cancel:not([hidden])', { timeout: 2000 });
+    await page.click('#cancel');
+  } catch {
+    // The conversion completed before the cancel click could land; the
+    // completion path must leave the same restored state.
+  }
+  await page.waitForFunction(() => {
+    const text = document.querySelector('#status')?.textContent || '';
+    return text.includes('Conversion cancelled.') || text.includes('Conversion complete.');
+  }, { timeout: 10000 });
+  await page.waitForFunction(() => !document.querySelector('#convert').disabled, { timeout: 5000 });
+  if (!(await page.locator('#cancel').isHidden())) {
+    fail('cancel control must be hidden again after cancelling');
+  }
+  console.log('✅ Demo cancel/recovery OK');
 }
 
 /**
- * API tests (test/browser/api-test.html): exercises the new APIs against a
- * real browser — resize bounds, batch conversion, and the full worker
- * message protocol with a real module worker.
+ * API tests (test/browser/api-test.html): exercises the public APIs against a
+ * real browser — resize bounds, batch conversion, the full worker message
+ * protocol with a real module worker, and the 0.5.0 feature set (avif
+ * graceful support, output shapes, continueOnError, abort, crop,
+ * preserveExif, worker batches, pooled decoders).
  */
 async function runApiTests(page) {
-  console.log('\n--- API tests: resize, batch, worker ---');
+  console.log('\n--- API tests: core + 0.5.0 features ---');
 
   await page.goto(`${BASE_URL}/api-test.html`);
 
   await page.waitForFunction(() => {
     const text = document.querySelector('#results')?.textContent;
     return text && text !== 'pending';
-  }, { timeout: 60000 });
+  }, { timeout: 90000 });
 
   const text = (await page.locator('#results').textContent())?.trim();
   let results;
@@ -244,39 +296,68 @@ async function runApiTests(page) {
   if (!results.worker) {
     fail('worker: conversion did not produce output');
   }
+  if (results.avif !== 'supported' && results.avif !== 'unsupported') {
+    fail(`avif: expected supported|unsupported, got ${JSON.stringify(results.avif)}`);
+  }
+  if (!results.outputShapes) {
+    fail('output shapes: dataUrl/arrayBuffer checks failed');
+  }
+  if (results.continueOnError !== 'decode_failed') {
+    fail(`continueOnError: expected decode_failed entry, got ${JSON.stringify(results.continueOnError)}`);
+  }
+  if (!results.abort) {
+    fail('abort: AbortSignal check failed');
+  }
+  if (!results.crop || results.crop.width !== 40 || results.crop.height !== 32) {
+    fail(`crop: expected 40x32, got ${JSON.stringify(results.crop)}`);
+  }
+  if (!results.preserveExif) {
+    fail('preserveExif: APP1 injection/default-drop checks failed');
+  }
+  if (!results.workerBatch) {
+    fail('worker batch: convertManyInWorker checks failed');
+  }
+  if (!results.pooledBatch) {
+    fail('pooled batch: reuseDecoders checks failed');
+  }
 
-  console.log(`✅ API tests OK: resize ${results.resize.width}x${results.resize.height}, batch ${results.batch}, worker ok`);
+  console.log(
+    `✅ API tests OK: resize ${results.resize.width}x${results.resize.height}, batch ${results.batch}, ` +
+      `worker ok, avif ${results.avif}, shapes ok, continueOnError ok, abort ok, ` +
+      `crop ${results.crop.width}x${results.crop.height}, exif kept, worker-batch ok, pooled ok`
+  );
 }
 
 async function runTest() {
   let serverProcess = null;
-  if (await isServerUp()) {
-    console.log('Reusing an already-running CSP sandbox server on :3000');
-  } else {
-    console.log('Starting CSP sandbox server...');
-    serverProcess = spawn(process.execPath, [SERVER_PATH], { stdio: 'inherit' });
-    await waitForServer();
-  }
-
-  const browser = await chromium.launch({ headless: true });
-  const page = await browser.newPage();
-
-  // Surface browser diagnostics (purely informational — assertions cover behavior).
-  page.on('console', (msg) => {
-    if (msg.type() === 'error') {
-      console.log(`[Browser Console Error]: ${msg.text()}`);
-    }
-  });
-  page.on('pageerror', (err) => {
-    console.log(`[Browser Unhandled Exception]: ${err.message}`);
-  });
-  page.on('response', (res) => {
-    if (res.status() >= 400) {
-      console.log(`[HTTP ${res.status()}]: ${res.url()}`);
-    }
-  });
-
+  let browser = null;
   try {
+    if (await isServerUp()) {
+      console.log('Reusing an already-running CSP sandbox server on :3000');
+    } else {
+      console.log('Starting CSP sandbox server...');
+      serverProcess = spawn(process.execPath, [SERVER_PATH], { stdio: 'inherit' });
+      await waitForServer();
+    }
+
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage();
+
+    // Surface browser diagnostics (purely informational — assertions cover behavior).
+    page.on('console', (msg) => {
+      if (msg.type() === 'error') {
+        console.log(`[Browser Console Error]: ${msg.text()}`);
+      }
+    });
+    page.on('pageerror', (err) => {
+      console.log(`[Browser Unhandled Exception]: ${err.message}`);
+    });
+    page.on('response', (res) => {
+      if (res.status() >= 400) {
+        console.log(`[HTTP ${res.status()}]: ${res.url()}`);
+      }
+    });
+
     console.log(`Navigating to ${BASE_URL}...`);
     await page.goto(BASE_URL);
 
@@ -292,9 +373,24 @@ async function runTest() {
     console.log(`\n🎉 All E2E checks passed. Screenshot: ${screenshotPath}`);
   } catch (error) {
     console.error('E2E test execution failed:', error);
+    if (browser) {
+      // Best-effort visual state capture for CI artifacts and triage.
+      try {
+        const [failurePage] = browser.contexts().flatMap((context) => context.pages());
+        if (failurePage) {
+          const failureShot = path.join(__dirname, '.e2e-failure.png');
+          await failurePage.screenshot({ path: failureShot });
+          console.error(`Failure screenshot: ${failureShot}`);
+        }
+      } catch {
+        // Screenshot capture must never mask the original failure.
+      }
+    }
     throw error;
   } finally {
-    await browser.close();
+    if (browser) {
+      await browser.close();
+    }
     if (serverProcess) {
       serverProcess.kill();
     }

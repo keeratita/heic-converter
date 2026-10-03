@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { blobToBase64, canvasToBlob } from '../../src/render/canvas';
+import { assertEncodeEnvironment, blobToBase64, canvasToBlob } from '../../src/render/canvas';
 
 describe('blobToBase64', () => {
   let originalFileReader: typeof FileReader;
@@ -191,5 +191,54 @@ describe('canvasToBlob', () => {
         quality: 0.9,
       });
     });
+  });
+});
+
+describe('assertEncodeEnvironment', () => {
+  const defined = {
+    OffscreenCanvas: Object.getOwnPropertyDescriptor(globalThis, 'OffscreenCanvas'),
+    document: Object.getOwnPropertyDescriptor(globalThis, 'document'),
+  };
+
+  function setGlobal(name: 'OffscreenCanvas' | 'document', value: unknown): void {
+    Object.defineProperty(globalThis, name, { value, configurable: true, writable: true });
+  }
+
+  afterEach(() => {
+    for (const name of ['OffscreenCanvas', 'document'] as const) {
+      if (defined[name]) {
+        Object.defineProperty(globalThis, name, defined[name]!);
+      } else {
+        delete (globalThis as Record<string, unknown>)[name];
+      }
+    }
+  });
+
+  it('does not throw when OffscreenCanvas exists', () => {
+    setGlobal('OffscreenCanvas', class {});
+    setGlobal('document', undefined);
+    expect(() => assertEncodeEnvironment()).not.toThrow();
+  });
+
+  it('does not throw when only document exists', () => {
+    setGlobal('OffscreenCanvas', undefined);
+    setGlobal('document', {});
+    expect(() => assertEncodeEnvironment()).not.toThrow();
+  });
+
+  it('throws unsupported_environment when neither exists', () => {
+    setGlobal('OffscreenCanvas', undefined);
+    setGlobal('document', undefined);
+    const error = (() => {
+      try {
+        assertEncodeEnvironment();
+        return null;
+      } catch (e) {
+        return e as Error & { code: string };
+      }
+    })();
+    expect(error).not.toBeNull();
+    expect(error!.code).toBe('unsupported_environment');
+    expect(error!.message).toContain('Canvas is not supported');
   });
 });

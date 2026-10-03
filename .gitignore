@@ -115,3 +115,13 @@ dist
 dist/
 out/
 build/
+
+# Emscripten build intermediates (copied into src/wasm/ by build-wasm.sh;
+# only the copies under src/wasm/ are tracked)
+build-wasm/wrapper/heic-decoder.js
+build-wasm/wrapper/heic-decoder.wasm
+
+# E2E artifacts
+test/browser/e2e-success.png
+test/browser/.e2e-*.png
+coverage-json/

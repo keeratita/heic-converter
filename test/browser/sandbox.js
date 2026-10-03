@@ -27,21 +27,37 @@ const consoleOutput = document.getElementById('consoleOutput');
 const clearLogsBtn = document.getElementById('clearLogsBtn');
 const progressContainer = document.getElementById('progressContainer');
 const progressBar = document.getElementById('progressBar');
+const statusRegion = document.getElementById('sandboxStatus');
+
+// Status announcements for assistive tech (replaces blocking alert() dialogs).
+function announceStatus(message) {
+  if (statusRegion) {
+    statusRegion.textContent = message;
+  }
+}
 
 // Logging helpers
 function log(message, type = 'info') {
   const time = new Date().toLocaleTimeString([], { hour12: false, fractionalSecondDigits: 3 });
-  const tag = type.toUpperCase();
-  
+
   const line = document.createElement('div');
   line.className = `log-line log-${type}`;
-  
-  line.innerHTML = `
-    <span class="log-time">[${time}]</span>
-    <span class="log-tag">${tag}:</span>
-    <span class="log-message">${message}</span>
-  `;
-  
+
+  const timeEl = document.createElement('span');
+  timeEl.className = 'log-time';
+  timeEl.textContent = `[${time}]`;
+
+  const tagEl = document.createElement('span');
+  tagEl.className = 'log-tag';
+  tagEl.textContent = `${type.toUpperCase()}:`;
+
+  const messageEl = document.createElement('span');
+  messageEl.className = 'log-message';
+  // textContent (not innerHTML): file names are user-controlled and must
+  // never be parsed as HTML.
+  messageEl.textContent = message;
+
+  line.append(timeEl, tagEl, messageEl);
   consoleOutput.appendChild(line);
   consoleOutput.scrollTop = consoleOutput.scrollHeight;
 }
@@ -50,6 +66,14 @@ log('CSP sandbox loaded. Ready to test HEIC conversion.');
 
 // Event Listeners
 dropzone.addEventListener('click', () => fileInput.click());
+
+// Keyboard operability: the dropzone doubles as the file picker button.
+dropzone.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' || e.key === ' ') {
+    e.preventDefault();
+    fileInput.click();
+  }
+});
 
 dropzone.addEventListener('dragover', (e) => {
   e.preventDefault();
@@ -75,7 +99,8 @@ fileInput.addEventListener('change', (e) => {
 });
 
 formatSelect.addEventListener('change', (e) => {
-  if (e.target.value === 'jpeg') {
+  // Quality is meaningful for both lossy formats.
+  if (e.target.value === 'jpeg' || e.target.value === 'webp') {
     qualityGroup.style.display = 'flex';
   } else {
     qualityGroup.style.display = 'none';
@@ -97,7 +122,7 @@ function handleFileSelect(file) {
   const isHeic = file.name.toLowerCase().endsWith('.heic') || file.name.toLowerCase().endsWith('.heif');
   if (!isHeic) {
     log(`Rejected file: ${file.name}. Only HEIC/HEIF files are supported.`, 'error');
-    alert('Please select a valid .heic or .heif image.');
+    announceStatus(`Rejected file: ${file.name}. Only HEIC/HEIF files are supported.`);
     return;
   }
 
@@ -108,6 +133,7 @@ function handleFileSelect(file) {
   
   fileDetails.classList.add('active');
   convertBtn.removeAttribute('disabled');
+  announceStatus(`Selected ${file.name}, ${formatBytes(file.size)}. Ready to convert.`);
   log(`Selected file: ${file.name} (${formatBytes(file.size)})`);
 }
 
@@ -120,12 +146,20 @@ function formatBytes(bytes) {
 }
 
 // Run Conversion
+let conversionSeq = 0;
+let currentObjectUrl = null;
+
 convertBtn.addEventListener('click', async () => {
   if (!selectedFile) return;
 
+  // Identify this run; a newer run (or re-selection) makes earlier results
+  // stale so they can never overwrite the preview/output of the latest one.
+  const seq = ++conversionSeq;
+  const convertedFile = selectedFile;
+
   convertBtn.disabled = true;
   convertBtn.querySelector('span').textContent = 'Converting...';
-  log(`Starting conversion for ${selectedFile.name}...`);
+  log(`Starting conversion for ${convertedFile.name}...`);
 
   progressContainer.style.display = 'block';
   progressBar.style.width = '0%';
@@ -142,6 +176,9 @@ convertBtn.addEventListener('click', async () => {
       to: targetFormat,
       quality: quality,
       onProgress: (percent) => {
+        if (seq !== conversionSeq) {
+          return;
+        }
         const p = Math.round(percent);
         progressBar.style.width = `${p}%`;
         convertBtn.querySelector('span').textContent = `Converting (${p}%)...`;
@@ -150,24 +187,35 @@ convertBtn.addEventListener('click', async () => {
     };
 
     log(`Invoking convertHeic() with format=${targetFormat}, quality=${quality}...`);
-    const resultBlob = await convertHeic(selectedFile, options);
+    const resultBlob = await convertHeic(convertedFile, options);
+
+    if (seq !== conversionSeq) {
+      log(`Discarded stale conversion result for ${convertedFile.name}.`);
+      return;
+    }
     
     const duration = (performance.now() - startTime).toFixed(1);
     log(`Conversion successful! Completed in ${duration}ms.`, 'success');
+    announceStatus(`Conversion successful. Output ${formatBytes(resultBlob.size)} ${targetFormat.toUpperCase()}.`);
 
-    // Create Object URL for preview & download
+    // Create Object URL for preview & download; drop the previous one so
+    // blob bytes from earlier conversions are not pinned for the page's life.
+    if (currentObjectUrl) {
+      URL.revokeObjectURL(currentObjectUrl);
+    }
     const url = URL.createObjectURL(resultBlob);
+    currentObjectUrl = url;
     
     // Hide placeholder and show image preview
     previewPlaceholder.style.display = 'none';
-    previewImage.src = url;
-    previewImage.style.display = 'block';
-
-    // Load image resolution
+    // Wire onload before assigning src: a cached blob URL can complete
+    // synchronously and miss the handler otherwise.
     previewImage.onload = () => {
       outResolution.textContent = `${previewImage.naturalWidth} x ${previewImage.naturalHeight}`;
       log(`Output image resolution: ${previewImage.naturalWidth}x${previewImage.naturalHeight}`);
     };
+    previewImage.src = url;
+    previewImage.style.display = 'block';
 
     // Update stats
     outSize.textContent = formatBytes(resultBlob.size);
@@ -184,13 +232,15 @@ convertBtn.addEventListener('click', async () => {
   } catch (err) {
     log(`Error converting image: ${err.message}`, 'error');
     console.error(err);
-    alert(`Failed to convert image: ${err.message}`);
+    announceStatus(`Conversion failed: ${err.message}`);
   } finally {
-    convertBtn.disabled = false;
-    convertBtn.querySelector('span').textContent = 'Convert Image';
-    setTimeout(() => {
-      progressContainer.style.display = 'none';
-      progressBar.style.width = '0%';
-    }, 1000);
+    if (seq === conversionSeq) {
+      convertBtn.disabled = false;
+      convertBtn.querySelector('span').textContent = 'Convert Image';
+      setTimeout(() => {
+        progressContainer.style.display = 'none';
+        progressBar.style.width = '0%';
+      }, 1000);
+    }
   }
 });

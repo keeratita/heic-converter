@@ -1,58 +1,33 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-
-const mockState = vi.hoisted(() => ({
-  renderAndEncodeMock: vi.fn(async () => new Blob(['converted'], { type: 'image/png' })),
-  defaultDecodedImage: {
-    width: 100,
-    height: 50,
-    data: new Uint8ClampedArray(100 * 50 * 4),
-  },
-  decoderInstances: [] as Array<{
-    initialize: ReturnType<typeof vi.fn>;
-    decode: ReturnType<typeof vi.fn>;
-    free: ReturnType<typeof vi.fn>;
-  }>,
-}));
+import { mockState, resetConvertMocks } from './helpers/convert-mocks';
 
 vi.mock('../../src/render/canvas', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/render/canvas')>();
+  const { mockState } = await import('./helpers/convert-mocks');
   return {
     ...actual,
     renderAndEncode: mockState.renderAndEncodeMock,
+    assertEncodeEnvironment: mockState.assertEncodeEnvironmentMock,
+    assertEncodeCapability: mockState.assertEncodeCapabilityMock,
   };
 });
 
-vi.mock('../../src/wasm', () => {
-  class MockLibheifDecoder {
-    initialize = vi.fn(async () => undefined);
-    decode = vi.fn(
-      async (data: Uint8Array, onProgress?: (percent: number) => void) => {
-        onProgress?.(100);
-        return {
-          ...mockState.defaultDecodedImage,
-          data: new Uint8ClampedArray(mockState.defaultDecodedImage.data),
-        };
-      },
-    );
-    free = vi.fn(() => undefined);
-
-    constructor() {
-      mockState.decoderInstances.push(this);
-    }
-  }
-
-  return {
-    LibheifDecoder: MockLibheifDecoder,
-    LibheifDecoderOptions: {},
-  };
+vi.mock('../../src/wasm', async () => {
+  const { MockLibheifDecoder } = await import('./helpers/convert-mocks');
+  return { LibheifDecoder: MockLibheifDecoder };
 });
 
 import { convertHeic } from '../../src/index';
 
+const RESIZED_IMAGE = {
+  width: 100,
+  height: 50,
+  data: new Uint8ClampedArray(100 * 50 * 4),
+};
+
 describe('convertHeic - Resize options', () => {
   beforeEach(() => {
-    mockState.renderAndEncodeMock.mockClear();
-    mockState.decoderInstances.length = 0;
+    resetConvertMocks({ decodedImage: { ...RESIZED_IMAGE, data: new Uint8ClampedArray(RESIZED_IMAGE.data) } });
   });
 
   it('should pass scale to renderAndEncode', async () => {
@@ -62,8 +37,10 @@ describe('convertHeic - Resize options', () => {
       expect.any(Object),
       'jpeg',
       0.92,
-      { maxWidth: undefined, maxHeight: undefined, scale: 0.5 }
-    );
+      { maxWidth: undefined, maxHeight: undefined, scale: 0.5 },
+      true,
+      undefined,
+    false);
   });
 
   it('should pass maxWidth to renderAndEncode', async () => {
@@ -73,8 +50,10 @@ describe('convertHeic - Resize options', () => {
       expect.any(Object),
       'jpeg',
       0.92,
-      { maxWidth: 800, maxHeight: undefined, scale: undefined }
-    );
+      { maxWidth: 800, maxHeight: undefined, scale: undefined },
+      true,
+      undefined,
+    false);
   });
 
   it('should pass maxHeight to renderAndEncode', async () => {
@@ -84,8 +63,10 @@ describe('convertHeic - Resize options', () => {
       expect.any(Object),
       'jpeg',
       0.92,
-      { maxWidth: undefined, maxHeight: 600, scale: undefined }
-    );
+      { maxWidth: undefined, maxHeight: 600, scale: undefined },
+      true,
+      undefined,
+    false);
   });
 
   it('should pass all resize options together', async () => {
@@ -95,8 +76,10 @@ describe('convertHeic - Resize options', () => {
       expect.any(Object),
       'jpeg',
       0.92,
-      { maxWidth: 800, maxHeight: 600, scale: 0.5 }
-    );
+      { maxWidth: 800, maxHeight: 600, scale: 0.5 },
+      true,
+      undefined,
+    false);
   });
 
   it('should not pass a resize argument when no resize options are given', async () => {
@@ -105,8 +88,11 @@ describe('convertHeic - Resize options', () => {
     expect(mockState.renderAndEncodeMock).toHaveBeenCalledWith(
       expect.any(Object),
       'jpeg',
-      0.92
-    );
+      0.92,
+      undefined,
+      true,
+      undefined,
+    false);
   });
 
   it('should not pass a resize argument when resize options are explicitly undefined', async () => {
@@ -119,8 +105,11 @@ describe('convertHeic - Resize options', () => {
     expect(mockState.renderAndEncodeMock).toHaveBeenCalledWith(
       expect.any(Object),
       'jpeg',
-      0.92
-    );
+      0.92,
+      undefined,
+      true,
+      undefined,
+    false);
   });
 
   it('should throw when scale is zero', async () => {
@@ -165,6 +154,12 @@ describe('convertHeic - Resize options', () => {
     );
   });
 
+  it('should tag invalid resize options with the invalid_resize code', async () => {
+    await expect(convertHeic(new Uint8Array([1]), { maxWidth: -1 })).rejects.toMatchObject({
+      code: 'invalid_resize',
+    });
+  });
+
   it('should fail fast before creating a decoder for invalid resize options', async () => {
     await expect(convertHeic(new Uint8Array([1]), { scale: 0 })).rejects.toThrow();
 
@@ -179,7 +174,9 @@ describe('convertHeic - Resize options', () => {
       expect.any(Object),
       'webp',
       0.5,
-      expect.objectContaining({ scale: 2 })
-    );
+      expect.objectContaining({ scale: 2 }),
+      true,
+      undefined,
+    false);
   });
 });

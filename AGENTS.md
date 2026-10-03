@@ -4,7 +4,7 @@ Guidance for AI agents and contributors working in this repository.
 
 ## Project Overview
 
-`@keeratita/heic-converter` is a TypeScript library that converts `.heic`/`.heif` images to standard web formats (**JPEG, PNG, WebP, SVG**) in the browser or Node.js.
+`@keeratita/heic-converter` is a TypeScript library that converts `.heic`/`.heif` images to standard web formats (**JPEG, PNG, WebP, AVIF, SVG**) in the browser or Node.js.
 
 Key design constraints:
 
@@ -19,6 +19,8 @@ Key design constraints:
 | --- | --- |
 | `npm run build` | Build the TS library to `dist/` (CJS + ESM + `.d.ts`) via tsup, then gzip/brotli-compress the WASM (`build-scripts/compress-wasm.mjs`) |
 | `npm run build:wasm` | Rebuild the WASM decoder (`build-scripts/build-wasm.sh`) — **requires Docker** |
+| `npm run verify:wasm` | Verify the committed Emscripten glue + WASM binary against the pinned SHA-256 hashes in `build-scripts/wasm-artifacts.json` and scan the glue for `eval`/`new Function` (runs in CI) |
+| `npm run wasm:hashes` | Regenerate `build-scripts/wasm-artifacts.json` — **must be run and committed after every `npm run build:wasm`**, or CI verification fails |
 | `npm test` / `npm run test` | Run unit tests (Vitest, Node environment) |
 | `npm run test:watch` | Run unit tests in watch mode |
 | `npm run test:e2e` | Run browser E2E tests (real conversions in the CSP sandbox + GitHub Pages demo) via Playwright — requires `npx playwright install chromium` once |
@@ -26,7 +28,7 @@ Key design constraints:
 | `npm run sandbox` | Start the interactive CSP sandbox server at `http://localhost:3000` (`test/browser/server.mjs`) |
 | `npm run lint` | ESLint over the whole repo (also runs via the `pre-commit` husky hook) |
 | `npm run sonar` | Run SonarQube scanner (`sonar-project.properties`) |
-| `npm run release [patch\|minor\|major\|current]` | Lint → build → test, then bump version, commit (`chore(release): X.Y.Z`), tag (`vX.Y.Z`), and push. Requires a clean working tree |
+| `npm run release [patch\|minor\|major\|current]` | Lint → build → test, then bump version, commit (`chore(release): X.Y.Z`), tag (`vX.Y.Z`), and push (`build-scripts/release.mjs`). Requires a clean working tree |
 
 Node `>=20` is required (see `engines`).
 
@@ -34,9 +36,14 @@ Node `>=20` is required (see `engines`).
 
 ```
 src/
-  index.ts                  # Public API: convertHeic(), freeSharedDecoder()
-  types.ts                  # IHeicDecoder, DecodedImage, ConvertOptions, ImageFormat
-  render/canvas.ts          # Render RGBA to canvas + encode (JPEG/PNG/WebP/SVG); base64 helpers
+  index.ts                  # Public API: convertHeic(), convertMany(), freeSharedDecoder()
+  types.ts                  # IHeicDecoder, DecodedImage, ConvertOptions, ImageFormat, OutputShape
+  batch.ts                  # Shared bounded-concurrency runner (convertMany + convertManyInWorker)
+  validate.ts               # Shared strict option validators — aggregate validateConvertOptions/validateBatchOptions used by all four entry points, plus the pure format/resize/crop validators (canvas.ts re-exports them)
+  errors.ts                 # HeicConverterError + HeicConverterErrorCode
+  worker.ts                 # convertHeicInWorker / convertManyInWorker + worker semaphore
+  render/canvas.ts          # Render RGBA to canvas + encode (JPEG/PNG/WebP/AVIF/SVG); avif probe + up-front assertEncodeCapability; base64 helpers
+  render/exif.ts            # Fail-safe EXIF injectors: JPEG APP1 + PNG eXIf chunk (CRC32); orientation-tag (274) normalizer
   wasm/
     wrapper.ts              # LibheifDecoder — wraps the Emscripten glue module
     wrapper/heic-decoder.js # GENERATED Emscripten glue — do not edit
@@ -48,7 +55,9 @@ build-scripts/
   build-wasm.sh             # Docker + Emscripten build pipeline
   patch-libheif.py          # Patches libheif context.cc to emit progress callbacks
   compress-wasm.mjs         # Emits dist/heic-decoder.wasm.gz/.br after the tsup build
-  release.js                # SemVer release automation
+  verify-wasm-artifacts.mjs # Checks committed glue/WASM against pinned SHA-256 + eval scan (npm run verify:wasm)
+  wasm-artifacts.json       # Pinned artifact hashes — regenerate with npm run wasm:hashes
+  release.mjs               # SemVer release automation
 test/
   unit/                     # Vitest unit tests (integration tests use the real WASM)
   browser/                  # CSP sandbox + Playwright browser tests
@@ -58,9 +67,13 @@ test/
 ## Architecture & Key Facts
 
 - **Conversion flow** (`convertHeic` in `src/index.ts`): normalize input → validate `quality` (0.0–1.0) → pick decoder (user-injected `options.decoder` or a fresh `LibheifDecoder`) → `initialize()` → `decode()` → **free a library-owned decoder immediately (before `renderAndEncode`, since decoded pixels are a standalone copy) and again in `finally` as a safety net** — `free()` is idempotent and never called on a user-injected decoder.
-- **Decoder instance lifecycle**: A fresh `LibheifDecoder` is created *per conversion* so concurrent calls never share mutable WASM state. `freeSharedDecoder()` is a **no-op kept for API compatibility** — do not reintroduce a shared instance without discussion.
-- **WASM wrapper** (`build-wasm/wrapper/main.cpp`): uses embind to expose `HeicDecoder.decode(string, progressCb)`, returning `{ width, height, data }` where `data` is a `Uint8Array` (RGBA, interleaved). Errors are returned as strings. In `src/wasm/wrapper.ts`, `LibheifDecoder.decode()` **copies the pixels out of the WASM heap** (owned `Uint8ClampedArray`), so results stay valid after `free()` and concurrent decodes can never corrupt each other's output; `initialize()` memoizes its module-loading promise so concurrent calls load the module once. The Emscripten glue is loaded via dynamic `import()` inside `initialize()` (with tsup `splitting: true`) so it ships as a lazy chunk and the main entry stays ~9 KB.
+- **Decoder instance lifecycle**: A fresh `LibheifDecoder` is created *per conversion* (default for every entry point) so concurrent calls never share mutable WASM state. `freeSharedDecoder()` is a **no-op kept for API compatibility** — do not reintroduce a *globally shared* instance without discussion. **Sanctioned exception**: `convertMany({ reuseDecoders: true })` uses the internal `DecoderPool` (lease/return per batch runner via `acquire()`/`release()`) — each leased instance is used by exactly one item at a time and is never concurrently shared, preserving the exclusive-use invariant; the pool is module-private, opt-in, and bypassed when the caller injects `decoder`.
+- **WASM wrapper** (`build-wasm/wrapper/main.cpp`): uses embind to expose `HeicDecoder.decode(string, progressCb)`, returning `{ width, height, data, orientation?, exif? }` where `data` is a `Uint8Array` (RGBA, interleaved) and `exif` (when present) is the normalized `"Exif\0\0" + TIFF` APP1 payload from the file's Exif item. Errors are returned as strings. In `src/wasm/wrapper.ts`, `LibheifDecoder.decode()` returns an **owned `Uint8ClampedArray` that is never a WASM-heap view** (copied unless the glue proves the buffer is JS-owned) — likewise `exif` is returned as an owned copy so it stays valid after `free()` — so results survive `free()` and concurrent decodes can never corrupt each other's output; `initialize()` memoizes its module-loading promise so concurrent calls load the module once. The Emscripten glue is loaded via dynamic `import()` inside `initialize()` (with tsup `splitting: true`) so it ships as a lazy chunk and the main entry stays ~26 KB.
+- **Orientation policy**: libheif applies `irot`/`imir` display transforms natively at decode (dimensions come back swapped), so those files must never be rotated further. The C++ wrapper reports EXIF tag 274 (`DecodedImage.orientation`, IFD0 only, bounds-checked TIFF parse with 4 MB block / 64-block caps) **only when no `irot`/`imir` fourcc appears anywhere in the container** — conservative by design: the worst case is "not rotated" (pre-0.5 behavior), never double-rotation. `convertHeic` renders the pending orientation as one composed `setTransform` matrix; resize sizing operates on display dimensions (axes swapped for 5–8). `applyOrientation: false` keeps stored geometry. Regression fixtures: `test/fixtures/exif-orientation-6.heic` (EXIF-only, stored 1600×1200 landscape — must decode `orientation: 6` and convert portrait 1200×1600) and `test/fixtures/irot-orientation-6.heic` (both signals — must decode upright with **no** pending orientation).
 - **Progress callbacks**: For libheif < 1.21, `build-scripts/patch-libheif.py` patches `context.cc` with start/on/end progress hooks around tile decoding. libheif ≥ 1.21 ships these natively in `image-items/grid.cc` (grid decoding moved there), which the patch script detects and skips. `build-wasm.sh` pins 1.23.5, so the patch normally no-ops.
+- **EXIF preservation policy** (`preserveExif`, default `false`): the C++ wrapper extracts the file's Exif item and normalizes it to `"Exif\0\0" + TIFF` (`DecodedImage.exif`), read **unguarded** by the `irot`/`imir` fourcc check — unlike `orientation`, which stays guarded (preserving metadata is orthogonal to display transforms). `convertHeic` re-injects the block only for JPEG (APP1 segment after APP0; payloads beyond the 65,533-byte segment limit are skipped) and PNG (`eXIf` chunk before the first IDAT, CRC32 computed in `src/render/exif.ts`); WebP/SVG ignore it. Because the rendered raster is already upright whenever the rotation was baked in (applied at render or by libheif for `irot`/`imir`), `normalizeOrientationTag` rewrites TIFF tag 274 to `1` (bounds-checked in-place copy) before injection — otherwise consumers would rotate a second time; with `applyOrientation: false` the stored geometry is kept and the tag stays verbatim. Both injectors are **fail-safe**: unparsable encoder output, malformed EXIF blocks, or size overflows return the original bytes untouched (metadata loss, never corruption). Default-off is a privacy decision — EXIF can carry GPS.
+- **AVIF capability probe**: `render/canvas.ts` probes canvas AVIF encoding once per environment (1×1 `toBlob`, module-cached promise; test hook `__resetAvifProbe`) and rejects with `format_unsupported` where unsupported (e.g. Safari). `convertHeic`/`convertMany` call `assertEncodeCapability(format)` **before** paying for a decode; `renderAndEncode` keeps a defensive re-check (worker realms, engines that ignore unknown types) plus a `blob.type` re-check at encode. A wedged `toBlob()` is bounded by a 5-second deadline — indeterminate results are *not* cached (next call re-probes).
+- **Batch/worker plumbing**: `convertMany` and `convertManyInWorker` share one bounded-concurrency runner (`src/batch.ts` `runBoundedBatch`). Abort semantics there: an aborted signal **wins over item-failure aggregation** (the batch rejects with `aborted`), while a batch that completed before the abort **wins over the late abort** (results are returned); with `continueOnError` an abort instead stops launching new items and fills not-yet-started entries with `aborted` errors. Worker-side abort terminates workers immediately; the per-URL semaphore never over-admits (a waiter cancelled while queued leaves the queue without granting its place to the next caller). Option validation is consolidated in `src/validate.ts` (`validateConvertOptions`/`validateBatchOptions`) and runs on the main thread in **all four** entry points — the worker APIs additionally validate `maxConcurrentWorkers` (positive integer) and `timeoutMs` (finite number ≥ 0) up front; `timeoutMs` is a per-call deadline that includes queue wait. The worker result message's `blob` field is widened to `Blob | string | ArrayBuffer` (field name kept for protocol compatibility; settled via `!== undefined`).
 - **WASM build**: `build-wasm.sh` pins `libde265 1.1.3`, `libheif 1.23.5`, and the `emscripten/emsdk:3.1.56` Docker image. libde265 ≥ 1.1.0 is CMake-only (no autotools), so it is built with `emcmake cmake`. Sources come from git submodules (`build-wasm/src/`), verified against the pinned tags before building. Artifacts are copied into `src/wasm/`. Build flags that must be preserved: `-s DYNAMIC_EXECUTION=0`, `-s ALLOW_MEMORY_GROWTH=1`, `-s EXPORT_ES6=1`, `-s MODULARIZE=1`, `-s ENVIRONMENT="web,worker,node"`, `--bind`, `-O3`.
 - **Env detection**: `render/canvas.ts` supports `OffscreenCanvas` first, then `HTMLCanvasElement`, and throws a clear error in environments with neither. Node users decode raw RGBA via `LibheifDecoder` and encode externally (e.g. `sharp`).
 

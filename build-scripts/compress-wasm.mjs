@@ -1,10 +1,19 @@
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { gzipSync, brotliCompressSync, constants } from 'node:zlib';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const distDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'dist');
 const wasmPath = path.join(distDir, 'heic-decoder.wasm');
+
+if (!existsSync(wasmPath)) {
+  console.error(
+    `Error: ${wasmPath} not found.\n` +
+      'The tsup build should have copied it from src/wasm/public/. If the WASM decoder\n' +
+      'was never built, run `npm run build:wasm` (requires Docker) before `npm run build`.'
+  );
+  process.exit(1);
+}
 
 const raw = readFileSync(wasmPath);
 const gz = gzipSync(raw, { level: 9 });

@@ -1,7 +1,7 @@
 {
   "name": "@keeratita/heic-converter",
-  "version": "0.4.2",
-  "description": "Convert HEIC images to standard web formats (JPG, PNG, SVG) without breaking CSP",
+  "version": "0.5.0",
+  "description": "Convert HEIC images to standard web formats (JPEG, PNG, WebP, AVIF, SVG) without breaking CSP",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
   "types": "dist/index.d.ts",
@@ -10,11 +10,13 @@
     ".": {
       "types": "./dist/index.d.ts",
       "require": "./dist/index.js",
-      "import": "./dist/index.mjs"
+      "import": "./dist/index.mjs",
+      "default": "./dist/index.mjs"
     },
     "./wasm": {
       "require": "./dist/heic-decoder.wasm",
-      "import": "./dist/heic-decoder.wasm"
+      "import": "./dist/heic-decoder.wasm",
+      "default": "./dist/heic-decoder.wasm"
     }
   },
   "files": [
@@ -26,6 +28,8 @@
   "scripts": {
     "build": "tsup && node build-scripts/compress-wasm.mjs",
     "build:wasm": "bash build-scripts/build-wasm.sh",
+    "verify:wasm": "node build-scripts/verify-wasm-artifacts.mjs",
+    "wasm:hashes": "node build-scripts/verify-wasm-artifacts.mjs --write",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "node test/browser/test-playwright.mjs",
@@ -34,7 +38,7 @@
     "lint": "eslint .",
     "sonar": "sonar-scanner",
     "prepare": "husky",
-    "release": "node build-scripts/release.js"
+    "release": "node build-scripts/release.mjs"
   },
   "keywords": [
     "heic",

@@ -1,59 +1,27 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-
-const mockState = vi.hoisted(() => ({
-  renderAndEncodeMock: vi.fn(async () => new Blob(['converted'], { type: 'image/png' })),
-  defaultDecodedImage: {
-    width: 1,
-    height: 1,
-    data: new Uint8ClampedArray([0, 0, 0, 255]),
-  },
-  decoderInstances: [] as Array<{
-    initialize: ReturnType<typeof vi.fn>;
-    decode: ReturnType<typeof vi.fn>;
-    free: ReturnType<typeof vi.fn>;
-  }>,
-}));
+import { mockState, resetConvertMocks } from './helpers/convert-mocks';
 
 vi.mock('../../src/render/canvas', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/render/canvas')>();
+  const { mockState } = await import('./helpers/convert-mocks');
   return {
     ...actual,
     renderAndEncode: mockState.renderAndEncodeMock,
+    assertEncodeEnvironment: mockState.assertEncodeEnvironmentMock,
+    assertEncodeCapability: mockState.assertEncodeCapabilityMock,
   };
 });
 
-vi.mock('../../src/wasm', () => {
-  class MockLibheifDecoder {
-    initialize = vi.fn(async () => undefined);
-    decode = vi.fn(
-      async (data: Uint8Array, onProgress?: (percent: number) => void) => {
-        onProgress?.(100);
-        return {
-          ...mockState.defaultDecodedImage,
-          data: new Uint8ClampedArray(mockState.defaultDecodedImage.data),
-        };
-      },
-    );
-    free = vi.fn(() => undefined);
-
-    constructor() {
-      mockState.decoderInstances.push(this);
-    }
-  }
-
-  return {
-    LibheifDecoder: MockLibheifDecoder,
-    LibheifDecoderOptions: {},
-  };
+vi.mock('../../src/wasm', async () => {
+  const { MockLibheifDecoder } = await import('./helpers/convert-mocks');
+  return { LibheifDecoder: MockLibheifDecoder };
 });
 
-import { convertHeic, freeSharedDecoder } from '../../src/index';
+import { convertHeic } from '../../src/index';
 
 describe('convertHeic - Progress Callbacks', () => {
   beforeEach(() => {
-    freeSharedDecoder();
-    mockState.renderAndEncodeMock.mockClear();
-    mockState.decoderInstances.length = 0;
+    resetConvertMocks();
   });
 
   it('should call onProgress callback with 100 on completion', async () => {
@@ -65,13 +33,13 @@ describe('convertHeic - Progress Callbacks', () => {
     expect(progress).toHaveBeenCalledWith(100);
   });
 
-  it('should handle progress callback that throws', async () => {
+  it('should propagate a throwing progress callback as a rejection', async () => {
     const throwingProgress = vi.fn().mockImplementation(() => {
       throw new Error('Progress callback error');
     });
 
     await expect(convertHeic(new Uint8Array([1]), { onProgress: throwingProgress }))
-      .rejects.toThrow();
+      .rejects.toThrow('Progress callback error');
   });
 
   it('should handle progress callback with side effects', async () => {
@@ -125,39 +93,37 @@ describe('convertHeic - Progress Callbacks', () => {
 
 describe('convertHeic - Concurrency', () => {
   beforeEach(() => {
-    freeSharedDecoder();
-    mockState.renderAndEncodeMock.mockClear();
-    mockState.decoderInstances.length = 0;
+    resetConvertMocks();
   });
 
-    it('should handle multiple concurrent conversions', async () => {
-      const promises = [
-        convertHeic(new Uint8Array([1])),
-        convertHeic(new Uint8Array([2])),
-        convertHeic(new Uint8Array([3])),
-      ];
+  it('should handle multiple concurrent conversions', async () => {
+    const promises = [
+      convertHeic(new Uint8Array([1])),
+      convertHeic(new Uint8Array([2])),
+      convertHeic(new Uint8Array([3])),
+    ];
 
-      const results = await Promise.all(promises);
+    const results = await Promise.all(promises);
 
-      expect(results).toHaveLength(3);
-      results.forEach((result) => expect(result).toBeInstanceOf(Blob));
-    });
+    expect(results).toHaveLength(3);
+    results.forEach((result) => expect(result).toBeInstanceOf(Blob));
+  });
 
-    it('should use a distinct decoder instance for each concurrent conversion', async () => {
-      const promises = [
-        convertHeic(new Uint8Array([1])),
-        convertHeic(new Uint8Array([2])),
-        convertHeic(new Uint8Array([3])),
-      ];
+  it('should use a distinct decoder instance for each concurrent conversion', async () => {
+    const promises = [
+      convertHeic(new Uint8Array([1])),
+      convertHeic(new Uint8Array([2])),
+      convertHeic(new Uint8Array([3])),
+    ];
 
-      await Promise.all(promises);
+    await Promise.all(promises);
 
-      const instances = mockState.decoderInstances;
-      expect(instances).toHaveLength(3);
-      // No two concurrent conversions may share the same decoder instance.
-      expect(new Set(instances).size).toBe(3);
-      instances.forEach((decoder) => expect(decoder.free).toHaveBeenCalledTimes(1));
-    });
+    const instances = mockState.decoderInstances;
+    expect(instances).toHaveLength(3);
+    // No two concurrent conversions may share the same decoder instance.
+    expect(new Set(instances).size).toBe(3);
+    instances.forEach((decoder) => expect(decoder.free).toHaveBeenCalledTimes(1));
+  });
 
   it('should handle many concurrent conversions', async () => {
     const promises = Array(10).fill(null).map((_, i) => convertHeic(new Uint8Array([i])));
@@ -190,19 +156,27 @@ describe('convertHeic - Concurrency', () => {
 
 describe('convertHeic - Error Propagation', () => {
   beforeEach(() => {
-    freeSharedDecoder();
-    mockState.renderAndEncodeMock.mockClear();
-    mockState.decoderInstances.length = 0;
+    resetConvertMocks();
   });
 
-  it('should preserve original error message', async () => {
+  it('should preserve original error message in the wrapped render error', async () => {
     mockState.renderAndEncodeMock.mockRejectedValueOnce(
       new Error('Original error message')
     );
 
     await expect(convertHeic(new Uint8Array([1]))).rejects.toThrow(
-      'Original error message'
+      'Failed to render and encode image as jpeg: Original error message'
     );
+  });
+
+  it('should tag render failures with the render_encode_failed code and cause', async () => {
+    const cause = new Error('Root cause');
+    mockState.renderAndEncodeMock.mockRejectedValueOnce(cause);
+
+    const error = await convertHeic(new Uint8Array([1])).catch((e) => e);
+    expect(error).toBeInstanceOf(Error);
+    expect(error.code).toBe('render_encode_failed');
+    expect(error.cause).toBe(cause);
   });
 
   it('should preserve error cause when available', async () => {
@@ -218,7 +192,7 @@ describe('convertHeic - Error Propagation', () => {
     mockState.renderAndEncodeMock.mockRejectedValueOnce('String error');
 
     await expect(convertHeic(new Uint8Array([1]))).rejects.toThrow(
-      'String error'
+      'Failed to render and encode image as jpeg: String error'
     );
   });
 });

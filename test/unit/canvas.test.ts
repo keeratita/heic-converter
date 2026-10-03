@@ -16,11 +16,14 @@ describe('renderAndEncode Unit Tests', () => {
   let originalOffscreenCanvas: typeof OffscreenCanvas;
   let originalImageData: typeof ImageData;
 
+  let originalFileReader: typeof FileReader;
+
   beforeEach(() => {
     // Save originals
     originalDocument = global.document;
     originalOffscreenCanvas = global.OffscreenCanvas;
     originalImageData = global.ImageData;
+    originalFileReader = global.FileReader;
 
     // Mock canvas
     mockCtx = {
@@ -60,6 +63,7 @@ describe('renderAndEncode Unit Tests', () => {
     global.document = originalDocument;
     global.OffscreenCanvas = originalOffscreenCanvas;
     global.ImageData = originalImageData;
+    global.FileReader = originalFileReader;
   });
 
   describe('JPEG/JPG format', () => {
@@ -206,6 +210,43 @@ describe('renderAndEncode Unit Tests', () => {
       expect(svgContent).toContain('viewBox="0 0 200 150"');
       expect(svgContent).toContain('width="200" height="150"');
     });
+
+    it('should release the canvas before assembling the base64 payload', async () => {
+      const decoded = createMockDecodedImage(100, 100);
+      const mockPngBlob = new Blob(['png-data'], { type: 'image/png' });
+
+      mockCanvas.toBlob = vi.fn((callback: (blob: Blob | null) => void) => {
+        callback(mockPngBlob);
+      });
+
+      const canvasWidthAtBase64: Array<number> = [];
+
+      class MockFileReaderRelease {
+        result: string | null = 'data:image/png;base64,QUJD';
+        onloadend: (() => void) | null = null;
+        onerror: (() => void) | null = null;
+
+        readAsDataURL(): void {
+          // The canvas must already be released (width zeroed) while the
+          // base64 round-trip runs, so the encoded copy is the only thing
+          // pinning pixel memory at this point.
+          canvasWidthAtBase64.push(mockCanvas.width);
+          setTimeout(() => {
+            if (this.onloadend) {
+              this.onloadend();
+            }
+          }, 0);
+        }
+      }
+
+      global.FileReader = MockFileReaderRelease as unknown as typeof FileReader;
+
+      const result = await renderAndEncode(decoded, 'svg', 1);
+
+      const svgContent = await result.text();
+      expect(svgContent).toContain('data:image/png;base64,QUJD');
+      expect(canvasWidthAtBase64).toEqual([0]);
+    });
   });
 
   describe('WebP format', () => {
@@ -337,47 +378,66 @@ describe('renderAndEncode Unit Tests', () => {
       expect(result).toBeInstanceOf(Blob);
       expect(convertToBlobMock).toHaveBeenCalledWith({ type: 'image/jpeg', quality: 0.92 });
     });
+
+    it('should close the OffscreenCanvas after encoding', async () => {
+      const decoded = createMockDecodedImage(100, 100);
+      const mockBlob = new Blob(['jpeg-data'], { type: 'image/jpeg' });
+
+      const mockOffscreenCtx = {
+        putImageData: vi.fn(),
+      };
+
+      const closeMock = vi.fn();
+      const convertToBlobMock = vi.fn().mockResolvedValue(mockBlob);
+      const MockOffscreenCanvasClass = class MockOffscreenCanvas {
+        width: number;
+        height: number;
+        constructor(width: number, height: number) {
+          this.width = width;
+          this.height = height;
+        }
+        getContext = vi.fn().mockReturnValue(mockOffscreenCtx);
+        convertToBlob = convertToBlobMock;
+        close = closeMock;
+      };
+
+      global.OffscreenCanvas = MockOffscreenCanvasClass as unknown as typeof OffscreenCanvas;
+
+      const result = await renderAndEncode(decoded, 'jpeg', 0.92);
+
+      expect(result).toBeInstanceOf(Blob);
+      // Release must drop the backing store: close() (OffscreenCanvas) or
+      // zeroing dimensions (HTMLCanvasElement) is how we free pixel memory
+      // before the base64/download path runs.
+      expect(closeMock).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('blobToBase64 Node.js fallback', () => {
-    it('should use Buffer when FileReader is not available', async () => {
+    it('should use Buffer/btoa when FileReader is not available', async () => {
       const decoded = createMockDecodedImage(100, 100);
-      const mockArrayBuffer = new ArrayBuffer(100);
       const mockBlob = new Blob(['test-data'], { type: 'image/png' });
 
       mockCanvas.toBlob = vi.fn((callback: (blob: Blob | null) => void) => {
         callback(mockBlob);
       });
 
-      // Mock blob.arrayBuffer()
-      mockBlob.arrayBuffer = vi.fn().mockResolvedValue(mockArrayBuffer);
+      // Empty buffer => btoa('') yields an empty payload, proving the Node
+      // (arrayBuffer + btoa) path ran: a FileReader mock would have returned
+      // a fixed non-empty data URL instead.
+      mockBlob.arrayBuffer = vi.fn().mockResolvedValue(new ArrayBuffer(0));
 
-      // Remove FileReader to trigger Node.js fallback
-      const originalFileReader = global.FileReader;
+      // Keep FileReader undefined so the Node.js (arrayBuffer + btoa) fallback
+      // path is the one actually exercised.
       global.FileReader = undefined as any;
-
-      class MockFileReader3 {
-        result: string | null = 'data:image/png;base64,dGVzdC1kYXRh';
-        onloadend: (() => void) | null = null;
-        onerror: (() => void) | null = null;
-        readAsDataURL(): void {
-          setTimeout(() => {
-            if (this.onloadend) {
-              this.onloadend();
-            }
-          }, 0);
-        }
-      }
-
-      global.FileReader = MockFileReader3 as unknown as typeof FileReader;
 
       const result = await renderAndEncode(decoded, 'svg', 1);
 
       const svgContent = await result.text();
-      expect(svgContent).toContain('data:image/png;base64');
-
-      // Restore FileReader
-      global.FileReader = originalFileReader;
+      expect(svgContent).toContain('data:image/png;base64,');
+      // Empty buffer => empty base64 payload, proving btoa ran (a FileReader
+      // mock would have returned a fixed non-empty payload).
+      expect(svgContent).toContain('base64," />');
     });
   });
 
@@ -584,15 +644,21 @@ describe('renderAndEncode Unit Tests', () => {
       };
       const mockBlob = new Blob(['jpeg-data'], { type: 'image/jpeg' });
 
+      // releaseCanvas() zeroes the canvas after encoding, so capture the
+      // dimensions at encode time (inside toBlob) rather than asserting on
+      // the canvas afterwards.
+      let sizeAtEncode: { width: number; height: number } | null = null;
       mockCanvas.toBlob = vi.fn((callback: (blob: Blob | null) => void) => {
+        sizeAtEncode = { width: mockCanvas.width, height: mockCanvas.height };
         callback(mockBlob);
       });
 
       const result = await renderAndEncode(decoded, 'jpeg', 0.92);
 
       expect(result).toBeInstanceOf(Blob);
-      expect(mockCanvas.width).toBe(1);
-      expect(mockCanvas.height).toBe(1);
+      expect(sizeAtEncode).toEqual({ width: 1, height: 1 });
+      // And the canvas is released afterwards.
+      expect(mockCanvas.width).toBe(0);
     });
 
     it('should handle extreme aspect ratio (wide)', async () => {
@@ -605,15 +671,18 @@ describe('renderAndEncode Unit Tests', () => {
       };
       const mockBlob = new Blob(['jpeg-data'], { type: 'image/jpeg' });
 
+      // Capture dimensions at encode time: releaseCanvas() zeroes the canvas
+      // after toBlob returns.
+      let sizeAtEncode: { width: number; height: number } | null = null;
       mockCanvas.toBlob = vi.fn((callback: (blob: Blob | null) => void) => {
+        sizeAtEncode = { width: mockCanvas.width, height: mockCanvas.height };
         callback(mockBlob);
       });
 
       const result = await renderAndEncode(decoded, 'jpeg', 0.92);
 
       expect(result).toBeInstanceOf(Blob);
-      expect(mockCanvas.width).toBe(width);
-      expect(mockCanvas.height).toBe(height);
+      expect(sizeAtEncode).toEqual({ width, height });
     });
 
     it('should handle extreme aspect ratio (tall)', async () => {
@@ -626,15 +695,18 @@ describe('renderAndEncode Unit Tests', () => {
       };
       const mockBlob = new Blob(['jpeg-data'], { type: 'image/jpeg' });
 
+      // Capture dimensions at encode time: releaseCanvas() zeroes the canvas
+      // after toBlob returns.
+      let sizeAtEncode: { width: number; height: number } | null = null;
       mockCanvas.toBlob = vi.fn((callback: (blob: Blob | null) => void) => {
+        sizeAtEncode = { width: mockCanvas.width, height: mockCanvas.height };
         callback(mockBlob);
       });
 
       const result = await renderAndEncode(decoded, 'jpeg', 0.92);
 
       expect(result).toBeInstanceOf(Blob);
-      expect(mockCanvas.width).toBe(width);
-      expect(mockCanvas.height).toBe(height);
+      expect(sizeAtEncode).toEqual({ width, height });
     });
 
     it('should handle very large image dimensions', async () => {
@@ -647,15 +719,18 @@ describe('renderAndEncode Unit Tests', () => {
       };
       const mockBlob = new Blob(['jpeg-data'], { type: 'image/jpeg' });
 
+      // Capture dimensions at encode time: releaseCanvas() zeroes the canvas
+      // after toBlob returns.
+      let sizeAtEncode: { width: number; height: number } | null = null;
       mockCanvas.toBlob = vi.fn((callback: (blob: Blob | null) => void) => {
+        sizeAtEncode = { width: mockCanvas.width, height: mockCanvas.height };
         callback(mockBlob);
       });
 
       const result = await renderAndEncode(decoded, 'jpeg', 0.92);
 
       expect(result).toBeInstanceOf(Blob);
-      expect(mockCanvas.width).toBe(width);
-      expect(mockCanvas.height).toBe(height);
+      expect(sizeAtEncode).toEqual({ width, height });
     });
   });
 

@@ -5,21 +5,22 @@ import sys
 # image-items/grid.cc and added native start/on/end progress callbacks
 # there, so those versions need no patching. Libs pinned by build-wasm.sh
 # since 1.23.1 ship this, so the patch normally no-ops.
-NATIVE_GRID_CANDIDATES = [
-    'build-wasm/src/libheif/libheif/image-items/grid.cc',
-    'libheif/libheif/image-items/grid.cc',
-    'src/libheif/libheif/image-items/grid.cc',
+ROOTS = [
+    'build-wasm/src/libheif',
+    'libheif',
+    'src/libheif',
 ]
 
-CONTEXT_CC_CANDIDATES = [
-    'build-wasm/src/libheif/libheif/context.cc',
-    'libheif/libheif/context.cc',
-    'src/libheif/libheif/context.cc',
-]
+NATIVE_GRID_RELPATH = 'libheif/image-items/grid.cc'
+CONTEXT_CC_RELPATH = 'libheif/context.cc'
+
+
+def candidates(relpath):
+    return [os.path.join(root, relpath) for root in ROOTS]
 
 
 def has_native_progress_callbacks():
-    for path in NATIVE_GRID_CANDIDATES:
+    for path in candidates(NATIVE_GRID_RELPATH):
         if os.path.exists(path):
             with open(path, 'r') as f:
                 return 'options.start_progress' in f.read()
@@ -32,14 +33,26 @@ def main():
         return
 
     filepath = None
-    for path in CONTEXT_CC_CANDIDATES:
+    for path in candidates(CONTEXT_CC_RELPATH):
         if os.path.exists(path):
             filepath = path
             break
 
     if not filepath:
-        print("Warning: libheif context.cc not found. It will be patched when the file exists.", file=sys.stderr)
-        return
+        # Neither the native hooks (>= 1.21 grid.cc) nor the pre-1.21 patch
+        # target (context.cc) exists: the checkout is broken or an unexpected
+        # layout. Fail loudly instead of shipping a WASM build silently
+        # without progress callbacks.
+        print("Error: neither native progress callbacks (image-items/grid.cc) nor the",
+              file=sys.stderr)
+        print("patch target (libheif/context.cc) were found under any of:", file=sys.stderr)
+        for root in ROOTS:
+            print(f"  - {root}", file=sys.stderr)
+        print("Fix: run 'git submodule update --init --recursive' and verify the libheif",
+              file=sys.stderr)
+        print("submodule is checked out at the tag pinned in build-scripts/build-wasm.sh.",
+              file=sys.stderr)
+        sys.exit(1)
 
     with open(filepath, 'r') as f:
         content = f.read()

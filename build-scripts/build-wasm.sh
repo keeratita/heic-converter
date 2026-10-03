@@ -4,13 +4,22 @@ set -e
 # Configuration
 LIBDE265_VERSION="1.1.3"
 LIBHEIF_VERSION="1.23.5"
+EMSDK_VERSION="3.1.56"
 BUILD_DIR="$(pwd)/build-wasm"
 OUT_DIR="$(pwd)/src/wasm/public"
 WASM_JS_OUT="$(pwd)/src/wasm/wrapper/heic-decoder.js"
+WRAPPER_SRC="/src/build-wasm/wrapper/main.cpp"
 
 mkdir -p "$BUILD_DIR"
 mkdir -p "$OUT_DIR"
 mkdir -p "$(dirname "$WASM_JS_OUT")"
+
+# Compile the tracked C++ wrapper directly; never regenerate it here.
+if [ ! -f "$BUILD_DIR/wrapper/main.cpp" ]; then
+  echo "Error: $BUILD_DIR/wrapper/main.cpp is missing." >&2
+  echo "It is a tracked first-party file; restore it with: git checkout -- build-wasm/wrapper/main.cpp" >&2
+  exit 1
+fi
 
 echo "Starting Docker-based Emscripten build..."
 
@@ -35,7 +44,7 @@ fi
 docker run --rm \
   -e LIBDE265_VERSION="${LIBDE265_VERSION}" \
   -e LIBHEIF_VERSION="${LIBHEIF_VERSION}" \
-  -v "$(pwd):/src" -w /src emscripten/emsdk:3.1.56 bash -c "
+  -v "$(pwd):/src" -w /src "emscripten/emsdk:${EMSDK_VERSION}" bash -c "
 set -e
 
 apt-get update && apt-get install -y autoconf automake libtool pkg-config
@@ -44,8 +53,12 @@ mkdir -p build-wasm/src
 cd build-wasm/src
 
 # 1. Build libde265 (CMake-only since v1.1.0; no autotools)
+# Cached builds are gated on a version stamp so a version bump (or a stale
+# tree from an older build) always triggers a clean rebuild.
 cd libde265
-if [ ! -f build/libde265/libde265.a ]; then
+if [ -f build/libde265/libde265.a ] && [ -f \"build/.built-v\${LIBDE265_VERSION}\" ]; then
+  echo \"Reusing cached libde265 build (v\${LIBDE265_VERSION})\"
+else
   echo 'Building libde265...'
   rm -rf build
   mkdir -p build
@@ -65,6 +78,7 @@ if [ ! -f build/libde265/libde265.a ]; then
     -DCMAKE_CXX_FLAGS=\"-O3\"
   emmake make -j\$(nproc) de265
   cd ..
+  touch \"build/.built-v\${LIBDE265_VERSION}\"
 fi
 # libde265 >= 1.1.0: de265.h includes <libde265/de265-version.h>, which CMake
 # generates into the build dir. Expose it via the source tree so libheif can
@@ -78,13 +92,15 @@ cd ..
 python3 /src/build-scripts/patch-libheif.py
 
 cd libheif
-if [ ! -f build/libheif/libheif.a ]; then
+if [ -f build/libheif/libheif.a ] && [ -f \"build/.built-v\${LIBHEIF_VERSION}\" ]; then
+  echo \"Reusing cached libheif build (v\${LIBHEIF_VERSION})\"
+else
   echo 'Building libheif...'
   rm -rf build
   mkdir -p build
   cd build
   # Note: Need to point PKG_CONFIG to libde265
-  export PKG_CONFIG_PATH="/src/build-wasm/src/libde265/build/libde265:\$PKG_CONFIG_PATH"
+  export PKG_CONFIG_PATH=\"/src/build-wasm/src/libde265/build/libde265:\$PKG_CONFIG_PATH\"
 
   emcmake cmake .. \
     -DBUILD_SHARED_LIBS=OFF \
@@ -106,146 +122,21 @@ if [ ! -f build/libheif/libheif.a ]; then
     -DCMAKE_CXX_FLAGS=\"-O3\"
   emmake make -j\$(nproc)
   cd ..
+  touch \"build/.built-v\${LIBHEIF_VERSION}\"
 fi
 cd ..
 
-# 3. Create the WASM wrapper
+# 3. Compile the WASM wrapper (source: build-wasm/wrapper/main.cpp)
 echo 'Compiling WebAssembly wrapper...'
-mkdir -p /src/build-wasm/wrapper
-cat << 'EOF' > /src/build-wasm/wrapper/main.cpp
-#include <emscripten/bind.h>
-#include <libheif/heif.h>
-#include <vector>
-#include <string>
 
-using namespace emscripten;
-
-struct DecodeProgressData {
-    val callback;
-    int max_progress = 0;
-};
-
-class HeicDecoderWasm {
-public:
-    HeicDecoderWasm() {}
-
-    ~HeicDecoderWasm() {}
-
-    val decode(std::string data, val progress_callback) {
-        heif_context* ctx = heif_context_alloc();
-        if (!ctx) {
-            return val(\"Failed to allocate heif context\");
-        }
-
-        heif_error err = heif_context_read_from_memory_without_copy(
-            ctx, data.data(), data.size(), nullptr);
-
-        if (err.code != heif_error_Ok) {
-            heif_context_free(ctx);
-            std::string msg = \"Error code \" + std::to_string(err.code) +
-                              \" (subcode \" + std::to_string(err.subcode) + \"): \";
-            if (err.message) {
-                msg += err.message;
-            } else {
-                msg += \"No message\";
-            }
-            return val(msg);
-        }
-
-        heif_image_handle* handle;
-        err = heif_context_get_primary_image_handle(ctx, &handle);
-        if (err.code != heif_error_Ok) {
-            heif_context_free(ctx);
-            std::string msg = \"Error code \" + std::to_string(err.code) +
-                              \" (subcode \" + std::to_string(err.subcode) + \"): \";
-            if (err.message) {
-                msg += err.message;
-            } else {
-                msg += \"No message\";
-            }
-            return val(msg);
-        }
-
-        DecodeProgressData progress_data{progress_callback, 0};
-        heif_decoding_options* options = heif_decoding_options_alloc();
-
-        if (!progress_callback.isUndefined() && !progress_callback.isNull()) {
-            options->start_progress = [](enum heif_progress_step step, int max_progress, void* progress_user_data) {
-                if (progress_user_data) {
-                    auto* d = static_cast<DecodeProgressData*>(progress_user_data);
-                    d->max_progress = max_progress;
-                }
-            };
-            options->on_progress = [](enum heif_progress_step step, int progress, void* progress_user_data) {
-                if (progress_user_data) {
-                    auto* d = static_cast<DecodeProgressData*>(progress_user_data);
-                    if (d->max_progress > 0) {
-                        double percent = (double)progress / d->max_progress * 100.0;
-                        d->callback(percent);
-                    }
-                }
-            };
-            options->progress_user_data = &progress_data;
-        }
-
-        if (!progress_callback.isUndefined() && !progress_callback.isNull()) {
-            progress_callback(0.0);
-        }
-
-        heif_image* img;
-        err = heif_decode_image(handle, &img, heif_colorspace_RGB, heif_chroma_interleaved_RGBA, options);
-        heif_image_handle_release(handle);
-        heif_decoding_options_free(options);
-
-        if (err.code == heif_error_Ok && !progress_callback.isUndefined() && !progress_callback.isNull()) {
-            progress_callback(100.0);
-        }
-
-        if (err.code != heif_error_Ok) {
-            heif_context_free(ctx);
-            std::string msg = \"Error code \" + std::to_string(err.code) +
-                              \" (subcode \" + std::to_string(err.subcode) + \"): \";
-            if (err.message) {
-                msg += err.message;
-            } else {
-                msg += \"No message\";
-            }
-            return val(msg);
-        }
-
-        int width = heif_image_get_width(img, heif_channel_interleaved);
-        int height = heif_image_get_height(img, heif_channel_interleaved);
-
-        int stride;
-        const uint8_t* p = heif_image_get_plane_readonly(img, heif_channel_interleaved, &stride);
-
-        // Copy data to a JS Uint8Array
-        val resultData = val::global(\"Uint8Array\").new_(width * height * 4);
-        for (int y = 0; y < height; ++y) {
-            val memoryView = val(typed_memory_view(width * 4, p + y * stride));
-            resultData.call<void>(\"set\", memoryView, val(y * width * 4));
-        }
-
-        heif_image_release(img);
-        heif_context_free(ctx);
-
-        val result = val::object();
-        result.set(\"width\", width);
-        result.set(\"height\", height);
-        result.set(\"data\", resultData);
-        return result;
-    }
-};
-
-EMSCRIPTEN_BINDINGS(my_module) {
-    class_<HeicDecoderWasm>(\"HeicDecoder\")
-        .constructor<>()
-        .function(\"decode\", &HeicDecoderWasm::decode);
-}
-EOF
-
-# Compile to WASM with strict CSP (-s DYNAMIC_EXECUTION=0)
-emcc /src/build-wasm/wrapper/main.cpp \\
+# Compile to WASM with strict CSP (-s DYNAMIC_EXECUTION=0).
+# Flags that must be preserved (see AGENTS.md): DYNAMIC_EXECUTION=0,
+# ALLOW_MEMORY_GROWTH=1, EXPORT_ES6=1, MODULARIZE=1, ENVIRONMENT, --bind, -O3.
+# -fexceptions/-fcxx-exceptions: let main.cpp try/catch a throwing JS progress
+#   callback so it can never unwind through libheif or abort the module.
+# EXPORTED_FUNCTIONS/EXPORTED_RUNTIME_METHODS: enable the decodeFromPointer
+#   fast path in src/wasm/wrapper.ts (bulk input load via _malloc + HEAPU8).
+emcc ${WRAPPER_SRC} \\
     -o /src/build-wasm/wrapper/heic-decoder.js \\
     -I/src/build-wasm/src/libheif/libheif/api \\
     -I/src/build-wasm/src/libheif/build \\
@@ -258,6 +149,9 @@ emcc /src/build-wasm/wrapper/main.cpp \\
     -s MODULARIZE=1 \\
     -s ENVIRONMENT=\"web,worker,node\" \\
     -s EXPORT_NAME=\"createHeicDecoderModule\" \\
+    -s EXPORTED_FUNCTIONS=_malloc,_free \\
+    -s EXPORTED_RUNTIME_METHODS=HEAPU8 \\
+    -fexceptions -fcxx-exceptions \\
     -O3 --bind
 
 # Copy artifacts
