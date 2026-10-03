@@ -78,21 +78,42 @@ describe.skipIf((!hasWasm || !hasFixture) && !isCI)('Integration Tests - Real WA
     expect(decoded.data.every((byte) => byte >= 0 && byte <= 255)).toBe(true);
   });
 
-  it('should keep earlier decode results intact when the same decoder decodes again', async () => {
-    const decoder = new LibheifDecoder({ wasmBinary });
-    await decoder.initialize();
+  it(
+    'should keep earlier decode results intact when the same decoder decodes again',
+    async () => {
+      const decoder = new LibheifDecoder({ wasmBinary });
+      await decoder.initialize();
 
-    const first = await decoder.decode(heicBytes);
-    const firstBytes = Array.from(first.data);
+      const first = await decoder.decode(heicBytes);
 
-    // A second decode on the same instance must not corrupt the first result.
-    // This pins the owned-copy semantics: a future main.cpp that returns a
-    // typed_memory_view over the heap would fail this test.
-    await decoder.decode(heicBytes);
+      // Byte-identical fingerprint of the first result. (A snapshot via
+      // Array.from + toEqual deep-compares millions of boxed numbers; under
+      // CI runner contention that alone blew the 5s test timeout. FNV-1a +
+      // byte-sum over the whole buffer still catches any heap-reuse
+      // corruption — the exact regression this test pins: a future main.cpp
+      // returning a typed_memory_view over the heap would change these.)
+      const fingerprint = (bytes: Uint8ClampedArray): string => {
+        let fnv = 0x811c9dc5;
+        let sum = 0;
+        for (let i = 0; i < bytes.length; i++) {
+          const byte = bytes[i];
+          fnv = Math.imul(fnv ^ byte, 0x01000193) >>> 0;
+          sum = (sum + byte) >>> 0;
+        }
+        return `${bytes.length}:${fnv.toString(16)}:${sum.toString(16)}`;
+      };
+      const before = fingerprint(first.data);
 
-    expect(Array.from(first.data)).toEqual(firstBytes);
-    expect(first.data.length).toBe(first.width * first.height * 4);
-  });
+      // A second decode on the same instance must not corrupt the first result.
+      await decoder.decode(heicBytes);
+
+      expect(fingerprint(first.data)).toBe(before);
+      expect(first.data.length).toBe(first.width * first.height * 4);
+    },
+    // Real WASM init + two full decodes of the 1280x854 fixture: give slow
+    // shared CI runners ample headroom over the 5s default.
+    30000
+  );
 
   it('should decode a real alpha channel from the colors-with-alpha fixture', async () => {
     const decoder = new LibheifDecoder({ wasmBinary });
