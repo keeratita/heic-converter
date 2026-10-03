@@ -9,7 +9,9 @@ export default defineConfig({
   // Optimization settings for smaller bundle size
   minify: true,
   treeshake: true,
-  splitting: false,
+  // Emit the dynamically-imported Emscripten glue as a separate chunk so the
+  // main entry stays small and the glue is only fetched on first decode.
+  splitting: true,
   // Exclude large WASM from main bundle
   external: ['heic-decoder.wasm'],
   // Add sourcemaps for debugging (separate file)
