@@ -5,6 +5,12 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **`npm run verify:provenance` no longer fails a good publish on registry read lag.** The version endpoint can 404 for about a minute after `npm publish` returns; the gate's 5 attempts / 36 s window expired inside that window on the 0.5.1 release, and the failure is unrecoverable — npm refuses a re-publish of the same version, so the job cannot simply be retried. The window is now 10 attempts with waits capped at 20 s (~2.7 minutes), and every problem gets the full window rather than only the fetch-level ones: a slow red is acceptable, a wrong one is not.
+
 ## [0.5.1] - 2026-10-04
 
 ### Changed

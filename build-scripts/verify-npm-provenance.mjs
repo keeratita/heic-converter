@@ -24,8 +24,9 @@ const PKG = JSON.parse(readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
 const REGISTRY = 'https://registry.npmjs.org/';
 const SLSA_PREDICATE = 'https://slsa.dev/provenance';
 const GITHUB_ACTIONS_BUILD_TYPE = 'https://slsa-framework.github.io/github-actions-buildtypes/';
-const ATTEMPTS = 5;
+const ATTEMPTS = 10;
 const WAIT_MS = 3000;
+const MAX_WAIT_MS = 20_000;
 const REQUEST_TIMEOUT_MS = 10_000;
 
 /** Checks the registry's version document: attestation hint, tarball host, commit link. */
@@ -114,10 +115,14 @@ async function main() {
       return;
     }
     if (attempt < ATTEMPTS) {
-      // Growing waits, capped: a registry that lags in surfacing the
-      // attestation gets several chances, while the whole loop stays well
-      // inside the publish job's timeout even if every request hangs.
-      const waitMs = Math.min(WAIT_MS * 2 ** (attempt - 1), 15_000);
+      // Growing waits, capped: a just-published version can 404 on the
+      // registry's version endpoint for a minute while it propagates, and a
+      // false red here is unrecoverable — npm refuses a re-publish of the same
+      // version, so the job cannot simply be retried. Every problem (a lagging
+      // read *and* a validation mismatch) therefore gets the full window; a
+      // slow red is acceptable, a wrong one is not. The whole loop stays well
+      // inside the publish job's 15 minute timeout even if every request hangs.
+      const waitMs = Math.min(WAIT_MS * 2 ** (attempt - 1), MAX_WAIT_MS);
       console.log(`Attempt ${attempt}/${ATTEMPTS}: ${problems[0]} — retrying in ${waitMs}ms`);
       await new Promise((resolve) => setTimeout(resolve, waitMs));
     }
