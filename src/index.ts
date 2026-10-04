@@ -42,9 +42,21 @@ import type { WorkerBatchOptions, WorkerConvertOptions } from './worker';
  * ship as a chunk fetched only when a worker conversion is actually requested.
  * The module registry caches the chunk, so the per-URL worker semaphore stays
  * shared across calls exactly as it did with a static import.
+ *
+ * A chunk that cannot be fetched (incomplete `dist/` deployment, a bundler that
+ * did not emit the chunk) is mapped to `HeicConverterError('worker_load_failed')`
+ * so these entry points keep the documented contract of rejecting only with a
+ * `HeicConverterError` carrying a machine-readable `code`. The mapping wraps the
+ * `import()` only — an error thrown by the worker implementation itself is
+ * passed through unchanged.
  */
 function loadWorkerModule(): Promise<typeof import('./worker')> {
-  return import('./worker');
+  return import('./worker').catch((cause: unknown) => {
+    const reason = cause instanceof Error ? cause.message : String(cause);
+    throw new HeicConverterError('worker_load_failed', Messages.WorkerChunkLoadFailed(reason), {
+      cause
+    });
+  });
 }
 
 /**

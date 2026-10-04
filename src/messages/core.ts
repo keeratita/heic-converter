@@ -22,6 +22,8 @@ export const Messages = {
     `Unsupported input type. Expected Blob, File, ArrayBuffer, or Uint8Array. Got: ${type}`,
   DecoderInitFailed: (message: string): string =>
     `Failed to initialize HEIC decoder: ${message} — verify heic-decoder.wasm is served (dist/heic-decoder.wasm; see the README "Serving and Locating WASM" section / locateFile option) and that your CSP allows 'wasm-unsafe-eval'`,
+  WorkerChunkLoadFailed: (message: string): string =>
+    `Failed to load the Web Worker implementation chunk: ${message} — the worker code is a lazily imported chunk (dist/worker-*.mjs); deploy every file in dist/ together, or use convertHeic to convert in the current thread`,
   RenderEncodeFailed: (format: string, message: string): string =>
     `Failed to render and encode image as ${format}: ${message}`,
   ConcurrencyInvalid: (value: unknown): string =>

@@ -356,8 +356,14 @@ async function withExif(
   // EXIF injection is opt-in (default off — metadata can carry GPS), so the
   // JPEG APP1 / PNG eXIf writers and the orientation-tag normalizer are
   // fetched on demand rather than shipped in the render chunk every consumer
-  // pays for.
-  const { injectExifIntoJpeg, injectExifIntoPng, normalizeOrientationTag } = await import('./exif');
+  // pays for. Loading that chunk is part of the fail-safe contract below: if
+  // it cannot be fetched (incomplete `dist/` deployment, a bundler that did not
+  // emit the chunk), the conversion still succeeds and simply carries no EXIF.
+  const exifModule = await import('./exif').catch(() => null);
+  if (!exifModule) {
+    return blob;
+  }
+  const { injectExifIntoJpeg, injectExifIntoPng, normalizeOrientationTag } = exifModule;
   // The rendered raster is already upright whenever the pending rotation was
   // applied (or none was pending): the orientation tag must then say "normal"
   // or consumers would rotate the image a second time. With
