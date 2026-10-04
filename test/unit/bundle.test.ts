@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { gzipSync } from 'node:zlib';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
@@ -69,6 +70,8 @@ function chunkFile(prefix: string): string {
 
 const bytesOf = (file: string): number => readFileSync(`${DIST}/${file}`).byteLength;
 const gzOf = (file: string): number => gzipSync(readFileSync(`${DIST}/${file}`), { level: 9 }).length;
+/** Short digest for a readable mismatch message — never deep-compare big buffers. */
+const sha256Prefix = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex').slice(0, 12);
 
 /** Files statically reachable from an entry (its own chunk graph, no dynamic edges). */
 function staticGraph(entry: string, depPattern: RegExp): Map<string, string> {
@@ -174,7 +177,18 @@ describe.skipIf(!isBuilt)('bundle boundaries (requires npm run build)', () => {
     // never rebuilt after it). That state has actually shipped a stale decoder
     // through local verification, so assert the pair instead of trusting mtimes.
     expect(existsSync(SRC_WASM), `missing ${SRC_WASM}`).toBe(true);
-    expect(readFileSync(`${DIST}/heic-decoder.wasm`)).toEqual(readFileSync(SRC_WASM));
+    const published = readFileSync(`${DIST}/heic-decoder.wasm`);
+    const source = readFileSync(SRC_WASM);
+    // Buffer.equals is a memcmp. Do NOT use expect(...).toEqual here: on two
+    // ~800 KB Buffers it does a deep structural compare that measured ~1.1 s on
+    // an idle machine and blew the 5 s test timeout under the parallel suite.
+    if (!published.equals(source)) {
+      throw new Error(
+        `dist/heic-decoder.wasm (${published.length} B, ${sha256Prefix(published)}) differs from ` +
+          `src/wasm/public/heic-decoder.wasm (${source.length} B, ${sha256Prefix(source)}) — ` +
+          'dist/ is stale, run `npm run build`'
+      );
+    }
   });
 
   it('keeps the binary payload within its size ceilings', () => {
