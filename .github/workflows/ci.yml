@@ -29,19 +29,43 @@ jobs:
     - name: Install Dependencies
       run: npm ci
 
-    # Fails if a dev dependency started running code at install time. The only
-    # entry today is esbuild; see build-scripts/install-scripts.json.
+    # Only the husky pre-commit hook ran the linter, and `--no-verify` skips it:
+    # without this step, lint findings could reach main whenever a committer had
+    # no husky installed.
+    - name: Lint
+      run: npm run lint
+
+    # Fails if a dev dependency started running code at install time, or if an
+    # allowlisted one changed version without being re-reviewed. Authoritative
+    # list: build-scripts/install-scripts.json (today: esbuild, fsevents).
     - name: Verify Install-Script Allowlist
       run: npm run check:scripts
 
     - name: Verify WASM Artifacts (pinned hashes + CSP scan)
-      run: node build-scripts/verify-wasm-artifacts.mjs
+      run: npm run verify:wasm
+
+    # Tests are excluded from tsconfig.json, so they need their own project —
+    # without this, type errors in test/unit/** (wrong option names, dead
+    # fixtures) only surface at runtime, or never.
+    - name: Typecheck Sources and Tests
+      run: npm run typecheck
 
     - name: Build Library
       run: npm run build
 
     - name: Verify Build Artifacts Exist
-      run: test -f dist/heic-decoder.wasm && test -f test/fixtures/example.heic
+      # The entry itself, not just the publicDir copy: bundle.test.ts skips when
+      # dist/index.mjs is missing, and `test -f dist/heic-decoder.wasm` alone
+      # stays green when tsup emits no JS at all. Also every fixture the
+      # real-WASM suites gate on, so a missing file says which one it was.
+      run: |
+        test -f dist/heic-decoder.wasm
+        test -f dist/index.mjs
+        test -f dist/index.js
+        for f in example.heic colors-no-alpha.heic colors-with-alpha.heic \
+                 exif-orientation-6.heic irot-orientation-6.heic; do
+          test -f "test/fixtures/$f" || { echo "missing test/fixtures/$f" >&2; exit 1; }
+        done
 
     - name: Run Unit Tests (coverage thresholds enforced)
       run: npm run test:coverage

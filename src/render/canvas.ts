@@ -1,12 +1,7 @@
 import type { CropOptions, DecodedImage, ImageFormat, ResizeOptions } from '../types';
-import { Messages } from '../messages';
+import { Messages } from '../messages/core';
 import { HeicConverterError } from '../errors';
 import { validateCrop, validateFormat, validateResize } from '../validate';
-import {
-  injectExifIntoJpeg,
-  injectExifIntoPng,
-  normalizeOrientationTag,
-} from './exif';
 
 // Option validators live in src/validate.ts (single source of truth shared
 // with the orchestration layer); re-exported here for the render stage's own
@@ -38,16 +33,28 @@ export function assertEncodeEnvironment(): void {
  * Environment probe: some browsers cannot encode AVIF via canvas (e.g.
  * Safari), and per spec `toBlob` silently falls back to PNG for unknown
  * types — so trusting the requested type would emit a PNG under an AVIF
- * label. Probed once (a 1×1 encode is cheap) and cached; `format_unsupported`
- * is thrown up front when the environment cannot produce AVIF bytes.
+ * label. Probed once (a 1×1 encode is cheap); only a definitive answer is
+ * cached, and only `false` may produce `format_unsupported`. `undefined` means
+ * the probe was indeterminate (wedged `toBlob`, or a throwing canvas under
+ * memory pressure): callers must proceed and let the encode-time `blob.type`
+ * check decide, and the next call re-probes.
  */
-let avifSupport: Promise<boolean> | null = null;
+type AvifSupport = boolean | undefined;
+
+let avifSupport: Promise<AvifSupport> | null = null;
 
 /** How long the probe's toBlob may take before the attempt is deemed indeterminate. */
 const AVIF_PROBE_TIMEOUT_MS = 5000;
 
-async function runAvifProbe(): Promise<boolean> {
-  const probe = createCanvas(1, 1);
+async function runAvifProbe(): Promise<AvifSupport> {
+  let probe: HTMLCanvasElement | OffscreenCanvas;
+  try {
+    probe = createCanvas(1, 1);
+  } catch {
+    // Could not even allocate the 1×1 canvas (memory pressure): that says
+    // nothing about AVIF support, so leave the cache unset and re-probe.
+    return undefined;
+  }
   const pending = canvasToBlob(probe, 'image/avif');
   // toBlob callbacks can be starved (backgrounded tabs, memory pressure):
   // race against a deadline so a wedged probe can neither hang every later
@@ -58,12 +65,10 @@ async function runAvifProbe(): Promise<boolean> {
   });
   try {
     const result = await Promise.race([pending, deadline]);
-    if (result === 'timeout') {
-      // Indeterminate: leave the cache unset so the next call re-probes.
-      avifSupport = null;
-      return false;
-    }
-    return result.type === 'image/avif' && result.size > 0;
+    // `undefined` = indeterminate: a starved 1×1 toBlob says nothing about
+    // support, and every awaiter of this single-flight probe would otherwise
+    // reject `format_unsupported` on a browser that can encode AVIF fine.
+    return result === 'timeout' ? undefined : result.type === 'image/avif' && result.size > 0;
   } finally {
     if (timer !== undefined) {
       clearTimeout(timer);
@@ -72,21 +77,31 @@ async function runAvifProbe(): Promise<boolean> {
   }
 }
 
-export function canEncodeAvif(): Promise<boolean> {
+export function canEncodeAvif(): Promise<AvifSupport> {
   if (avifSupport === null) {
-    avifSupport = runAvifProbe().catch(() => false);
+    // A rejected/toBlob-throwing probe is definitive (the encoder refused the
+    // type); only an indeterminate outcome stays uncached.
+    const attempt = runAvifProbe().catch(() => false as const);
+    avifSupport = attempt;
+    void attempt.then((result) => {
+      if (result === undefined && avifSupport === attempt) {
+        avifSupport = null;
+      }
+    });
   }
   return avifSupport;
 }
 
 /**
  * Up-front capability gate for the chosen output format, safe to call before
- * an expensive decode. `renderAndEncode` keeps a defensive re-check at
- * encode time (worker realms and engines that ignore unknown types).
+ * an expensive decode. Only a definitive `false` rejects here — an
+ * indeterminate probe defers to the encode-time `blob.type` check.
+ * `renderAndEncode` keeps that defensive re-check (worker realms and engines
+ * that ignore unknown types).
  */
 export async function assertEncodeCapability(format: ImageFormat): Promise<void> {
   validateFormat(format);
-  if (String(format).toLowerCase() === 'avif' && !(await canEncodeAvif())) {
+  if (String(format).toLowerCase() === 'avif' && (await canEncodeAvif()) === false) {
     throw new HeicConverterError('format_unsupported', Messages.FormatUnsupported('avif'));
   }
 }
@@ -94,6 +109,11 @@ export async function assertEncodeCapability(format: ImageFormat): Promise<void>
 /** @internal Reset the cached AVIF capability probe (tests only). */
 export function __resetAvifProbe(): void {
   avifSupport = null;
+}
+
+/** @internal Re-arm the one-shot EXIF-chunk warning (tests only). */
+export function __resetExifChunkWarning(): void {
+  exifChunkWarned = false;
 }
 
 /**
@@ -347,6 +367,8 @@ function effectiveOrientation(orientation: number | undefined, apply: boolean): 
  * is off, no block was decoded, or the injector refused to modify
  * unparsable output (metadata loss beats a corrupt image, always).
  */
+let exifChunkWarned = false;
+
 async function withExif(
   blob: Blob,
   decoded: DecodedImage,
@@ -358,6 +380,22 @@ async function withExif(
   if (!preserveExif || !rawExif || rawExif.length === 0) {
     return blob;
   }
+  // Opt-in (metadata can carry GPS), so the injectors are a lazy chunk. Failing
+  // to fetch it is part of the fail-safe contract: convert without EXIF. Say so
+  // once — a missing or mis-MIME'd dist/exif-*.mjs must not be indistinguishable
+  // from a source file that simply had no Exif item.
+  const exifModule = await import('./exif').catch(() => null);
+  if (!exifModule) {
+    if (!exifChunkWarned) {
+      exifChunkWarned = true;
+      console.warn(
+        '@keeratita/heic-converter: the EXIF injector chunk could not be loaded — converted without ' +
+          'metadata; serve every file in dist/ together, with dist/exif-*.mjs as JavaScript.'
+      );
+    }
+    return blob;
+  }
+  const { injectExifIntoJpeg, injectExifIntoPng, normalizeOrientationTag } = exifModule;
   // The rendered raster is already upright whenever the pending rotation was
   // applied (or none was pending): the orientation tag must then say "normal"
   // or consumers would rotate the image a second time. With
@@ -394,7 +432,9 @@ export async function renderAndEncode(
   const normalizedFormat = format.toLowerCase();
   // AVIF cannot be encoded by every canvas implementation and a failed
   // toBlob() would otherwise silently emit a PNG — probe before pixel work.
-  if (normalizedFormat === 'avif' && !(await canEncodeAvif())) {
+  // Only a definitive `false` rejects; an indeterminate probe defers to the
+  // blob.type check below, which sees what the real encode produced.
+  if (normalizedFormat === 'avif' && (await canEncodeAvif()) === false) {
     throw new HeicConverterError('format_unsupported', Messages.FormatUnsupported('avif'));
   }
 

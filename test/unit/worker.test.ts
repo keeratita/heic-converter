@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { HeicConverterError } from '../../src/errors';
 import {
   convertHeicInWorker,
   convertManyInWorker,
@@ -138,12 +139,11 @@ describe('convertHeicInWorker', () => {
   it('should reject when a decoder is injected (cannot cross the worker boundary)', async () => {
     const decoder = { initialize: vi.fn(), decode: vi.fn(), free: vi.fn() };
 
-    const error = await convertHeicInWorker(new Uint8Array([1]), {
-      workerUrl: '/worker.js',
-      decoder: decoder as any,
-      onProgress: vi.fn(),
-      scale: 0.5,
-    }).catch((e) => e);
+    // `decoder` is deliberately absent from WorkerConvertOptions, so it has to
+    // arrive through a variable: the runtime guard is what's under test, and a
+    // fresh object literal would be stopped by the excess-property check first.
+    const options = { workerUrl: '/worker.js', decoder, onProgress: vi.fn(), scale: 0.5 };
+    const error = await convertHeicInWorker(new Uint8Array([1]), options).catch((e) => e);
 
     expect(error).toBeInstanceOf(Error);
     expect(error.code).toBe('invalid_input');
@@ -502,6 +502,69 @@ describe('convertHeicInWorker', () => {
         timeoutMs: 5,
       }).catch((e) => e);
       expect(error.code).toBe('worker_timeout');
+    });
+
+    it('says the deadline was spent queued when no worker slot was ever granted', async () => {
+      // timeoutMs is a per-call deadline that includes queue wait, so a batch
+      // saturating the per-URL semaphore times callers out that never ran. The
+      // diagnostic must not blame the image ("increase timeoutMs for large
+      // images") when the answer is maxConcurrentWorkers.
+      const holder = convertHeicInWorker(new Uint8Array([1]), {
+        workerUrl: '/saturated.js',
+        maxConcurrentWorkers: 1,
+      });
+      void holder.catch(() => undefined);
+
+      const error = await convertHeicInWorker(new Uint8Array([1]), {
+        workerUrl: '/saturated.js',
+        maxConcurrentWorkers: 1,
+        timeoutMs: 5,
+      }).catch((e) => e);
+
+      expect(error.code).toBe('worker_timeout');
+      expect(error.message).toContain('before a worker slot was granted');
+      expect(error.message).toContain('timeoutMs includes queue wait');
+      expect(error.message).toContain('maxConcurrentWorkers');
+      expect(error.message).not.toContain('progress message(s) received');
+      // The queued call never constructed a worker — it waited and gave up.
+      expect(MockWorker.instances).toHaveLength(1);
+      MockWorker.instances[0].emit('message', {
+        data: { type: 'result', ok: true, blob: new Blob(['x']) },
+      });
+      await holder;
+    });
+
+    it('reports the queue wait once a slot is granted mid-deadline', async () => {
+      vi.useFakeTimers();
+      try {
+        const holder = convertHeicInWorker(new Uint8Array([1]), {
+          workerUrl: '/handoff.js',
+          maxConcurrentWorkers: 1,
+        });
+        void holder.catch(() => undefined);
+        // The catch is attached at creation: attaching it after the timer fires
+        // leaves the rejection unhandled for a tick and vitest reports it.
+        const queued = convertHeicInWorker(new Uint8Array([1]), {
+          workerUrl: '/handoff.js',
+          maxConcurrentWorkers: 1,
+          timeoutMs: 50,
+        }).catch((error) => error);
+        await vi.advanceTimersByTimeAsync(30);
+
+        // Free the slot 30ms in: the queued call now runs, with 20ms left.
+        MockWorker.instances[0].emit('message', {
+          data: { type: 'result', ok: true, blob: new Blob(['x']) },
+        });
+        await holder;
+        await vi.advanceTimersByTimeAsync(20);
+
+        const error = await queued;
+        expect(error.code).toBe('worker_timeout');
+        expect(error.message).toContain('started after 30ms queued');
+        expect(error.message).not.toContain('before a worker slot was granted');
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('should tag failed results with worker_failed', async () => {
@@ -938,7 +1001,12 @@ describe('convertManyInWorker', () => {
     expect(results[0]).toMatchObject({ index: 0, ok: true });
     expect((results[0] as { result: Blob }).result).toBe(blob);
     expect(results[1]).toMatchObject({ index: 1, ok: false });
-    expect((results[1] as { error: { code: string } }).error.code).toBe('worker_failed');
+    const failedItem = results[1];
+    if (failedItem.ok) {
+      throw new Error('expected item 1 to fail');
+    }
+    expect(failedItem.error).toBeInstanceOf(HeicConverterError);
+    expect((failedItem.error as HeicConverterError).code).toBe('worker_failed');
     // Progress fired only for the successful item.
     expect(onProgress).toHaveBeenCalledWith(0, 100);
     expect(onProgress.mock.calls.every(([index]) => index === 0)).toBe(true);

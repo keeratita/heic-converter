@@ -22,11 +22,17 @@ Both libraries are checked out as **git submodules** under `build-wasm/src/`, pi
    cd build-wasm/src/libde265 && git checkout vX.Y.Z
    ```
 
-3. Rebuild:
+3. Rebuild, then re-pin the artifacts:
 
    ```bash
    npm run build:wasm
+   npm run wasm:hashes   # regenerates build-scripts/wasm-artifacts.json — must be committed
    ```
+
+   The build replaces **both** generated files (`src/wasm/public/heic-decoder.wasm` and
+   `src/wasm/wrapper/heic-decoder.js`) from one `emcc` invocation, so always commit the pair
+   together. Without `wasm:hashes`, `npm run verify:wasm` — and therefore CI — fails on the
+   hash mismatch.
 
 `build-wasm.sh` verifies the submodule checkout matches the pinned version and fails with a hint if they drift. The submodule commit itself is the version marker — there are no separate marker files.
 

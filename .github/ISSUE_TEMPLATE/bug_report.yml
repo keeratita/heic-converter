@@ -6,7 +6,7 @@ body:
     attributes:
       value: |
         For a **security issue**, use _Security → Report a vulnerability_ instead
-        (see [SECURITY.md](../main/SECURITY.md)); do not file it here.
+        (see [SECURITY.md](https://github.com/keeratita/heic-converter/security/policy)); do not file it here.
   - type: textarea
     id: what-happened
     attributes:
@@ -27,7 +27,8 @@ body:
         decoding bugs are nearly impossible to fix without it.
       placeholder: |
         import { convertHeic } from '@keeratita/heic-converter';
-        const blob = await convertHeic(file, { format: 'webp' });
+        // `to`, not `format` — an unknown option is ignored and the default (jpeg) applies.
+        const blob = await convertHeic(file, { to: 'webp' });
     validations:
       required: true
   - type: dropdown

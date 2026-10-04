@@ -180,7 +180,9 @@ describe('renderAndEncode - AVIF capability probe', () => {
       };
       const first = canEncodeAvif();
       await vi.advanceTimersByTimeAsync(5000);
-      expect(await first).toBe(false);
+      // Indeterminate, not `false`: every awaiter of the wedged probe must not
+      // be told the browser cannot encode AVIF.
+      expect(await first).toBeUndefined();
 
       // Indeterminate results are NOT cached — a healthy next probe succeeds.
       toBlobImpl = (_index, callback) => callback(new Blob(['ok'], { type: 'image/avif' }));
@@ -205,5 +207,33 @@ describe('renderAndEncode - AVIF capability probe', () => {
     expect(await assertEncodeCapability('jpeg')).toBeUndefined();
     // A non-avif format never triggers a probe; only the rejected avif call did.
     expect(toBlobCalls).toHaveLength(1);
+  });
+
+  it('does not reject assertEncodeCapability on an indeterminate probe', async () => {
+    // A starved 1×1 encode must not fail a batch with "AVIF is not supported"
+    // on a browser that supports it; the encode-time blob.type check decides.
+    vi.useFakeTimers();
+    try {
+      toBlobImpl = () => {
+        // Wedged engine: no callback, no rejection.
+      };
+      const check = assertEncodeCapability('avif');
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(await check).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not cache a canvas-creation failure as unsupported', async () => {
+    // createCanvas can fail transiently under memory pressure; caching that as
+    // "unsupported" would deny AVIF for the rest of the page's life.
+    (global.document.createElement as ReturnType<typeof vi.fn>).mockImplementationOnce(() => {
+      throw new Error('canvas allocation failed');
+    });
+    expect(await canEncodeAvif()).toBeUndefined();
+
+    expect(await canEncodeAvif()).toBe(true);
+    expect(toBlobCalls.filter((call) => call.type === 'image/avif')).toHaveLength(1);
   });
 });

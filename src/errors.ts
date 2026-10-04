@@ -19,6 +19,7 @@ export type HeicConverterErrorCode =
   | 'format_unsupported'
   | 'aborted'
   | 'worker_unsupported'
+  | 'worker_load_failed'
   | 'worker_create_failed'
   | 'worker_post_failed'
   | 'worker_failed'

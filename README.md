@@ -134,6 +134,25 @@ const jpegBlob = await convertHeic(heicBlob, {
 });
 ```
 
+#### Files you must serve
+
+`dist/` is no longer a single file. The JS is code-split, so a hand-hosted deploy (copying files into an assets folder or a CDN, with no bundler rewriting specifiers) needs **all** of these, under the chunk names the build produced:
+
+| File | Needed for |
+| --- | --- |
+| `index.mjs` / `index.js` | the entry (ESM / CJS) |
+| `chunk-*.mjs` / `chunk-*.js` | the eagerly imported shared code |
+| `heic-decoder-*.mjs` / `heic-decoder-*.js` | the Emscripten glue, fetched on first decode |
+| `heic-decoder.wasm` (+ `.gz` / `.br`) | the decoder binary |
+| `worker-*.mjs` / `worker-*.js` | `convertHeicInWorker` / `convertManyInWorker` |
+| `exif-*.mjs` / `exif-*.js` | `preserveExif: true` |
+
+- Chunk names are **content-hashed and hard-referenced by the entry**, so a partial upload — or a `dist/` mixed across releases — 404s instead of degrading quietly. Deploy the whole directory per release.
+- Serve chunks as `text/javascript`. A wrong MIME type surfaces as `worker_load_failed` from the worker APIs, and as `preserveExif` silently dropping metadata (it warns once).
+- `heic-decoder.wasm` and the glue chunk come from **one** `emcc` invocation and are ABI-coupled. If you host the binary separately (`locateFile`, an artifact mirror, an immutable `/assets/heic-decoder.wasm`), re-upload *and* cache-bust it together with the glue, or instantiation fails with `decoder_init_failed`.
+
+A bundler handles all of this: the dynamic imports are literal specifiers, so your bundler rewrites and emits the chunks for you.
+
 #### Using a bundler (Vite, webpack, Rollup, esbuild)
 
 The main entry is a small lazy loader: the Emscripten glue ships as a dynamic-import chunk and the `.wasm` binary is **not** inlined — you must make sure `dist/heic-decoder.wasm` is served and resolvable at runtime. Bundlers that rewrite asset URLs usually handle this automatically because the glue resolves the binary relative to its own chunk. If yours doesn't, copy the binary into your assets (the `@keeratita/heic-converter/wasm` subpath export resolves to the file itself, handy as a copy source) and point the decoder at it:
@@ -153,9 +172,9 @@ Fetching a `.gz`/`.br` variant URL directly will not work — see the compressio
 
 #### Reducing the download size
 
-The WASM binary (~1.3 MB) dominates the payload. Everything else is small and lazy: the Emscripten glue (~70 KB) is a separate chunk fetched only on the first decode, and the main entry is ~26 KB.
+The WASM binary (~794 KB, ~288 KB gzipped) dominates the payload; everything else is small and lazy. The Emscripten glue is a separate chunk fetched only on the first decode, and the Web Worker implementation and the opt-in EXIF injectors are separate chunks fetched only when you first call `convertHeicInWorker`/`convertManyInWorker` or pass `preserveExif: true`. What every consumer pays for up front is a few kilobytes of gzipped JavaScript — `test/unit/bundle.test.ts` fails the build if one of those boundaries moves or the eager budget grows, so the numbers live in the tests rather than here.
 
-`npm run build` also emits pre-compressed copies — `dist/heic-decoder.wasm.gz` (~421 KB) and `dist/heic-decoder.wasm.br` (~312 KB). Most static hosts and CDNs (GitHub Pages, Netlify, Vercel, Cloudflare) already compress `application/wasm` automatically when the browser sends `Accept-Encoding`; verify with:
+`npm run build` also emits pre-compressed copies — `dist/heic-decoder.wasm.gz` (~288 KB) and `dist/heic-decoder.wasm.br` (~230 KB) — and verifies each one decompresses back to the binary, so a corrupt sidecar cannot reach a CDN. Most static hosts and CDNs (GitHub Pages, Netlify, Vercel, Cloudflare) already compress `application/wasm` automatically when the browser sends `Accept-Encoding`; verify with:
 
 ```bash
 curl -sI -H 'Accept-Encoding: br' https://your-site/heic-decoder.wasm | grep -i content-encoding
@@ -163,7 +182,7 @@ curl -sI -H 'Accept-Encoding: br' https://your-site/heic-decoder.wasm | grep -i 
 
 If your server does not compress automatically, serve the pre-compressed files with the matching `Content-Encoding` header (nginx: `gzip_static on;` / `brotli_static on;`). Do **not** point `locateFile` at a `.br`/`.gz` URL — the browser only decompresses responses tagged with `Content-Encoding`.
 
-For long-lived caching, serve the WASM with `Cache-Control: public, max-age=31536000, immutable` and rename it per release (e.g. `heic-decoder-1.2.3.wasm` via `locateFile`) so clients pick up upgrades. GitHub Pages caps asset cache lifetime at 600s; put a CDN in front if that matters.
+For long-lived caching, serve the WASM with `Cache-Control: public, max-age=31536000, immutable` and rename it per release (e.g. `heic-decoder-1.2.3.wasm` via `locateFile`) so clients pick up upgrades — and treat the binary and its glue chunk as one unit when you do, per the note above. GitHub Pages caps asset cache lifetime at 600s; put a CDN in front if that matters.
 
 ### 5. Node.js: Decoding Raw Pixel Data
 
@@ -475,6 +494,14 @@ Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval
 > [!NOTE]
 > `'wasm-unsafe-eval'` is a CSP Level 3 directive that allows compiling and executing WebAssembly modules without opening the security risks of general JavaScript `'unsafe-eval'`.
 
+Two additions to that header are easy to miss:
+
+- **Serving the WASM from another origin** (`locateFile` pointing at a CDN) needs that origin in `connect-src` — the glue downloads the binary with `fetch()`/`XMLHttpRequest`, so `connect-src 'self'` blocks it and you get `decoder_init_failed` blaming the binary itself:
+  ```http
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self' https://cdn.example.com; img-src 'self' blob: data:;
+  ```
+- **The worker helpers** are real `Worker` scripts, so they follow `worker-src` (falling back to `script-src`). With `workerUrl` on your own origin, `worker-src 'self'` is enough; if your bundler inlines the worker as a blob URL, use `worker-src 'self' blob:`. A CSP-blocked worker surfaces as the generic `worker_failed`.
+
 ---
 
 ## 📖 API Reference
@@ -494,7 +521,7 @@ Converts a HEIC image file to a standard web format.
   - `scale`: `number` (Uniform scale factor, e.g. `0.5` halves the image. Takes precedence over `maxWidth`/`maxHeight`)
   - `applyOrientation`: `boolean` (Rotate/flip the output to match the source's EXIF orientation. `irot`/`imir` transforms are already applied by the decoder and never stacked. Default: `true`)
   - `crop`: `{ x?, y?, width, height }` (Cut a rectangle in post-orientation display pixels before resize. Default: none)
-  - `preserveExif`: `boolean` (Re-inject the source EXIF block into JPEG (APP1) / PNG (`eXIf`) output. Metadata may contain GPS — opt-in. Default: `false`)
+  - `preserveExif`: `boolean` (Re-inject the source EXIF block into JPEG (APP1) / PNG (`eXIf`) output. Metadata may contain GPS — opt-in. Default: `false`. Fail-safe: unparsable encoder output, a malformed block, or an oversized payload returns the image without metadata rather than failing — as does a missing `dist/exif-*.mjs` chunk, which logs a one-time warning so a deployment problem is distinguishable from a file that simply had no Exif item)
   - `output`: `'blob' | 'dataUrl' | 'arrayBuffer'` (Result representation. Default: `'blob'`; see [Usage section 10](#10-output-shapes-blob-data-url-arraybuffer))
   - `signal`: `AbortSignal` (Cancel pending work; rejects with `aborted`. Default: none)
 - **Returns**: `Promise<Blob>` — or `Promise<string>` / `Promise<ArrayBuffer>` with the typed `output` overloads
@@ -572,9 +599,10 @@ All errors thrown by this library are `HeicConverterError` instances (`extends E
 | `worker_post_failed` | `convertHeicInWorker`, `convertManyInWorker` | `postMessage` threw (non-cloneable option) |
 | `worker_timeout` | `convertHeicInWorker`, `convertManyInWorker` | No result within `timeoutMs`; message includes progress/protocol diagnostics |
 | `worker_failed` | `convertHeicInWorker`, `convertManyInWorker` | Worker reported `{ type: 'result', ok: false, error }` |
-
-Option validation for **all four** conversion APIs runs on the main thread before any worker is created, so a bad option always keeps its own code. Stage errors raised *inside* a worker (decode, render, unsupported format) come back stringified under `worker_failed` — the numeric `code` does not survive the worker boundary; match on the message instead.
+| `worker_load_failed` | `convertHeicInWorker`, `convertManyInWorker` | The lazily imported worker chunk (`dist/worker-*.mjs`) could not be fetched — deploy every file in `dist/` together, check your bundler emitted the chunk, and inspect `error.cause`; use `convertHeic` to convert in the current thread |
 | `batch_item_failed` | `convertMany`, `convertManyInWorker` | One or more items failed; see `itemIndex`/`itemTotal`/`failedCount`/`cause` |
+
+Option validation for **all four** conversion APIs runs on the main thread before any worker is created, so a bad option keeps its own code. One ordering note: `convertHeicInWorker`/`convertManyInWorker` resolve the worker chunk before the implementation runs, so when that chunk itself cannot be fetched the rejection is `worker_load_failed` regardless of other option problems — the original failure stays on `cause`. Stage errors raised *inside* a worker (decode, render, unsupported format) come back stringified under `worker_failed` — the numeric `code` does not survive the worker boundary; match on the message instead.
 
 ```typescript
 import { convertHeic, type HeicConverterErrorCode } from '@keeratita/heic-converter';
@@ -617,7 +645,14 @@ To compile the underlying [`libheif`](https://github.com/strukturag/libheif) and
 npm run build:wasm
 ```
 
-See [WASM_DEPENDENCIES.md](WASM_DEPENDENCIES.md) for the pinned upstream library versions.
+That rewrites **both** generated artifacts together — `src/wasm/public/heic-decoder.wasm` and `src/wasm/wrapper/heic-decoder.js` come from a single `emcc` invocation, so never replace one alone — and you must then refresh the pinned hashes or CI's verification step fails:
+
+```bash
+npm run wasm:hashes    # regenerates build-scripts/wasm-artifacts.json — commit it with the artifacts
+npm run verify:wasm    # confirms the committed pair matches, and scans the glue for eval/new Function
+```
+
+Never hand-edit either generated file. See [WASM_DEPENDENCIES.md](WASM_DEPENDENCIES.md) for the pinned upstream library versions.
 
 ### Build JS & TS Typings
 
@@ -629,8 +664,12 @@ npm run build
 
 ### Run Unit Tests
 
+Build first: the suites that decode real HEIC files gate on `dist/heic-decoder.wasm` (a stale `dist/` is detected and reported rather than silently passing).
+
 ```bash
+npm run build
 npm run test
+npm run typecheck   # tsc over src/ *and* test/ — tests are excluded from tsconfig.json
 ```
 
 ### Run Browser E2E Tests

@@ -10,7 +10,7 @@
 // and CI fails when it changes. A new entry means a real dependency was added;
 // review it, then `npm run check:scripts -- --write`.
 
-import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -19,6 +19,7 @@ const ALLOWLIST = path.join(ROOT, 'build-scripts', 'install-scripts.json');
 const LOCKFILE = path.join(ROOT, 'package-lock.json');
 const INSTALL_SCRIPTS = ['preinstall', 'install', 'postinstall'];
 const SKIP = new Set(['.bin', '.package-lock.json', '.cache']);
+const REGISTRY_HOST = /^https?:\/\/[^/]*registry\.[^/]+\//i;
 
 /**
  * Primary source: the committed lockfile, which is what `npm ci` installs and
@@ -26,6 +27,10 @@ const SKIP = new Set(['.bin', '.package-lock.json', '.cache']);
  * manifest, so it survives a package manager rewriting the installed copy — an
  * installed node_modules/fsevents/package.json can be missing the
  * `install: node-gyp rebuild` that the registry version declares.
+ *
+ * Non-registry dependencies are flagged even without an install script: npm runs
+ * `prepare` for git/`file:` deps, and those have no published manifest, so
+ * `hasInstallScript` never covers them.
  */
 export function collectFromLockfile(lock) {
   const found = [];
@@ -38,8 +43,9 @@ export function collectFromLockfile(lock) {
     if (entry.hasInstallScript) {
       hooks.push('hasInstallScript');
     }
-    if (entry.gypfile === true || (typeof entry.linked === 'boolean' && entry.hasGypfile)) {
-      hooks.push('gypfile');
+    const resolved = typeof entry.resolved === 'string' ? entry.resolved : '';
+    if (entry.link === true || entry.linked === true || (resolved && !REGISTRY_HOST.test(resolved))) {
+      hooks.push('non-registry-dep');
     }
     if (hooks.length) {
       found.push({ name, version: entry.version ?? 'unknown', hooks });
@@ -65,28 +71,45 @@ export function collectInstallScripts(nodeModulesDir) {
   };
   const isDir = (p) => {
     try {
-      return readdirSync(p) !== undefined;
+      return statSync(p).isDirectory();
     } catch {
       return false;
     }
   };
-  const walk = (nmDir) => {
+  // Symlinks are never followed: `npm link`, a `file:` dependency, or a stray
+  // self-referential link would otherwise make the walk descend into itself
+  // until the stack blows up, which reads as a tooling crash rather than an
+  // allowlist verdict. Those packages are caught by the lockfile's
+  // `non-registry-dep` rule instead, so nothing escapes by skipping them here.
+  const seen = new Set();
+  const MAX_DEPTH = 12;
+  const walk = (nmDir, depth) => {
+    if (depth > MAX_DEPTH) {
+      return;
+    }
+    let here;
+    try {
+      here = realpathSync(nmDir);
+    } catch {
+      return;
+    }
+    if (seen.has(here)) {
+      return;
+    }
+    seen.add(here);
     let entries;
     try {
-      entries = readdirSync(nmDir);
+      entries = readdirSync(nmDir, { withFileTypes: true });
     } catch {
       return;
     }
     for (const entry of entries) {
-      if (SKIP.has(entry)) {
+      if (SKIP.has(entry.name) || entry.isSymbolicLink() || !entry.isDirectory()) {
         continue;
       }
-      const pkgDir = path.join(nmDir, entry);
-      if (!isDir(pkgDir)) {
-        continue;
-      }
-      if (entry.startsWith('@')) {
-        walk(pkgDir); // scope directory: its children are the packages
+      const pkgDir = path.join(nmDir, entry.name);
+      if (entry.name.startsWith('@')) {
+        walk(pkgDir, depth + 1); // scope directory: its children are the packages
         continue;
       }
       const pkg = readPkg(pkgDir);
@@ -105,25 +128,35 @@ export function collectInstallScripts(nodeModulesDir) {
       // contains another package, so it is not walked.
       const nested = path.join(pkgDir, 'node_modules');
       if (isDir(nested)) {
-        walk(nested);
+        walk(nested, depth + 1);
       }
     }
   };
-  walk(nodeModulesDir);
+  walk(nodeModulesDir, 0);
   return found.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /**
- * Flags install scripts that were never reviewed. Entries in the allowlist that
- * are no longer installed are *not* a failure: optional dependencies are
- * platform-specific (fsevents exists on macOS, not on the ubuntu runner), so a
- * superset allowlist is correct and only reported as a note.
+ * Flags install scripts that were never reviewed. The allowlist pins name *and*
+ * version, because matching on name alone would let a malicious new release of
+ * an already-reviewed package (esbuild, say) run arbitrary code at install time
+ * without touching the file a reviewer looks at.
+ *
+ * Entries in the allowlist that are no longer installed are *not* a failure:
+ * optional dependencies are platform-specific (fsevents exists on macOS, not on
+ * the ubuntu runner), so a superset allowlist is correct and only reported as a
+ * note. Own-property lookup only — a package named `constructor` or `__proto__`
+ * must not inherit its way past the gate.
  */
 export function compare(found, allowed) {
   const problems = [];
   for (const pkg of found) {
-    if (!(pkg.name in allowed)) {
+    if (!Object.prototype.hasOwnProperty.call(allowed, pkg.name)) {
       problems.push(`${pkg.name}@${pkg.version} declares ${pkg.hooks.join(', ')} but is not allowlisted`);
+    } else if (allowed[pkg.name] !== pkg.version) {
+      problems.push(
+        `${pkg.name}@${pkg.version} is allowlisted at ${allowed[pkg.name]} — an install script at a new version has not been reviewed; read it, then npm run check:scripts -- --write`
+      );
     }
   }
   const foundNames = new Set(found.map((pkg) => pkg.name));

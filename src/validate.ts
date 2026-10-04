@@ -1,4 +1,4 @@
-import { Messages } from './messages';
+import { Messages } from './messages/core';
 import { HeicConverterError } from './errors';
 import { SUPPORTED_FORMATS } from './types';
 import type { CropOptions, ImageFormat, ResizeOptions } from './types';
@@ -41,13 +41,24 @@ export function validateConvertOptions(options?: {
   );
 }
 
-/** Validates batch-only knobs (`convertMany` / `convertManyInWorker`). */
+/**
+ * Validates the batch knobs shared by both batch entry points. The worker-only
+ * knobs (`maxConcurrentWorkers`, `timeoutMs`) are validated in `src/worker.ts`,
+ * so their message text stays in the lazy worker chunk.
+ */
 export function validateBatchOptions(options?: {
   continueOnError?: boolean;
   reuseDecoders?: boolean;
 }): void {
   validateContinueOnError(options?.continueOnError);
   validateReuseDecoders(options?.reuseDecoders);
+}
+
+/** @throws `invalid_concurrency` for a non-positive-integer `concurrency`. */
+export function validateConcurrency(concurrency: number): void {
+  if (!Number.isInteger(concurrency) || concurrency < 1) {
+    throw new HeicConverterError('invalid_concurrency', Messages.ConcurrencyInvalid(concurrency));
+  }
 }
 
 /** @throws `invalid_quality` if quality is not between 0.0 and 1.0. */
@@ -176,28 +187,5 @@ export function validateCrop(crop?: CropOptions): void {
   }
   if (!Number.isInteger(y) || y < 0) {
     throw new HeicConverterError('invalid_crop', Messages.CropInvalid('y', y));
-  }
-}
-
-/** @throws `invalid_concurrency` for a non-positive-integer maxConcurrentWorkers. */
-export function validateMaxConcurrentWorkers(maxConcurrentWorkers: unknown): void {
-  if (
-    maxConcurrentWorkers !== undefined &&
-    (!Number.isInteger(maxConcurrentWorkers) || (maxConcurrentWorkers as number) < 1)
-  ) {
-    throw new HeicConverterError(
-      'invalid_concurrency',
-      Messages.MaxConcurrentWorkersInvalid(maxConcurrentWorkers)
-    );
-  }
-}
-
-/** @throws `invalid_input` for a negative or non-finite timeoutMs. */
-export function validateTimeoutMs(timeoutMs: unknown): void {
-  if (
-    timeoutMs !== undefined &&
-    (typeof timeoutMs !== 'number' || !Number.isFinite(timeoutMs) || timeoutMs < 0)
-  ) {
-    throw new HeicConverterError('invalid_input', Messages.TimeoutInvalid(timeoutMs));
   }
 }

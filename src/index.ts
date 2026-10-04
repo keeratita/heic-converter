@@ -1,17 +1,19 @@
 import { LibheifDecoder } from './wasm';
+import { isDecoderPoisoned } from './wasm/fault';
 import {
   renderAndEncode,
   assertEncodeEnvironment,
   assertEncodeCapability,
   blobToBase64,
 } from './render/canvas';
-import { Messages } from './messages';
+import { Messages } from './messages/core';
 import { clampPercent } from './progress';
 import { HeicConverterError } from './errors';
-import { runBoundedBatch } from './batch';
+import { runBoundedBatch, runnerCountFor } from './batch';
 import {
   throwIfAborted,
   validateBatchOptions,
+  validateConcurrency,
   validateConvertOptions,
 } from './validate';
 import type {
@@ -27,13 +29,158 @@ import { DEFAULT_QUALITY } from './types';
 export * from './types';
 export { LibheifDecoder } from './wasm';
 export type { LibheifDecoderOptions } from './wasm';
-export { convertHeicInWorker, convertManyInWorker } from './worker';
 export type {
   WorkerConvertOptions,
   WorkerBatchOptions,
   WorkerResultMessage,
   WorkerProgressMessage,
 } from './worker';
+import type { WorkerBatchOptions, WorkerConvertOptions } from './worker';
+
+/**
+ * Lazily loads the worker chunk so in-process callers never pay for the worker
+ * transport. `import()` is cached per specifier by the host, so every caller
+ * gets the same module instance and therefore shares one per-URL worker
+ * semaphore — keep this dynamic; a static `import './worker'` would put the
+ * transport in the eager chunk (guarded by test/unit/bundle.test.ts).
+ *
+ * A failed chunk *fetch* becomes `worker_load_failed`; errors from the worker
+ * implementation itself pass through, so these entry points only ever reject
+ * with a `HeicConverterError`.
+ */
+function loadWorkerModule(): Promise<typeof import('./worker')> {
+  return import('./worker').catch((cause: unknown) => {
+    const reason = cause instanceof Error ? cause.message : String(cause);
+    throw new HeicConverterError('worker_load_failed', Messages.WorkerChunkLoadFailed(reason), {
+      cause
+    });
+  });
+}
+
+/**
+ * Converts a HEIC image inside a Web Worker so the main thread stays responsive
+ * during the (potentially slow) WASM decode. This is the public entry point; the
+ * implementation lives in `src/worker.ts` and is fetched as a lazy chunk on the
+ * first call, so a deployment missing that chunk rejects with
+ * `worker_load_failed` (original failure on `cause`) rather than a raw
+ * module-load error.
+ *
+ * The worker script is user-provided and must handle the following message
+ * protocol (types are exported as {@link WorkerProgressMessage} and
+ * {@link WorkerResultMessage}):
+ *
+ * ```js
+ * // converter.worker.js — keep in sync with docs/worker.js,
+ * // test/browser/worker.js, and this JSDoc example.
+ * import { convertHeic } from '@keeratita/heic-converter';
+ *
+ * self.onmessage = async (event) => {
+ *   const { input, options } = event.data;
+ *   try {
+ *     const blob = await convertHeic(input, {
+ *       ...options,
+ *       onProgress: (percent) => self.postMessage({ type: 'progress', percent }),
+ *     });
+ *     self.postMessage({ type: 'result', ok: true, blob });
+ *   } catch (error) {
+ *     self.postMessage({ type: 'result', ok: false, error: error?.stack ?? error?.message ?? String(error) });
+ *   }
+ * };
+ * ```
+ *
+ * ```ts
+ * const jpegBlob = await convertHeicInWorker(heicBlob, {
+ *   workerUrl: new URL('./converter.worker.js', import.meta.url),
+ *   workerType: 'module',
+ *   to: 'jpeg',
+ * });
+ * ```
+ *
+ * Only `progress` and `result` messages are understood; any other message type
+ * is ignored (the first unknown type is reported in the timeout diagnostic).
+ * Use `workerType: 'module'` when the script uses ES module imports (as above);
+ * `'classic'` scripts must be pre-bundled, since static ES imports are not
+ * supported there.
+ *
+ * Notes that are easy to trip over:
+ * - `decoder` is rejected — class instances cannot cross the worker boundary,
+ *   so the worker creates its own.
+ * - `timeoutMs` is a per-call deadline that **includes queueing** for a free
+ *   worker slot, not just the conversion itself.
+ * - An error raised *inside* the worker comes back stringified under
+ *   `worker_failed`: the numeric `code` does not survive the boundary, so match
+ *   on the message. Option validation happens here instead, so an invalid
+ *   option keeps its own code.
+ * - Workers are pooled per `workerUrl`, so concurrent callers to the same URL
+ *   share one bounded set rather than spawning unbounded workers.
+ *
+ * @param input HEIC image as a Blob, File, ArrayBuffer, or Uint8Array.
+ * @param options Conversion options plus the worker script URL.
+ * @returns The converted image as a Blob, data URL string, or ArrayBuffer
+ *   depending on `options.output` (default Blob).
+ */
+export function convertHeicInWorker<S extends OutputShape = 'blob'>(
+  input: HeicInput,
+  options: WorkerConvertOptions & { output?: S }
+): Promise<ConvertResult<S>> {
+  return loadWorkerModule().then((worker) => worker.convertHeicInWorker<S>(input, options));
+}
+
+/**
+ * Converts multiple HEIC images inside Web Workers, mirroring {@link convertMany}
+ * semantics (input order, bounded concurrency, `batch_item_failed` aggregation
+ * or `continueOnError` per-item results). Concurrency is bounded by
+ * `maxConcurrentWorkers` (default `navigator.hardwareConcurrency` clamped to
+ * 1–8): items queue behind the worker semaphore, so a large batch never
+ * exhausts memory or the browser's worker limit. Each item runs in its own
+ * worker instance via {@link convertHeicInWorker}, which means `decoder` cannot
+ * be injected and `workerUrl` is required. See that function for the worker
+ * script protocol and the caveats about `timeoutMs`, the worker boundary, and
+ * `worker_load_failed`.
+ *
+ * ```ts
+ * const blobs = await convertManyInWorker(heicFiles, {
+ *   workerUrl: new URL('./converter.worker.js', import.meta.url),
+ *   workerType: 'module',
+ *   to: 'webp',
+ *   continueOnError: true, // get per-item results instead of batch rejection
+ * });
+ * ```
+ *
+ * Overloads must mirror `convertManyInWorker` in `src/worker.ts`: the deferred
+ * call below erases the union, so drift here is a public typing bug that `tsc`,
+ * the unit tests and the bundle guard all fail to catch.
+ *
+ * @param inputs HEIC images as Blobs, Files, ArrayBuffers, or Uint8Arrays.
+ * @param options Batch + worker conversion options (see {@link WorkerBatchOptions}).
+ * @returns The converted images in input order, or per-item result entries
+ *   when `continueOnError: true`.
+ */
+export function convertManyInWorker<S extends OutputShape = 'blob'>(
+  inputs: HeicInput[],
+  options: WorkerBatchOptions & { output?: S; continueOnError: true }
+): Promise<ConvertItemResult<ConvertResult<S>>[]>;
+export function convertManyInWorker<S extends OutputShape = 'blob'>(
+  inputs: HeicInput[],
+  options: WorkerBatchOptions & { output?: S; continueOnError?: false }
+): Promise<ConvertResult<S>[]>;
+export function convertManyInWorker<S extends OutputShape = 'blob'>(
+  inputs: HeicInput[],
+  options: WorkerBatchOptions & { output?: S; continueOnError: boolean }
+): Promise<Array<ConvertResult<S> | ConvertItemResult<ConvertResult<S>>>>;
+export function convertManyInWorker<S extends OutputShape = 'blob'>(
+  inputs: HeicInput[],
+  options: WorkerBatchOptions & { output?: S }
+): Promise<Array<ConvertResult<S> | ConvertItemResult<ConvertResult<S>>>> {
+  // Widened to the boolean overload so the deferred call's union return matches the public signature.
+  return loadWorkerModule().then((worker) =>
+    worker.convertManyInWorker<S>(
+      inputs,
+      options as WorkerBatchOptions & { output?: S; continueOnError: boolean }
+    )
+  );
+}
+
 export { HeicConverterError } from './errors';
 export type { HeicConverterErrorCode } from './errors';
 
@@ -306,9 +453,9 @@ class DecoderPool {
 
   /**
    * Callers must not acquire after `dispose()`: the batch runner loop
-   * guarantees this (no new items are claimed once the batch settles).
-   * Waiters parked here can only exist if the pool's max ever drops below
-   * the runner count (today both are min(concurrency, inputs.length)).
+   * guarantees this (no new items are claimed once the batch settles). Parking
+   * below would deadlock, and it stays unreachable only while the pool bound
+   * equals the runner count — both sides call `runnerCountFor()` in batch.ts.
    */
   async acquire(): Promise<LibheifDecoder> {
     const idle = this.idle.pop();
@@ -330,6 +477,23 @@ class DecoderPool {
         decoder.free();
       } catch {
         // Best-effort cleanup.
+      }
+      return;
+    }
+    if (isDecoderPoisoned(decoder)) {
+      // Its module faulted, so the heap is unusable: parking it would corrupt
+      // the next item. Give the slot back rather than shrink the pool — once
+      // every instance had faulted, a frozen count would park waiters forever.
+      this.leasedCount -= 1;
+      try {
+        decoder.free();
+      } catch {
+        // Best-effort cleanup.
+      }
+      const waiter = this.waiters.shift();
+      if (waiter) {
+        this.leasedCount += 1;
+        waiter(new LibheifDecoder());
       }
       return;
     }
@@ -399,9 +563,7 @@ export async function convertMany<S extends OutputShape = 'blob'>(
   }
 
   const concurrency = options?.concurrency ?? 4;
-  if (!Number.isInteger(concurrency) || concurrency < 1) {
-    throw new HeicConverterError('invalid_concurrency', Messages.ConcurrencyInvalid(concurrency));
-  }
+  validateConcurrency(concurrency);
 
   // Validate the shared options once, up front, so invalid values (and a
   // canvas-less or AVIF-incapable environment) surface their own error code
@@ -421,7 +583,7 @@ export async function convertMany<S extends OutputShape = 'blob'>(
   } = options ?? {};
 
   const usePool = reuseDecoders === true && options?.decoder === undefined;
-  const pool = usePool ? new DecoderPool(Math.min(concurrency, inputs.length)) : null;
+  const pool = usePool ? new DecoderPool(runnerCountFor(concurrency, inputs.length)) : null;
 
   try {
     return (await runBoundedBatch<ConvertResult<S>>(

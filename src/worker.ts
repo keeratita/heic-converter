@@ -5,16 +5,33 @@ import type {
   HeicInput,
   OutputShape,
 } from './types';
-import { Messages } from './messages';
+import { Messages } from './messages/core';
+import { WorkerMessages } from './messages/worker';
 import { clampPercent } from './progress';
 import { HeicConverterError } from './errors';
 import { runBoundedBatch } from './batch';
-import {
-  validateConvertOptions,
-  validateContinueOnError,
-  validateMaxConcurrentWorkers,
-  validateTimeoutMs,
-} from './validate';
+import { validateConvertOptions, validateContinueOnError } from './validate';
+
+/**
+ * Worker-only option validators live here, not in `./validate`: `validate.ts` is
+ * eagerly imported by `index.ts`, so a validator that reads a `WorkerMessages`
+ * string would drag that text into the eager chunk. Same call sites, same error
+ * codes — only the module they live in keeps ~120 B out of the first load.
+ */
+
+/** @throws `invalid_concurrency` for a non-positive-integer maxConcurrentWorkers. */
+function validateMaxConcurrentWorkers(maxConcurrentWorkers: unknown): void {
+  if (maxConcurrentWorkers !== undefined && (!Number.isInteger(maxConcurrentWorkers) || (maxConcurrentWorkers as number) < 1)) {
+    throw new HeicConverterError('invalid_concurrency', WorkerMessages.MaxConcurrentWorkersInvalid(maxConcurrentWorkers));
+  }
+}
+
+/** @throws `invalid_input` for a negative or non-finite timeoutMs. */
+function validateTimeoutMs(timeoutMs: unknown): void {
+  if (timeoutMs !== undefined && (typeof timeoutMs !== 'number' || !Number.isFinite(timeoutMs) || timeoutMs < 0)) {
+    throw new HeicConverterError('invalid_input', WorkerMessages.TimeoutInvalid(timeoutMs));
+  }
+}
 
 export interface WorkerConvertOptions extends Omit<ConvertOptions, 'decoder'> {
   /**
@@ -169,53 +186,12 @@ export const __semaphoreTestHooks = {
 };
 
 /**
- * Converts a HEIC image inside a Web Worker so the main thread stays
- * responsive during the (potentially slow) WASM decode.
- *
- * The worker script is user-provided and must handle the following message
- * protocol (types are exported as {@link WorkerProgressMessage} and
- * {@link WorkerResultMessage}):
- *
- * ```js
- * // converter.worker.js — keep in sync with docs/worker.js,
- * // test/browser/worker.js, and this JSDoc example.
- * import { convertHeic } from '@keeratita/heic-converter';
- *
- * self.onmessage = async (event) => {
- *   const { input, options } = event.data;
- *   try {
- *     const blob = await convertHeic(input, {
- *       ...options,
- *       onProgress: (percent) => self.postMessage({ type: 'progress', percent }),
- *     });
- *     self.postMessage({ type: 'result', ok: true, blob });
- *   } catch (error) {
- *     self.postMessage({ type: 'result', ok: false, error: error?.stack ?? error?.message ?? String(error) });
- *   }
- * };
- * ```
- *
- * ```ts
- * const jpegBlob = await convertHeicInWorker(heicBlob, {
- *   workerUrl: new URL('./converter.worker.js', import.meta.url),
- *   workerType: 'module',
- *   to: 'jpeg',
- * });
- * ```
- *
- * Only `progress` and `result` messages are understood; any other message
- * type is ignored (the first unknown type is reported in the timeout
- * diagnostic). Use `workerType: 'module'` when the script uses ES module
- * imports (as in the example above); `'classic'` scripts must be
- * pre-bundled, since static ES imports are not supported there.
- *
- * The `decoder` option is rejected: class instances cannot cross the
- * worker boundary; the worker creates its own decoder.
- *
- * @param input HEIC image as a Blob, File, ArrayBuffer, or Uint8Array.
- * @param options Conversion options plus the worker script URL.
- * @returns The converted image as a Blob, data URL string, or ArrayBuffer
- *   depending on `options.output` (default Blob).
+ * Implementation behind the public `convertHeicInWorker` wrapper in
+ * `src/index.ts`, which carries the published JSDoc: the worker-script message
+ * protocol, the `workerType` and `decoder` rules, and the caveats about
+ * `timeoutMs` (queue wait counts) and the stringified worker boundary. Keep
+ * behaviour in sync with that doc — it is what `dist/index.d.ts` ships, and
+ * this file's comments do not reach consumers.
  */
 export function convertHeicInWorker<S extends OutputShape = 'blob'>(
   input: HeicInput,
@@ -223,11 +199,11 @@ export function convertHeicInWorker<S extends OutputShape = 'blob'>(
 ): Promise<ConvertResult<S>> {
   return new Promise<ConvertResult<S>>((resolve, reject) => {
     if (typeof Worker === 'undefined') {
-      reject(new HeicConverterError('worker_unsupported', Messages.WorkerUnsupported));
+      reject(new HeicConverterError('worker_unsupported', WorkerMessages.WorkerUnsupported));
       return;
     }
     if ((options as ConvertOptions).decoder !== undefined) {
-      reject(new HeicConverterError('invalid_input', Messages.WorkerDecoderUnsupported));
+      reject(new HeicConverterError('invalid_input', WorkerMessages.WorkerDecoderUnsupported));
       return;
     }
     try {
@@ -279,17 +255,21 @@ export function convertHeicInWorker<S extends OutputShape = 'blob'>(
     options.signal?.addEventListener('abort', onAbort, { once: true });
 
     const timeoutMs = options.timeoutMs ?? 60000;
+    const queuedAt = Date.now();
+    let startedAt: number | undefined;
     if (timeoutMs > 0) {
       timeoutId = setTimeout(() => {
         cleanup();
         reject(
           new HeicConverterError(
             'worker_timeout',
-            Messages.WorkerTimeout(timeoutMs, {
+            WorkerMessages.WorkerTimeout(timeoutMs, {
               progressMessages: stats.progressMessages,
               lastPercent: stats.lastPercent,
               unknownType: stats.unknownType,
               workerUrl: options.workerUrl,
+              startedAt,
+              queueWaitMs: startedAt === undefined ? undefined : startedAt - queuedAt,
             })
           )
         );
@@ -332,7 +312,7 @@ export function convertHeicInWorker<S extends OutputShape = 'blob'>(
         resolve(message.blob as ConvertResult<S>);
       } else {
         reject(
-          new HeicConverterError('worker_failed', message.error ?? Messages.WorkerConversionFailed)
+          new HeicConverterError('worker_failed', message.error ?? WorkerMessages.WorkerConversionFailed)
         );
       }
     };
@@ -343,7 +323,7 @@ export function convertHeicInWorker<S extends OutputShape = 'blob'>(
       reject(
         new HeicConverterError(
           'worker_failed',
-          `${event.message || Messages.WorkerFailed(options.workerUrl)}${location}`
+          `${event.message || WorkerMessages.WorkerFailed(options.workerUrl)}${location}`
         )
       );
     };
@@ -358,7 +338,7 @@ export function convertHeicInWorker<S extends OutputShape = 'blob'>(
             ? detail.message
             : detail !== undefined
               ? String(detail)
-              : Messages.WorkerFailed(options.workerUrl),
+              : WorkerMessages.WorkerFailed(options.workerUrl),
           { cause: detail }
         )
       );
@@ -388,6 +368,9 @@ export function convertHeicInWorker<S extends OutputShape = 'blob'>(
       if (settled) {
         return;
       }
+      // Slot granted: distinguishes "timed out inside the worker" from "timed
+      // out waiting for a worker" in the timeout diagnostic.
+      startedAt = Date.now();
       try {
         worker = new Worker(workerUrl, options.workerType === 'module' ? { type: 'module' } : undefined);
       } catch (error) {
@@ -395,7 +378,7 @@ export function convertHeicInWorker<S extends OutputShape = 'blob'>(
         reject(
           new HeicConverterError(
             'worker_create_failed',
-            Messages.WorkerCreateFailed(error instanceof Error ? error.message : String(error)),
+            WorkerMessages.WorkerCreateFailed(error instanceof Error ? error.message : String(error)),
             { cause: error }
           )
         );
@@ -414,7 +397,7 @@ export function convertHeicInWorker<S extends OutputShape = 'blob'>(
         reject(
           new HeicConverterError(
             'worker_post_failed',
-            Messages.WorkerPostFailed(error instanceof Error ? error.message : String(error)),
+            WorkerMessages.WorkerPostFailed(error instanceof Error ? error.message : String(error)),
             { cause: error }
           )
         );
@@ -454,29 +437,11 @@ function toRunnerConcurrency(maxConcurrentWorkers: number | undefined): number {
 }
 
 /**
- * Converts multiple HEIC images inside Web Workers, mirroring
- * {@link convertMany} semantics (input order, bounded concurrency,
- * `batch_item_failed` aggregation or `continueOnError` per-item results).
- * Concurrency is bounded by `maxConcurrentWorkers` (default
- * `navigator.hardwareConcurrency` clamped to 1–8): items queue behind the
- * worker semaphore, so a large batch never exhausts memory or the browser's
- * worker limit. Each item runs in its own worker instance via
- * {@link convertHeicInWorker}, which means `decoder` cannot be injected and
- * `workerUrl` is required.
- *
- * ```ts
- * const blobs = await convertManyInWorker(heicFiles, {
- *   workerUrl: new URL('./converter.worker.js', import.meta.url),
- *   workerType: 'module',
- *   to: 'webp',
- *   continueOnError: true, // get per-item results instead of batch rejection
- * });
- * ```
- *
- * @param inputs HEIC images as Blobs, Files, ArrayBuffers, or Uint8Arrays.
- * @param options Batch + worker conversion options (see {@link WorkerBatchOptions}).
- * @returns The converted images in input order, or per-item result entries
- *   when `continueOnError: true`.
+ * Implementation behind the public `convertManyInWorker` wrapper in
+ * `src/index.ts`, which carries the published JSDoc (semantics, the
+ * `maxConcurrentWorkers` default, `continueOnError` result shapes). This is the
+ * code the worker chunk actually runs; the entry point just resolves the lazy
+ * chunk and forwards.
  */
 export function convertManyInWorker<S extends OutputShape = 'blob'>(
   inputs: HeicInput[],
@@ -498,10 +463,10 @@ export async function convertManyInWorker<S extends OutputShape = 'blob'>(
     throw new HeicConverterError('invalid_input', Messages.InputsMustBeArray);
   }
   if (typeof Worker === 'undefined') {
-    throw new HeicConverterError('worker_unsupported', Messages.WorkerUnsupported);
+    throw new HeicConverterError('worker_unsupported', WorkerMessages.WorkerUnsupported);
   }
   if ((options as ConvertOptions).decoder !== undefined) {
-    throw new HeicConverterError('invalid_input', Messages.WorkerDecoderUnsupported);
+    throw new HeicConverterError('invalid_input', WorkerMessages.WorkerDecoderUnsupported);
   }
   // Same up-front shared validation as convertMany: option typos surface
   // their own code on the main thread instead of returning stringified as

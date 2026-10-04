@@ -4,12 +4,16 @@
 // Publishing goes through .github/workflows/publish.yml, which gets an npm
 // attestation from OIDC trusted publishing. That attestation is what lets
 // consumers (and scanners such as Socket) tie the tarball to this repository's
-// CI — but it fails *silently*: a manual `npm publish` from a laptop, an
-// expired `id-token: write` permission, or a registry hiccup all produce a
-// perfectly installable package with no provenance at all.
+// CI — but it fails *silently*: a manual `npm publish` from a laptop, a missing
+// `id-token: write` permission, or a registry hiccup all produce a perfectly
+// installable package with no provenance at all.
 //
-// So check the registry's own record after publishing: the SLSA attestation,
-// the gitHead that maps the tarball to a commit, and a sha512 integrity.
+// `dist.attestations` on the version document is only a *hint* that npm writes,
+// so the gate reads the attestation it points at and checks the statement
+// itself: right package and version, SLSA provenance, and a GitHub Actions build
+// type — which is what a laptop publish cannot produce. The registry URL is
+// hardcoded: honouring publishConfig.registry would let a commit point both
+// `npm publish` and this check at a host that will say anything.
 
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -17,63 +21,104 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PKG = JSON.parse(readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+const REGISTRY = 'https://registry.npmjs.org/';
+const SLSA_PREDICATE = 'https://slsa.dev/provenance';
+const GITHUB_ACTIONS_BUILD_TYPE = 'https://slsa-framework.github.io/github-actions-buildtypes/';
+const ATTEMPTS = 5;
+const WAIT_MS = 3000;
+const REQUEST_TIMEOUT_MS = 10_000;
 
-/** Pure check over a registry document, so the assertions are unit-testable. */
+/** Checks the registry's version document: attestation hint, tarball host, commit link. */
 export function inspectRegistryDoc(doc, { name = PKG.name, version = PKG.version } = {}) {
   const problems = [];
   if (!doc || typeof doc !== 'object') {
     return [`no registry document for ${name}@${version}`];
   }
-  const attestations = doc.dist?.attestations;
-  if (!attestations?.url) {
+  if (!doc.dist?.attestations?.url) {
     problems.push('dist.attestations.url is missing — the package was not published with provenance');
   }
-  const predicate = doc.dist?.attestations?.provenance?.predicateType;
-  if (attestations?.url && !String(predicate).startsWith('https://slsa.dev/provenance')) {
-    problems.push(`attestation predicateType is ${JSON.stringify(predicate)}, expected a SLSA provenance statement`);
+  const tarball = String(doc.dist?.tarball ?? '');
+  if (!tarball.startsWith(REGISTRY)) {
+    problems.push(`dist.tarball is ${JSON.stringify(tarball)}, expected it to be served from ${REGISTRY}`);
   }
   if (!doc.gitHead) {
-    problems.push('gitHead is missing — the tarball cannot be tied back to a commit');
-  }
-  if (!String(doc.dist?.integrity ?? '').startsWith('sha512-')) {
-    problems.push('dist.integrity is missing or not sha512');
+    problems.push('gitHead is missing — the tarball cannot be traced back to a commit');
   }
   return problems;
 }
 
-async function fetchRegistryDoc(registry, name, version) {
-  const url = `${registry.replace(/\/$/, '')}/${name.startsWith('@') ? name.replace('/', '%2F') : name}/${version}`;
-  const response = await fetch(url, { headers: { accept: 'application/json' } });
+/**
+ * Checks the signed statement the hint points at, so an unrelated or stale
+ * attestation cannot satisfy the gate: subject must be this package at this
+ * version, and the build type must be the GitHub Actions one.
+ */
+export function inspectAttestationDoc(attestations, { name = PKG.name, version = PKG.version } = {}) {
+  const entries = Array.isArray(attestations?.attestations) ? attestations.attestations : [];
+  const slsa = entries.filter((entry) => String(entry?.predicateType ?? '').startsWith(SLSA_PREDICATE));
+  if (!slsa.length) {
+    return [`the attestation document holds no ${SLSA_PREDICATE} statement (found: ${entries.map((e) => e?.predicateType).join(', ') || 'nothing'})`];
+  }
+  for (const entry of slsa) {
+    let statement;
+    try {
+      statement = JSON.parse(Buffer.from(entry.bundle.dsseEnvelope.payload, 'base64').toString('utf8'));
+    } catch {
+      continue; // undecodable bundle: try the next statement before calling it a failure
+    }
+    const subjects = Array.isArray(statement?.subject) ? statement.subject : [];
+    const named = subjects.some((subject) => String(subject?.name ?? '').replace('%40', '@') === `pkg:npm/${name}@${version}`);
+    if (!named) {
+      continue;
+    }
+    const buildType = String(statement.predicate?.buildDefinition?.buildType ?? '');
+    if (!buildType.startsWith(GITHUB_ACTIONS_BUILD_TYPE)) {
+      return [`attestation for ${name}@${version} was produced by build type ${JSON.stringify(buildType)}, not GitHub Actions`];
+    }
+    return [];
+  }
+  return [`no attestation statement names pkg:npm/${name}@${version}`];
+}
+
+async function fetchJson(url) {
+  const response = await fetch(url, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
   if (!response.ok) {
     throw new Error(`registry returned ${response.status} for ${url}`);
   }
   return response.json();
 }
 
-const arg = (flag, fallback) => {
-  const i = process.argv.indexOf(flag);
-  return i > -1 ? process.argv[i + 1] : fallback;
-};
+function versionFromArgs() {
+  const arg = process.argv[2];
+  return arg && !arg.startsWith('-') ? arg : PKG.version;
+}
 
 async function main() {
-  const version = process.argv[2] && !process.argv[2].startsWith('-') ? process.argv[2] : PKG.version;
-  const registry = arg('--registry', PKG.publishConfig?.registry ?? 'https://registry.npmjs.org/');
-  const retries = Number(arg('--retries', 5));
-  const waitMs = Number(arg('--wait-ms', 3000));
-
+  const version = versionFromArgs();
+  const base = REGISTRY.replace(/\/$/, '');
+  const encoded = PKG.name.startsWith('@') ? PKG.name.replace('/', '%2F') : PKG.name;
   let problems = ['not fetched'];
-  for (let attempt = 1; attempt <= retries; attempt += 1) {
+
+  for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
     try {
-      problems = inspectRegistryDoc(await fetchRegistryDoc(registry, PKG.name, version), { name: PKG.name, version });
+      const doc = await fetchJson(`${base}/${encoded}/${version}`);
+      problems = inspectRegistryDoc(doc, { name: PKG.name, version });
+      if (!problems.length) {
+        const attestationUrl = doc.dist.attestations.url;
+        problems = inspectAttestationDoc(await fetchJson(attestationUrl), { name: PKG.name, version });
+      }
     } catch (error) {
       problems = [String(error instanceof Error ? error.message : error)];
     }
     if (!problems.length) {
-      console.log(`Provenance OK for ${PKG.name}@${version}: SLSA attestation + gitHead + sha512 integrity`);
+      console.log(`Provenance OK for ${PKG.name}@${version}: GitHub Actions SLSA statement + gitHead + registry-hosted tarball`);
       return;
     }
-    if (attempt < retries) {
-      console.log(`Attempt ${attempt}/${retries}: ${problems[0]} — retrying in ${waitMs}ms`);
+    if (attempt < ATTEMPTS) {
+      // Growing waits, capped: a registry that lags in surfacing the
+      // attestation gets several chances, while the whole loop stays well
+      // inside the publish job's timeout even if every request hangs.
+      const waitMs = Math.min(WAIT_MS * 2 ** (attempt - 1), 15_000);
+      console.log(`Attempt ${attempt}/${ATTEMPTS}: ${problems[0]} — retrying in ${waitMs}ms`);
       await new Promise((resolve) => setTimeout(resolve, waitMs));
     }
   }

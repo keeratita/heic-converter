@@ -4,20 +4,11 @@ import {
   injectExifIntoPng,
   normalizeOrientationTag,
 } from '../../src/render/exif';
+import { EXIF_BLOCK, TIFF } from './helpers/exif-fixtures';
 
 // --- fixtures -------------------------------------------------------------
-
-/** Minimal little-endian TIFF with an orientation (0x0112) = 6 entry. */
-const TIFF = new Uint8Array([
-  0x49, 0x49, 0x2a, 0x00, // II + magic 42
-  0x08, 0x00, 0x00, 0x00, // IFD0 at 8
-  0x01, 0x00, // 1 entry
-  0x12, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, // next IFD: none
-]);
-
-/** JPEG APP1 payload form: "Exif\0\0" + TIFF. */
-const EXIF_BLOCK = new Uint8Array([0x45, 0x78, 0x69, 0x66, 0x00, 0x00, ...TIFF]);
+// The TIFF/EXIF block is shared with the render-stage tests (helpers/exif-fixtures);
+// the JPEG/PNG scaffolding below is specific to the injectors.
 
 const concat = (...parts: Uint8Array[]): Uint8Array => {
   const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
@@ -189,6 +180,28 @@ describe('injectExifIntoJpeg', () => {
     const jpegBytes = jpeg(SOS);
     expect(injectExifIntoJpeg(jpegBytes, huge)).toBe(jpegBytes);
   });
+
+  it('walks past 0xFF fill bytes and still inserts after the APP0 run', () => {
+    // Fill bytes before a marker are legal and do occur; treating them as a
+    // desynchronized stream would silently drop metadata instead of inserting.
+    const filled = concat(SOI, new Uint8Array([0xff]), JFIF_APP0, SOF0, EOI);
+    const out = injectExifIntoJpeg(filled, EXIF_BLOCK);
+    const afterLeading = SOI.length + 1 + JFIF_APP0.length; // SOI + fill + APP0
+
+    expect(out.length, 'fill bytes must not cause a refusal').toBe(filled.length + 4 + EXIF_BLOCK.length);
+    expect(contains(out, EXIF_BLOCK)).toBe(true);
+    expect(out.subarray(afterLeading, afterLeading + 2)).toEqual(new Uint8Array([0xff, 0xe1]));
+    // Leading run and tail must survive untouched.
+    expect(out.subarray(0, afterLeading)).toEqual(filled.subarray(0, afterLeading));
+    const tail = filled.length - afterLeading;
+    expect(out.subarray(out.length - tail)).toEqual(filled.subarray(afterLeading));
+  });
+
+  it('returns the input unchanged when a segment header is cut off mid-field', () => {
+    // APP0 marker with no length field: the insertion point is unlocatable.
+    const truncated = concat(SOI, new Uint8Array([0xff, 0xe0]));
+    expect(injectExifIntoJpeg(truncated, EXIF_BLOCK)).toBe(truncated);
+  });
 });
 
 // --- PNG --------------------------------------------------------------------
@@ -272,6 +285,16 @@ describe('injectExifIntoPng', () => {
     const pngBytes = png(IHDR, IDAT, IEND);
     expect(injectExifIntoPng(pngBytes, TIFF)).toBe(pngBytes);
   });
+
+  it('refuses a container whose first chunk is not a 13-byte IHDR', () => {
+    // eXIf anchors after IHDR, so a misdeclared length or a mistyped first chunk
+    // means the anchor is unlocatable: refuse rather than write into a bad file.
+    const wrongLength = png(pngChunk('IHDR', new Uint8Array(12)), IDAT, IEND);
+    expect(injectExifIntoPng(wrongLength, EXIF_BLOCK)).toBe(wrongLength);
+
+    const wrongType = png(pngChunk('IHDx', new Uint8Array(13)), IDAT, IEND);
+    expect(injectExifIntoPng(wrongType, EXIF_BLOCK)).toBe(wrongType);
+  });
 });
 
 // --- normalizeOrientationTag ----------------------------------------------
@@ -346,5 +369,79 @@ describe('normalizeOrientationTag', () => {
 
   it('fails safe when the Exif marker is missing', () => {
     expect(normalizeOrientationTag(TIFF)).toBe(TIFF);
+  });
+
+  it('finds the orientation tag when it is not the first IFD0 entry', () => {
+    // Tag 274 is rarely first, so the scan must keep walking past unrelated
+    // entries; a stray `break` leaves a stale tag and double-rotation.
+    const twoEntries = new Uint8Array([
+      0x49, 0x49, 0x2a, 0x00, // II + magic 42
+      0x08, 0x00, 0x00, 0x00, // IFD0 at 8
+      0x02, 0x00, // 2 entries
+      0x0e, 0x01, 0x02, 0x00, 0x04, 0x00, 0x00, 0x00, 0x61, 0x62, 0x63, 0x00, // 0x010E ImageDescription
+      0x12, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, // 0x0112 orientation = 6
+      0x00, 0x00, 0x00, 0x00, // next IFD: none
+    ]);
+    const block = blockWith(Array.from(twoEntries));
+    const entriesAt = 6 + 8 + 2; // marker + IFD0 offset + entry count
+    const orientValue = entriesAt + 12 + 8; // past entry 0, into entry 1's value field
+
+    const out = normalizeOrientationTag(block);
+
+    expect(out).not.toBe(block);
+    expect([out[orientValue], out[orientValue + 1]]).toEqual([1, 0]); // rewritten to normal
+    expect(out.subarray(entriesAt, entriesAt + 12)).toEqual(block.subarray(entriesAt, entriesAt + 12));
+    expect(block[orientValue]).toBe(6); // input never mutated
+  });
+
+  it('fails safe when the IFD0 offset points into the header itself', () => {
+    // Upper bound has its own test; an offset < 8 would read the BOM and magic
+    // as an entry count.
+    const block = blockWith([
+      0x49, 0x49, 0x2a, 0x00,
+      0x02, 0x00, 0x00, 0x00, // IFD0 at 2 — inside the header
+      0x01, 0x00, 0x12, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00,
+    ]);
+    expect(normalizeOrientationTag(block)).toBe(block);
+  });
+});
+
+// --- shared header validation ------------------------------------------------
+
+const MARKER_BYTES = [0x45, 0x78, 0x69, 0x66, 0x00, 0x00]; // "Exif\0\0"
+
+/**
+ * All three injectors start by validating the `"Exif\0\0" + TIFF` header, where a
+ * lax check corrupts an image rather than merely losing metadata. A short header
+ * is refused by hasExifMarker first, so isTiffHeader's own bounds guard stays as
+ * defence in depth.
+ */
+describe('a malformed EXIF header is refused by every injector', () => {
+  const cases: Array<[string, Uint8Array]> = [
+    ['shorter than marker plus TIFF header', new Uint8Array(MARKER_BYTES.slice(0, 4))],
+    ['the marker alone, no TIFF at all', new Uint8Array(MARKER_BYTES)],
+    [
+      'marker with a non-TIFF byte order mark',
+      new Uint8Array([...MARKER_BYTES, 0x00, 0x00, 0x2a, 0x00, 8, 0, 0, 0, 1, 0, 0, 0])
+    ],
+    [
+      'marker with a TIFF magic that is not 42',
+      new Uint8Array([...MARKER_BYTES, 0x49, 0x49, 0x2b, 0x00, 8, 0, 0, 0, 1, 0, 0, 0])
+    ]
+  ];
+
+  it.each(cases)('injectExifIntoJpeg refuses: %s', (label, block) => {
+    const jpegBytes = jpeg(SOS);
+    expect(injectExifIntoJpeg(jpegBytes, block), label).toBe(jpegBytes);
+  });
+
+  it.each(cases)('injectExifIntoPng refuses: %s', (label, block) => {
+    const pngBytes = png(IHDR, IDAT, IEND);
+    expect(injectExifIntoPng(pngBytes, block), label).toBe(pngBytes);
+  });
+
+  it.each(cases)('normalizeOrientationTag refuses: %s', (label, block) => {
+    expect(normalizeOrientationTag(block), label).toBe(block);
   });
 });
