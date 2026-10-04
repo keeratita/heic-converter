@@ -1,4 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { HeicConverterError } from '../../src/errors';
+// Real module on purpose: `vi.mock('../../src/wasm')` mocks the barrel, and the
+// pool's fault handling is only meaningful against the actual registry.
+import { markFaulted } from '../../src/wasm/fault';
 import { mockState, resetConvertMocks, type DecodeImpl } from './helpers/convert-mocks';
 
 vi.mock('../../src/render/canvas', async (importOriginal) => {
@@ -453,7 +457,7 @@ describe('convertMany - continueOnError', () => {
     expect(mockState.decoderInstances).toHaveLength(0);
   });
 
-  it.each([['yes', 'string'], [1, 'number'], [{}, 'object']])(
+  it.each<[unknown, string]>([['yes', 'string'], [1, 'number'], [{}, 'object']])(
     'rejects non-boolean continueOnError (%s as %s)',
     async (continueOnError) => {
       const error = await convertMany([new Uint8Array([2])], {
@@ -534,6 +538,67 @@ describe('convertMany - reuseDecoders (pool)', () => {
     expect(mockState.decoderInstances[0].free).toHaveBeenCalledTimes(1);
   });
 
+  it('discards a pooled decoder whose module faulted instead of re-leasing it', async () => {
+    // A trap inside the module leaves emmalloc's arena unusable. An instance in
+    // the fault registry must never be leased again — parking it would hand a
+    // corrupted heap to the next item, which is undefined behaviour, not an error.
+    resetConvertMocks({
+      renderAndEncode: renderFromPixel,
+      decodeImpl: async (data, _onProgress, self) => {
+        if (data[0] === 11) {
+          markFaulted(self as object);
+          throw new WebAssembly.RuntimeError('unreachable');
+        }
+        return { width: 1, height: 1, data: new Uint8ClampedArray([data[0], 0, 0, 255]) };
+      },
+    });
+
+    const results = await convertMany(okInputs([10, 11, 12]), {
+      concurrency: 1,
+      reuseDecoders: true,
+      continueOnError: true,
+    });
+
+    expect(results.map((entry) => entry.ok)).toEqual([true, false, true]);
+    const [faulted, replacement] = mockState.decoderInstances;
+    expect(mockState.decoderInstances).toHaveLength(2);
+    // The faulted instance served items 10 and 11, was freed by release() — and
+    // was never leased a third time.
+    expect(faulted!.decode).toHaveBeenCalledTimes(2);
+    expect(faulted!.free).toHaveBeenCalledTimes(1);
+    // The replacement served item 12, and dispose() frees it.
+    expect(replacement!.decode).toHaveBeenCalledTimes(1);
+    expect(replacement!.free).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps leasing after every pooled instance has faulted (waiters never park)', async () => {
+    // A poisoned release frees the instance, so `leasedCount` must come back
+    // down with it. If it stayed high, once `max` instances had faulted the pool
+    // would be permanently full and the next item would wait for a slot that
+    // nobody could ever hand back.
+    resetConvertMocks({
+      renderAndEncode: renderFromPixel,
+      decodeImpl: async (_data, _onProgress, self) => {
+        markFaulted(self as object);
+        throw new WebAssembly.RuntimeError('unreachable');
+      },
+    });
+
+    const results = await convertMany(okInputs([11, 11, 11, 11, 11, 11]), {
+      concurrency: 2,
+      reuseDecoders: true,
+      continueOnError: true,
+    });
+
+    expect(results).toHaveLength(6);
+    expect(results.every((entry) => entry.ok === false)).toBe(true);
+    expect(mockState.decoderInstances).toHaveLength(6);
+    for (const instance of mockState.decoderInstances) {
+      expect(instance.decode).toHaveBeenCalledTimes(1);
+      expect(instance.free).toHaveBeenCalledTimes(1);
+    }
+  });
+
   it('each pooled item decodes its own payload (leased instances are not cross-used)', async () => {
     await convertMany(okInputs([10, 11, 12, 13]), { concurrency: 2, reuseDecoders: true });
 
@@ -566,7 +631,7 @@ describe('convertMany - reuseDecoders (pool)', () => {
     expect(injected.free).not.toHaveBeenCalled();
   });
 
-  it.each([['true', 'string'], [1, 'number'], [{}, 'object']])(
+  it.each<[unknown, string]>([['true', 'string'], [1, 'number'], [{}, 'object']])(
     'rejects non-boolean reuseDecoders (%s as %s)',
     async (reuseDecoders) => {
       const error = await convertMany(okInputs([10]), {
@@ -628,8 +693,11 @@ describe('convertMany - AbortSignal', () => {
 
     expect(results).toHaveLength(2);
     for (const entry of results) {
-      expect(entry.ok).toBe(false);
-      expect((entry as { error: { code: string } }).error.code).toBe('aborted');
+      if (entry.ok) {
+        throw new Error('expected every item to be aborted');
+      }
+      expect(entry.error).toBeInstanceOf(HeicConverterError);
+      expect((entry.error as HeicConverterError).code).toBe('aborted');
     }
   });
 
@@ -667,8 +735,11 @@ describe('convertMany - AbortSignal', () => {
 
     expect(results).toHaveLength(4);
     for (const entry of results) {
-      expect(entry.ok).toBe(false);
-      expect((entry as { error: { code: string } }).error.code).toBe('aborted');
+      if (entry.ok) {
+        throw new Error('expected every item to be aborted');
+      }
+      expect(entry.error).toBeInstanceOf(HeicConverterError);
+      expect((entry.error as HeicConverterError).code).toBe('aborted');
     }
     // The not-yet-started items were completed without being launched.
     expect(decodes).toBe(1);

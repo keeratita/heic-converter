@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { LibheifDecoder } from '../../src/wasm/wrapper';
+import { isDecoderPoisoned } from '../../src/wasm/fault';
+import { HeicConverterError } from '../../src/errors';
 
 // Use vi.hoisted to properly hoist the mock factory
 const mockState = vi.hoisted(() => ({
@@ -494,7 +496,13 @@ describe('LibheifDecoder (mocked glue)', () => {
       const decoder = new LibheifDecoder();
       await decoder.initialize();
 
-      await expect(decoder.decode(new Uint8Array([1]))).rejects.toThrow('wasm exploded');
+      // SECURITY.md promises a typed error rather than a raw module fault, with
+      // the original kept on `cause`, and a faulted heap must never be reused.
+      const error = await decoder.decode(new Uint8Array([1])).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(HeicConverterError);
+      expect((error as HeicConverterError).code).toBe('decode_failed');
+      expect(((error as HeicConverterError).cause as Error).message).toContain('wasm exploded');
+      expect(isDecoderPoisoned(decoder)).toBe(true);
       expect((fastModule as { _free: ReturnType<typeof vi.fn> })._free).toHaveBeenCalledWith(16);
     });
 
@@ -520,7 +528,7 @@ describe('LibheifDecoder (mocked glue)', () => {
         decode: vi.fn(() => ({ width: 1, height: 1, data: heapView })),
         delete: vi.fn(),
       };
-      (heapModule as { HeicDecoder: unknown }).HeicDecoder = class {
+      (heapModule as unknown as { HeicDecoder: unknown }).HeicDecoder = class {
         constructor() {
           return heapInstance;
         }

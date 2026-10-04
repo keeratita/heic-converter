@@ -1,5 +1,6 @@
 import { vi } from 'vitest';
 import type { DecodedImage } from '../../../src/types';
+import type { renderAndEncode } from '../../../src/render/canvas';
 
 /**
  * Shared mock harness for the convert.* unit tests. Vitest isolates modules
@@ -30,7 +31,13 @@ import type { DecodedImage } from '../../../src/types';
 
 export type DecodeImpl = (
   data: Uint8Array,
-  onProgress?: (percent: number) => void
+  onProgress?: (percent: number) => void,
+  /**
+   * The mock decoder running this decode. A fault marks the *instance*, so a
+   * test that wants to exercise the pool's fault handling needs this handle to
+   * pass to the real `markFaulted` registry before throwing.
+   */
+  self?: MockDecoderInstance
 ) => Promise<DecodedImage>;
 
 export interface MockDecoderInstance {
@@ -79,7 +86,7 @@ export class MockLibheifDecoder {
   });
   decode = vi.fn(async (data: Uint8Array, onProgress?: (percent: number) => void) => {
     if (mockState.decodeImpl) {
-      return mockState.decodeImpl(data, onProgress);
+      return mockState.decodeImpl(data, onProgress, this as unknown as MockDecoderInstance);
     }
     onProgress?.(100);
     return {
@@ -100,7 +107,8 @@ export class MockLibheifDecoder {
  * default for that suite's tests).
  */
 export function resetConvertMocks(overrides?: {
-  renderAndEncode?: (...args: unknown[]) => Promise<Blob>;
+  /** Typed as the real signature so a mock that drifts from it fails here. */
+  renderAndEncode?: (...args: Parameters<typeof renderAndEncode>) => Promise<Blob>;
   decodeImpl?: DecodeImpl;
   decodedImage?: DecodedImage;
 }): void {

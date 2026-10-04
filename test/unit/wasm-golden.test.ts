@@ -10,21 +10,6 @@ const WASM_PATH = path.join(ROOT_DIR, 'dist/heic-decoder.wasm');
 const FIXTURE_DIR = path.join(ROOT_DIR, 'test/fixtures');
 
 const isCI = typeof process !== 'undefined' && !!process.env.CI;
-const FIXTURE_NAMES = [
-  'example.heic',
-  'colors-no-alpha.heic',
-  'colors-with-alpha.heic',
-  'exif-orientation-6.heic',
-  'irot-orientation-6.heic'
-];
-const hasArtifacts =
-  fs.existsSync(WASM_PATH) && FIXTURE_NAMES.every((f) => fs.existsSync(path.join(FIXTURE_DIR, f)));
-
-if (!hasArtifacts && isCI) {
-  console.error(
-    '[wasm-golden] dist/heic-decoder.wasm or test fixtures are missing in CI — this suite will FAIL.'
-  );
-}
 
 /**
  * Output goldens for the committed WASM. Smaller-build work here has repeatedly
@@ -155,7 +140,20 @@ const MUTATION_GOLDENS: Record<string, string> = {
   'exif-orientation-6.heic:flip13@12794': 'OK:f3a28db4364b'
 };
 
-const sha256 = async (bytes: Uint8Array): Promise<string> => {
+// Derived from the golden table: a fixture added there is automatically
+// required on disk (and vice versa, checked below), so the two lists cannot
+// drift the way a hand-maintained copy does.
+const FIXTURE_NAMES = Object.keys(FIXTURE_GOLDENS);
+const hasArtifacts =
+  fs.existsSync(WASM_PATH) && FIXTURE_NAMES.every((f) => fs.existsSync(path.join(FIXTURE_DIR, f)));
+
+if (!hasArtifacts && isCI) {
+  console.error(
+    '[wasm-golden] dist/heic-decoder.wasm or test fixtures are missing in CI — this suite will FAIL.'
+  );
+}
+
+const sha256 = async (bytes: Uint8Array | Uint8ClampedArray): Promise<string> => {
   const { createHash } = await import('crypto');
   return createHash('sha256')
     .update(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.length))
@@ -206,7 +204,40 @@ const buildMutations = (): Array<[string, Uint8Array]> => {
   return inputs;
 };
 
-describe.skipIf(!hasArtifacts && !isCI)('WASM output goldens', () => {
+/**
+ * Guards the golden tables themselves, independent of the artifacts: a bulk
+ * edit here (renumbered labels, a dropped column, one outcome silently
+ * deleted) would leave every decode assertion comparing against nonsense.
+ */
+describe('golden tables are well-formed', () => {
+  it('pins every fixture on disk, and only those', () => {
+    const onDisk = fs.readdirSync(FIXTURE_DIR).filter((f) => f.endsWith('.heic')).sort();
+    expect([...FIXTURE_NAMES].sort()).toEqual(onDisk);
+  });
+
+  it('encodes each mutation outcome as an error code or a hash prefix', () => {
+    const entries = Object.entries(MUTATION_GOLDENS);
+    const malformed = entries.filter(
+      ([, golden]) => !/^ERR:[a-z_]+$/.test(golden) && !/^OK:[0-9a-f]{12}$/.test(golden)
+    );
+    expect(malformed, `malformed goldens: ${JSON.stringify(malformed.slice(0, 3))}`).toEqual([]);
+    const unknown = entries.filter(([label]) => !FIXTURE_NAMES.includes(label.split(':')[0] ?? ''));
+    expect(
+      unknown,
+      `labels for unknown fixtures: ${unknown.map(([label]) => label).join(', ')}`
+    ).toEqual([]);
+    // Both outcomes must be represented, or the table cannot notice a decoder
+    // that decodes everything (or refuses everything).
+    expect(entries.filter(([, g]) => g.startsWith('ERR:')).length).toBeGreaterThan(10);
+    expect(entries.filter(([, g]) => g.startsWith('OK:')).length).toBeGreaterThan(10);
+  });
+});
+
+// 30s per test: each of these instantiates the real module per input (5
+// fixtures, 66 mutations, 41 truncations), and under the parallel suite the
+// default 5s is close enough to the edge to flake — a flaking real-decode
+// suite gets ignored, which defeats its entire purpose.
+describe.skipIf(!hasArtifacts && !isCI)('WASM output goldens', { timeout: 30_000 }, () => {
   it('decodes every fixture to the golden dimensions, orientation and RGBA', async () => {
     for (const [name, golden] of Object.entries(FIXTURE_GOLDENS)) {
       const decoded = await decodeFresh(fs.readFileSync(path.join(FIXTURE_DIR, name)));

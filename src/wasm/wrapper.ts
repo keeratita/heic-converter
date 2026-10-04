@@ -2,6 +2,7 @@ import type { IHeicDecoder, DecodedImage } from '../types';
 import { Messages } from '../messages/core';
 import { clampPercent } from '../progress';
 import { HeicConverterError } from '../errors';
+import { clearFaulted, markFaulted } from './fault';
 
 export interface LibheifDecoderOptions {
   /**
@@ -76,6 +77,22 @@ interface HeicDecoderModule {
 interface ModuleInitOptions extends Record<string, unknown> {
   locateFile?: LibheifDecoderOptions['locateFile'];
   wasmBinary?: ArrayBuffer | ArrayBufferView;
+}
+
+/**
+ * libheif builds some error strings from raw container bytes (fourccs, mime
+ * types, item names), so the detail returned by `decode()` is untrusted input
+ * headed for `error.message` — and from there to log lines and, in the demo,
+ * the page. Strip control characters and clamp before it gets there.
+ */
+// Matching control characters *is* the point: this is the strip step for
+// untrusted decoder text, not a parser that might happen to meet one.
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]+/g;
+
+function sanitizeDecoderDetail(detail: string): string {
+  const cleaned = detail.replace(CONTROL_CHARS, ' ').trim();
+  return cleaned.length > 200 ? `${cleaned.slice(0, 197)}...` : cleaned;
 }
 
 export class LibheifDecoder implements IHeicDecoder {
@@ -181,36 +198,50 @@ export class LibheifDecoder implements IHeicDecoder {
     const instance = this.decoderInstance;
     let result: HeicDecoderResult | string | null;
 
-    // Fast path when the glue exports the pointer API: one HEAPU8.set instead
-    // of embind's per-byte marshalling; otherwise use the std::string path.
-    if (
-      typeof instance.decodeFromPointer === 'function' &&
-      typeof module._malloc === 'function' &&
-      typeof module._free === 'function' &&
-      module.HEAPU8 instanceof Uint8Array &&
-      data.buffer !== module.HEAPU8.buffer
-    ) {
-      const ptr = module._malloc(data.byteLength);
-      if (ptr === 0) {
-        throw new HeicConverterError(
-          'decode_failed',
-          Messages.DecodeInputAllocFailed(data.byteLength)
-        );
+    try {
+      // Fast path when the glue exports the pointer API: one HEAPU8.set instead
+      // of embind's per-byte marshalling; otherwise use the std::string path.
+      if (
+        typeof instance.decodeFromPointer === 'function' &&
+        typeof module._malloc === 'function' &&
+        typeof module._free === 'function' &&
+        module.HEAPU8 instanceof Uint8Array &&
+        data.buffer !== module.HEAPU8.buffer
+      ) {
+        const ptr = module._malloc(data.byteLength);
+        if (ptr === 0) {
+          throw new HeicConverterError(
+            'decode_failed',
+            Messages.DecodeInputAllocFailed(data.byteLength)
+          );
+        }
+        try {
+          module.HEAPU8.set(data, ptr);
+          result = instance.decodeFromPointer(ptr, data.byteLength, wrappedProgress);
+        } finally {
+          module._free(ptr);
+        }
+      } else {
+        result = instance.decode(data, wrappedProgress);
       }
-      try {
-        module.HEAPU8.set(data, ptr);
-        result = instance.decodeFromPointer(ptr, data.byteLength, wrappedProgress);
-      } finally {
-        module._free(ptr);
+    } catch (error) {
+      // A decoder fault (bad heap write, OOM, unreachable) traps inside the
+      // module as a raw WebAssembly.RuntimeError and leaves emmalloc's arena
+      // unusable; the documented contract is a typed error, and the instance
+      // must never be leased to the next caller.
+      if (error instanceof HeicConverterError) {
+        throw error;
       }
-    } else {
-      result = instance.decode(data, wrappedProgress);
+      markFaulted(this);
+      throw new HeicConverterError('decode_failed', Messages.DecodeFaulted(data.byteLength), {
+        cause: error
+      });
     }
 
     if (typeof result === 'string') {
       throw new HeicConverterError(
         'decode_failed',
-        Messages.DecodeFailedWithDetail(result, data.byteLength)
+        Messages.DecodeFailedWithDetail(sanitizeDecoderDetail(result), data.byteLength)
       );
     }
     if (!result) {
@@ -295,6 +326,7 @@ export class LibheifDecoder implements IHeicDecoder {
       this.decoderInstance = null;
     }
     this.module = null;
+    clearFaulted(this); // a fresh module means a fresh heap
     // Release the module so a later initialize() loads a fresh one.
     this.initPromise = null;
   }

@@ -6,10 +6,13 @@
  * user-facing error strings here (grouped by the file that throws them)
  * instead of inlining new ones.
  *
- * This module holds the strings the main-thread (in-process) path throws.
- * `Messages` is one object literal, so an unused entry cannot be tree-shaken
- * out of it — worker-only strings live in `./worker` (`WorkerMessages`) and
- * stay inside the chunk a caller pays for only when they use those APIs.
+ * This module holds the strings the eagerly loaded graph throws — anything
+ * `src/index.ts`, `src/validate.ts` or the render path touches. `Messages` is
+ * one object literal, so an unused entry cannot be tree-shaken out of it:
+ * worker-only strings live in `./worker` (`WorkerMessages`) and stay inside the
+ * chunk a caller pays for only when they use those APIs. The rule is which
+ * *chunk* throws the text, not which API it mentions — `WorkerChunkLoadFailed`
+ * is here because `src/index.ts` throws it before the worker chunk exists.
  */
 export const Messages = {
   // index.ts
@@ -22,15 +25,11 @@ export const Messages = {
   DecoderInitFailed: (message: string): string =>
     `Failed to initialize HEIC decoder: ${message} — verify heic-decoder.wasm is served (dist/heic-decoder.wasm; see the README "Serving and Locating WASM" section / locateFile option) and that your CSP allows 'wasm-unsafe-eval'`,
   WorkerChunkLoadFailed: (message: string): string =>
-    `Failed to load the Web Worker implementation chunk: ${message} — the worker code is a lazily imported chunk (dist/worker-*.mjs); deploy every file in dist/ together, or use convertHeic to convert in the current thread`,
+    `Failed to load the Web Worker implementation chunk (dist/worker-*.mjs): ${message} — deploy every file in dist/ together, or use convertHeic to convert in the current thread`,
   RenderEncodeFailed: (format: string, message: string): string =>
     `Failed to render and encode image as ${format}: ${message}`,
   ConcurrencyInvalid: (value: unknown): string =>
     `Concurrency must be a positive integer, got: ${value}`,
-  MaxConcurrentWorkersInvalid: (value: unknown): string =>
-    `maxConcurrentWorkers must be a positive integer, got: ${value}`,
-  TimeoutInvalid: (value: unknown): string =>
-    `timeoutMs must be a finite number >= 0 (0 disables the timeout), got: ${value}`,
   InputsMustBeArray: 'Inputs must be an array of HEIC images',
   OutputShapeInvalid: (value: unknown): string =>
     `output must be one of 'blob', 'dataUrl', 'arrayBuffer', got: ${value}`,
@@ -103,6 +102,8 @@ export const Messages = {
     `HEIC decoding failed (no result returned; input: ${bytes} bytes — is the file truncated or empty?)`,
   DecodeFailedWithDetail: (detail: string, bytes: number): string =>
     `HEIC decoding failed: ${detail} (input: ${bytes} bytes)`,
+  DecodeFaulted: (bytes: number): string =>
+    `Decoder faulted on a ${bytes}-byte image (out of memory, or a corrupted WebAssembly instance); retry — a faulted pooled decoder is discarded, not reused`,
   ProgressCallbackThrew: (message: string): string =>
     `onProgress callback threw during decode: ${message}`,
 } as const;

@@ -3,6 +3,16 @@ import { Messages } from './messages/core';
 import type { ConvertItemResult } from './types';
 
 /**
+ * How many runners a batch spawns — and, by necessity, the bound of the
+ * `convertMany({ reuseDecoders: true })` decoder pool. Both sides must derive
+ * from this one expression: if the pool were ever smaller than the runner count,
+ * a runner would park forever waiting for a lease another runner holds.
+ */
+export function runnerCountFor(concurrency: number, total: number): number {
+  return Math.min(concurrency, total);
+}
+
+/**
  * Shared bounded-concurrency batch runner backing both `convertMany` and
  * `convertManyInWorker`. Semantics (documented on the public APIs):
  *
@@ -109,7 +119,7 @@ export async function runBoundedBatch<T>(
     }
   };
 
-  const runnerCount = Math.min(concurrency, inputs.length);
+  const runnerCount = runnerCountFor(concurrency, inputs.length);
   const runners = Array.from({ length: runnerCount }, () => runItem());
 
   try {
