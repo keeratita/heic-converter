@@ -153,9 +153,9 @@ Fetching a `.gz`/`.br` variant URL directly will not work — see the compressio
 
 #### Reducing the download size
 
-The WASM binary (~1.3 MB) dominates the payload. Everything else is small and lazy: the Emscripten glue (~67 KB) is a separate chunk fetched only on the first decode, the Web Worker implementation (~5 KB) and the opt-in EXIF injectors (~2.7 KB) are separate chunks fetched only when you first call `convertHeicInWorker`/`convertManyInWorker` or pass `preserveExif: true`, and the code every consumer pays for up front is ~19.5 KB (~7.2 KB gzipped).
+The WASM binary (~794 KB, ~288 KB gzipped) dominates the payload. Everything else is small and lazy: the Emscripten glue (~34 KB) is a separate chunk fetched only on the first decode, the Web Worker implementation (~5 KB) and the opt-in EXIF injectors (~2.7 KB) are separate chunks fetched only when you first call `convertHeicInWorker`/`convertManyInWorker` or pass `preserveExif: true`, and the code every consumer pays for up front is ~19.9 KB (~7.3 KB gzipped).
 
-`npm run build` also emits pre-compressed copies — `dist/heic-decoder.wasm.gz` (~421 KB) and `dist/heic-decoder.wasm.br` (~312 KB). Most static hosts and CDNs (GitHub Pages, Netlify, Vercel, Cloudflare) already compress `application/wasm` automatically when the browser sends `Accept-Encoding`; verify with:
+`npm run build` also emits pre-compressed copies — `dist/heic-decoder.wasm.gz` (~288 KB) and `dist/heic-decoder.wasm.br` (~230 KB) — and verifies each one decompresses back to the binary, so a corrupt sidecar cannot reach a CDN. Most static hosts and CDNs (GitHub Pages, Netlify, Vercel, Cloudflare) already compress `application/wasm` automatically when the browser sends `Accept-Encoding`; verify with:
 
 ```bash
 curl -sI -H 'Accept-Encoding: br' https://your-site/heic-decoder.wasm | grep -i content-encoding
