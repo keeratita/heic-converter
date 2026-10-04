@@ -127,7 +127,14 @@ jobs:
       # Registry hardcoded: publishConfig.registry is honoured by npm publish,
       # so a commit could otherwise repoint the release (and the gate below)
       # at a host that will confirm anything.
-      run: npm publish --access public --registry https://registry.npmjs.org
+      #
+      # --ignore-scripts: this job deliberately has no node_modules, so the
+      # package's own `prepare` (husky) would abort the publish with exit 127.
+      # Nothing to build here — dist/ is the artifact the verify job tested.
+      # If a lifecycle script that *produces* package content (prepack) is ever
+      # added, it must move to the verify job and be covered by the artifact
+      # step there, not silently skipped by this flag.
+      run: npm publish --access public --ignore-scripts --registry https://registry.npmjs.org
 
     # Trusted publishing loses the attestation silently if the OIDC token is
     # unavailable, so read the registry's own record back and fail loudly.
