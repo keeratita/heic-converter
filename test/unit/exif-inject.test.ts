@@ -4,20 +4,11 @@ import {
   injectExifIntoPng,
   normalizeOrientationTag,
 } from '../../src/render/exif';
+import { EXIF_BLOCK, TIFF } from './helpers/exif-fixtures';
 
 // --- fixtures -------------------------------------------------------------
-
-/** Minimal little-endian TIFF with an orientation (0x0112) = 6 entry. */
-const TIFF = new Uint8Array([
-  0x49, 0x49, 0x2a, 0x00, // II + magic 42
-  0x08, 0x00, 0x00, 0x00, // IFD0 at 8
-  0x01, 0x00, // 1 entry
-  0x12, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, // next IFD: none
-]);
-
-/** JPEG APP1 payload form: "Exif\0\0" + TIFF. */
-const EXIF_BLOCK = new Uint8Array([0x45, 0x78, 0x69, 0x66, 0x00, 0x00, ...TIFF]);
+// The TIFF/EXIF block is shared with the render-stage tests (helpers/exif-fixtures);
+// the JPEG/PNG scaffolding below is specific to the injectors.
 
 const concat = (...parts: Uint8Array[]): Uint8Array => {
   const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));

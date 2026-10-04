@@ -6,30 +6,8 @@ vi.mock('../../src/render/exif', () => {
   throw new Error('Failed to fetch dynamically imported module .../dist/exif-XXXX.js');
 });
 
-import { renderAndEncode } from '../../src/render/canvas';
-import type { DecodedImage } from '../../src/types';
-
-const TIFF = new Uint8Array([
-  0x49, 0x49, 0x2a, 0x00, 0x08, 0x00, 0x00, 0x00, 0x01, 0x00, 0x12, 0x01,
-  0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-]);
-const EXIF_BLOCK = new Uint8Array([0x45, 0x78, 0x69, 0x66, 0x00, 0x00, ...TIFF]);
-
-// Structurally valid enough for the injector to accept, matching canvas.exif.test.ts.
-const JFIF_PAYLOAD = [0x4a, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01];
-const CANVAS_JPEG = new Uint8Array([
-  0xff, 0xd8,
-  0xff, 0xe0, (JFIF_PAYLOAD.length + 2) >> 8, (JFIF_PAYLOAD.length + 2) & 0xff, ...JFIF_PAYLOAD,
-  0xff, 0xda, 0x00, 0x01, 0x00,
-  0xff, 0xd9,
-]);
-
-const decodedImage = (): DecodedImage => ({
-  width: 2,
-  height: 2,
-  data: new Uint8ClampedArray(2 * 2 * 4).fill(255),
-  exif: EXIF_BLOCK,
-});
+import { renderAndEncode, __resetExifChunkWarning } from '../../src/render/canvas';
+import { CANVAS_JPEG, decodedImageWithExif } from './helpers/exif-fixtures';
 
 /** A failed lazy `./exif` import degrades to "no metadata", like the other fail-safe paths. */
 describe('renderAndEncode - preserveExif when the EXIF chunk cannot be loaded', () => {
@@ -74,11 +52,23 @@ describe('renderAndEncode - preserveExif when the EXIF chunk cannot be loaded', 
   });
 
   it('resolves with the encoder bytes unchanged instead of rejecting', async () => {
-    const blob = await renderAndEncode(decodedImage(), 'jpeg', 0.9, undefined, false, undefined, true);
+    const blob = await renderAndEncode(decodedImageWithExif(), 'jpeg', 0.9, undefined, false, undefined, true);
     expect(blob).toBeInstanceOf(Blob);
     expect(blob.type).toBe('image/jpeg');
     // Unchanged: the APP1 EXIF segment was never spliced in.
     const bytes = new Uint8Array(await blob.arrayBuffer());
     expect(bytes).toEqual(CANVAS_JPEG);
+  });
+
+  it('warns once that metadata was dropped, so a bad deploy is not silent success', async () => {
+    // The equivalent worker failure surfaces as `worker_load_failed`; without
+    // this, "no EXIF because the chunk 404s" looks like "no EXIF in the file".
+    __resetExifChunkWarning();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await renderAndEncode(decodedImageWithExif(), 'jpeg', 0.9, undefined, false, undefined, true);
+    await renderAndEncode(decodedImageWithExif(), 'jpeg', 0.9, undefined, false, undefined, true);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toContain('dist/exif-');
+    warn.mockRestore();
   });
 });

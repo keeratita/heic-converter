@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderAndEncode } from '../../src/render/canvas';
 import type { DecodedImage } from '../../src/types';
+import { CANVAS_JPEG, EXIF_BLOCK, TIFF } from './helpers/exif-fixtures';
 
 interface MockCanvasObject {
   width: number;
@@ -8,22 +9,6 @@ interface MockCanvasObject {
   getContext: ReturnType<typeof vi.fn>;
   toBlob: ReturnType<typeof vi.fn>;
 }
-
-const TIFF = new Uint8Array([
-  0x49, 0x49, 0x2a, 0x00, 0x08, 0x00, 0x00, 0x00, 0x01, 0x00, 0x12, 0x01,
-  0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-]);
-const EXIF_BLOCK = new Uint8Array([0x45, 0x78, 0x69, 0x66, 0x00, 0x00, ...TIFF]);
-
-// A tiny but structurally valid JPEG (SOI, APP0/JFIF, SOS, EOI) that the
-// injector will accept, standing in for what the canvas encoder "produced".
-const JFIF_PAYLOAD = [0x4a, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01];
-const CANVAS_JPEG = new Uint8Array([
-  0xff, 0xd8,
-  0xff, 0xe0, (JFIF_PAYLOAD.length + 2) >> 8, (JFIF_PAYLOAD.length + 2) & 0xff, ...JFIF_PAYLOAD,
-  0xff, 0xda, 0x00, 0x01, 0x00,
-  0xff, 0xd9,
-]);
 
 const PNG_CRC = (bytes: Uint8Array): number => {
   let crc = 0xffffffff;
