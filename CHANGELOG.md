@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _(nothing yet)_
 
+## [0.5.1] - 2026-10-04
+
+### Changed
+
+- **Smaller initial bundle, no API change**: the JavaScript a consumer loads before converting anything is now ~19.5 KB minified (~7.2 KB gzipped), down from 0.5.0's single ~26 KB entry (~25% smaller raw, ~19% smaller gzipped). Two modules that every consumer used to pay for regardless of how they use the library are now emitted as separate chunks fetched only when their path is first entered: the Web Worker implementation — worker transport, per-URL semaphore, and worker diagnostics (~4.9 KB) — loads on the first `convertHeicInWorker`/`convertManyInWorker` call, and the JPEG/PNG EXIF injectors (~2.7 KB) load only when `preserveExif: true` is passed. The worker entry points keep their names, signatures, overloads, and Promise-reject error semantics; the first call resolves one extra chunk before running. `import()` is used for both, so bundlers (Vite, webpack, Rollup) rewrite the chunk URLs automatically and no new configuration is required. The WASM binary is byte-identical to 0.5.0 (the pinned `build-scripts/wasm-artifacts.json` hashes are unchanged) and remains the dominant ~1.3 MB of the payload.
+- **Error strings tree-shake per consumer**: the centralized message dictionary is split into `src/messages/core.ts` (`Messages`, main-thread) and `src/messages/worker.ts` (`WorkerMessages`). An object literal cannot be tree-shaken per property, so keeping worker-only diagnostics in a module the worker alone imports is what keeps their text inside the lazy worker chunk instead of the eager bundle. Message wording is unchanged.
+- **Terser minification**: the tsup build now minifies with Terser (`minify: 'terser'`, `compress.passes: 3`) instead of esbuild's minifier, trimming a further ~6% off the gzipped JS — including the lazily-loaded Emscripten glue chunk, from ~70 KB to ~67 KB raw (~23.9 KB → ~22.4 KB gzipped). Terser is a dev dependency only; the package still has zero runtime dependencies.
+
+### Added
+
+- **Bundle-boundary test** (`test/unit/bundle.test.ts`): asserts the Emscripten glue, the Web Worker implementation, and the EXIF injectors remain behind dynamic `import()` — each deferred chunk must still carry its own code, so silently hoisting one back into the eagerly-loaded shared chunk fails — plus a 22 KB budget on the eagerly loaded JS. The suite skips when `dist/` is absent, so a bare `npm test` on a fresh checkout is unaffected; CI builds before testing, so the guard runs there.
+
 ## [0.5.0] - 2026-10-04
 
 ### Added
