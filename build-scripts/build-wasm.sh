@@ -81,8 +81,17 @@ else
     -DENABLE_SHERLOCK265=OFF \
     -DENABLE_INTERNAL_DEVELOPMENT_TOOLS=OFF \
     -DWITH_FUZZERS=OFF \
-    -DCMAKE_C_FLAGS=\"-O3\" \
-    -DCMAKE_CXX_FLAGS=\"-O3\"
+    -DCMAKE_C_FLAGS=\"-Oz\" \
+    -DCMAKE_CXX_FLAGS=\"-Oz\"
+  # Both libraries compile at -Oz while the emcc LINK stays at -O3. The split is
+  # deliberate and measured: emcc's own link-level -Oz/-Os/-O2/-flto build a smaller
+  # module whose imports no longer match the generated glue (it dies at instantiate
+  # with 'function import requires a callable'), but the optimizer level of the
+  # *archives* never touches the import/export contract, so the glue is emitted
+  # byte-identical and the module simply carries less code. libde265 1.1.3 +
+  # libheif 1.23.5 at -Oz: 1,294,646 -> 829,227 B raw, 413,850 -> 300,609 B gz,
+  # with decoded RGBA, dimensions, orientation tags and malformed-input outcomes
+  # byte-identical to -O3 (guarded by test/unit/wasm-golden.test.ts).
   emmake make -j\$(nproc) de265
   cd ..
   touch build/.built-v\${LIBDE265_VERSION}-\${SCRIPT_HASH}
@@ -119,15 +128,54 @@ else
     -DLIBDE265_INCLUDE_DIR=/src/build-wasm/src/libde265 \\
     -DLIBDE265_LIBRARY=/src/build-wasm/src/libde265/build/libde265/libde265.a \\
     -DWITH_X265=OFF \\
-    -DWITH_AOM=OFF \\
     -DWITH_DAV1D=OFF \\
     -DWITH_SvtEnc=OFF \\
     -DWITH_RAV1E=OFF \\
-    -DWITH_JPEG=OFF \\
-    -DWITH_OPENJPEG=OFF \\
+    -DWITH_AOM_DECODER=OFF \\
+    -DWITH_AOM_ENCODER=OFF \\
+    -DWITH_X264=OFF \\
+    -DWITH_OpenH264_DECODER=OFF \\
+    -DWITH_OpenH264_ENCODER=OFF \\
+    -DWITH_JPEG_DECODER=OFF \\
+    -DWITH_JPEG_ENCODER=OFF \\
+    -DWITH_OpenJPEG_DECODER=OFF \\
+    -DWITH_OpenJPEG_ENCODER=OFF \\
     -DWITH_EXAMPLES=OFF \\
-    -DCMAKE_CXX_FLAGS=\"-O3\"
+    -DCMAKE_C_FLAGS=\"-Oz\" \\
+    -DCMAKE_CXX_FLAGS=\"-Oz -DLIBHEIF_BOX_EMSCRIPTEN_H\"
+  # The codec knobs above use the option() names libheif 1.23.5 actually declares.
+  # The previous -DWITH_AOM, -DWITH_JPEG and -DWITH_OPENJPEG spelled options that do
+  # not exist: CMake accepted them as UNINITIALIZED cache entries and ignored them,
+  # so the real knobs (WITH_AOM_DECODER, WITH_AOM_ENCODER, WITH_X264,
+  # WITH_OpenH264_DECODER, WITH_OpenH264_ENCODER) kept their ON defaults and only
+  # the failing find_package inside the emsdk image kept those codecs out of the
+  # binary. Spelling them correctly makes the exclusion structural rather than
+  # incidental, so an emsdk image that ships these libraries can no longer silently
+  # bloat the archive. WITH_LIBSHARPYUV is deliberately left at its ON default: it
+  # is inert because its find_package does not resolve, and turning it off has never
+  # been validated against the pixel goldens.
+  # -Oz compiling the library, while the emcc link below stays at -O3: the archive
+  # optimization level never touches the import/export contract, so the glue is
+  # emitted byte-identical and the module simply carries less code.
+  # -DLIBHEIF_BOX_EMSCRIPTEN_H compiles out libheif's own EMSCRIPTEN_BINDINGS block
+  # (libheif/api/libheif/heif_emscripten.h, included by heif.cc). The C++ wrapper
+  # exposes its own embind class, so that second binding table is dead weight whose
+  # registration also helped make --bind look mandatory: worth 5,451 B gz on top of
+  # -Oz.
   emmake make -j\$(nproc)
+  # Guard: no third-party codec may be linked into the module. libheif probes for
+  # aom, jpeg, openjpeg, x264, x265, dav1d, svt-av1, rav1e and libsharpyuv with
+  # find_package and compiles their plugin wrappers in when it finds them; the
+  # options above request OFF, but a dependency that resolves anyway would still
+  # reach the binary, so fail here instead of shipping a quietly fatter WASM.
+  # libde265 is the one intended codec and is passed explicitly, so it is excluded.
+  if grep -iqE '(AOM|JPEG|OpenJPEG|X264|X265|DAV1D|SvtEnc|RAV1E|H264|SHARPYUV|WEBP)[A-Z_]*_FOUND:BOOL=(TRUE|1|ON|YES)' CMakeCache.txt \
+     || grep -iqE '(AOM|JPEG|OpenJPEG|X264|X265|DAV1D|SvtEnc|RAV1E|H264|SHARPYUV)[A-Z_]*(_LIBRARY|_DIR):(FILEPATH|PATH)=/[^/]' CMakeCache.txt; then
+    echo 'Error: libheif resolved a third-party codec (inspect build/CMakeCache.txt).' >&2
+    echo 'The decoder must be built against libde265 only; check whether the emsdk' >&2
+    echo 'image started shipping codec dev packages.' >&2
+    exit 1
+  fi
   cd ..
   touch build/.built-v\${LIBHEIF_VERSION}-\${SCRIPT_HASH}
 fi
@@ -138,24 +186,34 @@ echo 'Compiling WebAssembly wrapper...'
 
 # Compile to WASM with strict CSP (-s DYNAMIC_EXECUTION=0).
 # Flags that must be preserved (see AGENTS.md): DYNAMIC_EXECUTION=0,
-# ALLOW_MEMORY_GROWTH=1, EXPORT_ES6=1, MODULARIZE=1, ENVIRONMENT, --bind, -O3.
+# ALLOW_MEMORY_GROWTH=1, EXPORT_ES6=1, MODULARIZE=1, ENVIRONMENT, --bind,
+# link-level -O3, MALLOC=emmalloc, FILESYSTEM=0, and the post-link wasm-opt pass.
 #
-# Keep the link step at -O3. It is the only optimization level that produces a
-# module which instantiates on the pinned emsdk 3.1.56: measured on 0.5.1, -O2
-# fails the real-decode tests outright, and -Os, -Oz and -flto each build a
-# *smaller* .wasm that then dies with 'function import requires a callable',
-# because their extra link-time passes desynchronize the minified import names
-# from the JS glue under --bind + MODULARIZE + EXPORT_ES6. -s FILESYSTEM=0 is
-# unusable for the same reason: the module is byte-identical without it but
-# genuinely imports the MEMFS syscalls, so its 40% smaller glue lacks them.
+# Keep the LINK step at -O3. It is the only link-time optimization level that
+# produces a module which instantiates on the pinned emsdk 3.1.56: measured on
+# 0.5.1, -O2 fails the real-decode tests outright, and -Os, -Oz and -flto each
+# build a *smaller* .wasm that then dies with 'function import requires a
+# callable', because their extra link-time passes desynchronize the minified
+# import names from the JS glue under --bind + MODULARIZE + EXPORT_ES6. The
+# libraries themselves do compile at -Oz (cmake blocks above): the optimization
+# level of an archive cannot touch the import/export contract, so it is safe,
+# and it is where the large win lives.
 #
-# -s MALLOC=emmalloc IS enabled (0.5.1): it swaps Emscripten's default dlmalloc
-# for the smaller emmalloc and is runtime-clean under the real-decode integration
-# tests; -s ALLOW_MEMORY_GROWTH=1 in the link covers the decode allocations.
-# Combined with the post-link wasm-opt pass further below it saves 13.3 KB raw / 7.5 KB gz / 5.8 KB
-# brotli (1.8% of the download). libheif's own size knobs are already at their
-# optimal defaults, so this is close to the remaining margin -- re-measure
-# everything against a newer emsdk before chasing more.
+# -s FILESYSTEM=0 is enabled (0.5.1). The module still imports the syscall
+# functions, but Emscripten links stubs in place of the MEMFS implementation, so
+# the glue drops from 68,600 to 33,902 B minified (22,413 to 11,874 B gz) while
+# the module stays byte-identical. It is safe because decoding is memory-only:
+# main.cpp feeds bytes via heif_context_read_from_memory_without_copy and returns
+# RGBA through embind, and no reachable libheif path opens a file (the lone fopen
+# in plugins/decoder_libde265.cc sits inside #if 0). An earlier note here called
+# this flag unusable, but that was inferred from builds that also used link-level
+# -Oz/-flto, which were the actual breakage. If a future libheif ever genuinely
+# needs the filesystem it will fail loudly as an abort on the first decode.
+#
+# -s MALLOC=emmalloc (0.5.1) swaps Emscripten's default dlmalloc for the smaller
+# emmalloc and is runtime-clean under the real-decode tests;
+# -s ALLOW_MEMORY_GROWTH=1 in the link covers the decode allocations. With the
+# post-link wasm-opt pass below it is worth 13.3 KB raw / 7.5 KB gz.
 # -fexceptions/-fcxx-exceptions: let main.cpp try/catch a throwing JS progress
 #   callback so it can never unwind through libheif or abort the module.
 # EXPORTED_FUNCTIONS/EXPORTED_RUNTIME_METHODS: enable the decodeFromPointer
@@ -176,6 +234,7 @@ emcc ${WRAPPER_SRC} \\
     -s EXPORTED_FUNCTIONS=_malloc,_free \\
     -s EXPORTED_RUNTIME_METHODS=HEAPU8 \\
     -s MALLOC=emmalloc \\
+    -s FILESYSTEM=0 \\
     -fexceptions -fcxx-exceptions \\
     -O3 --bind
 
