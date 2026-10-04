@@ -8,14 +8,79 @@ on:
     tags:
       - 'v*'
 
-permissions:
-  contents: read
-  id-token: write # Required for npm trusted publishing (OIDC)
-
 jobs:
-  publish:
+  # Everything that needs `npm ci` runs WITHOUT the OIDC token: npm ci executes
+  # the install scripts of dev dependencies (esbuild, and fsevents on macOS),
+  # and ACTIONS_ID_TOKEN_REQUEST_TOKEN is exported to every step of a job that
+  # holds id-token: write. A compromised dev dependency must not be able to
+  # mint an npm token while it runs.
+  verify:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false # no job here pushes; don't leave a git credential behind
+
+    - name: Setup Node.js
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      with:
+        node-version: '22'
+        cache: 'npm'
+
+    - name: Install Dependencies
+      run: npm ci
+
+    # Mirrors ci.yml: a release must not be able to publish bytes that CI would
+    # have rejected (the husky hooks are not installed on a tag-push runner).
+    - name: Lint
+      run: npm run lint
+
+    - name: Verify Install-Script Allowlist
+      run: npm run check:scripts
+
+    - name: Verify WASM Artifacts (pinned hashes + CSP scan)
+      run: npm run verify:wasm
+
+    - name: Typecheck Sources and Tests
+      run: npm run typecheck
+
+    - name: Build Library
+      run: npm run build
+
+    - name: Verify Build Artifacts Exist
+      run: |
+        test -f dist/heic-decoder.wasm
+        test -f dist/heic-decoder.wasm.gz
+        test -f dist/heic-decoder.wasm.br
+        test -f dist/index.mjs
+        test -f dist/index.js
+
+    # Coverage thresholds (vitest.config.ts) are enforced here, so the bytes
+    # that ship are the bytes the coverage gate accepted — same as CI.
+    - name: Run Unit Tests (coverage thresholds enforced)
+      run: npm run test:coverage
+
+    - name: Upload dist for publishing
+      # The publish job never installs dependencies, so it publishes exactly
+      # these verified bytes rather than a second build.
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: dist
+        path: dist
+        if-no-files-found: error
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write # Required for npm trusted publishing (OIDC)
     # Configure required reviewers / branch protection for this environment in
     # the repo's Settings → Environments (it is auto-created on first run).
     environment: npm-publish
@@ -25,21 +90,26 @@ jobs:
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         persist-credentials: false # this job publishes to npm, not to git
+        # Full history: the ancestry check below needs the tag's ancestors, and
+        # the default depth-1 clone cannot produce a merge base.
+        fetch-depth: 0
 
     - name: Setup Node.js
       uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
       with:
         node-version: '24' # npm >= 11.5.1 is required for trusted publishing
         registry-url: 'https://registry.npmjs.org'
-        cache: 'npm'
 
-    - name: Install Dependencies
-      run: npm ci
+    - name: Download verified dist
+      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      with:
+        name: dist
+        path: dist
 
-    - name: Verify Install-Script Allowlist
-      run: npm run check:scripts
-
-    - name: Verify tag matches package version
+    - name: Verify tag matches package version and is on main
+      # Without the ancestry check, a tag pushed on any side branch publishes
+      # arbitrary content to npm — complete with a provenance attestation that
+      # names this repository, which is worse than no attestation at all.
       run: |
         TAG="${GITHUB_REF_NAME#v}"
         PKG="$(node -p "require('./package.json').version")"
@@ -47,21 +117,17 @@ jobs:
           echo "::error::Tag v$TAG does not match package.json version $PKG"
           exit 1
         fi
-
-    - name: Verify WASM Artifacts (pinned hashes + CSP scan)
-      run: node build-scripts/verify-wasm-artifacts.mjs
-
-    - name: Build Library
-      run: npm run build
-
-    - name: Verify Build Artifacts Exist
-      run: test -f dist/heic-decoder.wasm && test -f dist/heic-decoder.wasm.gz && test -f dist/heic-decoder.wasm.br
-
-    - name: Run Unit Tests
-      run: npm test
+        git fetch --no-tags --quiet origin main
+        if ! git merge-base --is-ancestor "$GITHUB_SHA" FETCH_HEAD; then
+          echo "::error::Tag $GITHUB_REF_NAME is not an ancestor of origin/main"
+          exit 1
+        fi
 
     - name: Publish to npm (OIDC trusted publishing)
-      run: npm publish --access public
+      # Registry hardcoded: publishConfig.registry is honoured by npm publish,
+      # so a commit could otherwise repoint the release (and the gate below)
+      # at a host that will confirm anything.
+      run: npm publish --access public --registry https://registry.npmjs.org
 
     # Trusted publishing loses the attestation silently if the OIDC token is
     # unavailable, so read the registry's own record back and fail loudly.

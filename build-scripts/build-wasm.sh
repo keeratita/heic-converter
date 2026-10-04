@@ -216,6 +216,10 @@ cp /src/build-wasm/wrapper/heic-decoder.wasm /src/src/wasm/public/
 cp /src/build-wasm/wrapper/heic-decoder.js /src/src/wasm/wrapper/
 echo 'Build complete!'
 " 2>&1 | tee "$BUILD_LOG"
+# `set -e` alone cannot see a failed `docker run` here: the pipeline's status is
+# tee's. Read the container's own status instead of enabling pipefail, so the
+# diagnostic can name the exit code rather than just dying.
+container_status=${PIPESTATUS[0]}
 
 # The whole container script is a single bash -c string, so one stray double
 # quote in a comment silently truncates it and docker still exits 0 with nothing
@@ -225,5 +229,10 @@ if ! grep -q 'Build complete!' "$BUILD_LOG"; then
   echo "Error: the container script never reached its last line (see output above)." >&2
   echo "Check for unescaped double quotes inside the bash -c string." >&2
   exit 1
+fi
+if [ "$container_status" -ne 0 ]; then
+  rm -f "$BUILD_LOG"
+  echo "Error: the build container exited with status $container_status." >&2
+  exit "$container_status"
 fi
 rm -f "$BUILD_LOG"

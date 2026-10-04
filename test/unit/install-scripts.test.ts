@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -23,7 +23,7 @@ packageDir('hooked-postinstall', { postinstall: 'node install.js' });
 packageDir('hooked-preinstall', { preinstall: 'sh pre.sh' });
 packageDir('hooked-install', { install: 'echo hi' });
 packageDir('@scope/hooked', { postinstall: 'node -e 0' });
-packageDir('gyp-native', {}, { }); // binding.gyp below — implicit node-gyp rebuild
+packageDir('gyp-native', {}); // binding.gyp below — implicit node-gyp rebuild
 writeFileSync(path.join(nodeModules, 'gyp-native', 'binding.gyp'), '{}');
 packageDir('gyp-flagged', {}, { gypfile: true });
 packageDir('clean', { build: 'tsc', prepare: 'husky', test: 'vitest' }); // hooks that do NOT run on install
@@ -74,6 +74,77 @@ describe('collectInstallScripts', () => {
     expect(collectInstallScripts(path.join(root, 'nope'))).toEqual([]);
     rmSync(bare, { recursive: true, force: true });
   });
+
+  it('does not follow symlinks, so a self-referential link cannot hang or blow the stack', () => {
+    // `npm link`, a `file:` dependency, or a stray link back into the tree made
+    // the walker recurse into itself until the CI step died with a stack
+    // overflow — a tooling crash instead of an allowlist verdict. Such packages
+    // are caught by the lockfile's `non-registry-dep` rule instead.
+    const tree = mkdtempSync(path.join(tmpdir(), 'install-scripts-links-'));
+    packageDir('hooked-postinstall', { postinstall: 'node install.js' }, {}, tree);
+    packageDir('child', { install: 'sh x.sh' }, {}, tree);
+    const nm = path.join(tree, 'node_modules');
+    symlinkSync(path.join(nm, 'hooked-postinstall'), path.join(nm, 'alias-of-hooked'), 'dir');
+    mkdirSync(path.join(nm, 'child', 'node_modules'), { recursive: true });
+    symlinkSync(nm, path.join(nm, 'child', 'node_modules', 'loop'), 'dir');
+
+    expect(() => collectInstallScripts(nm)).not.toThrow();
+    const found = collectInstallScripts(nm).map((p) => `${p.name}@${p.version}`);
+    expect(found).toEqual(['child@1.2.3', 'hooked-postinstall@1.2.3']);
+    rmSync(tree, { recursive: true, force: true });
+  });
+});
+
+describe('collectFromLockfile', () => {
+  const lock = {
+    packages: {
+      '': { name: 'self', version: '0.5.0' },
+      'node_modules/esbuild': { version: '0.27.2', hasInstallScript: true, resolved: 'https://registry.npmjs.org/esbuild/-/esbuild-0.27.2.tgz' },
+      'node_modules/fsevents': { version: '2.3.3', hasInstallScript: true, os: ['darwin'], resolved: 'https://registry.npmjs.org/fsevents/-/fsevents-2.3.3.tgz' },
+      'node_modules/@scope/native': { version: '1.0.0', hasInstallScript: true, resolved: 'https://registry.npmjs.org/@scope/native/-/native-1.0.0.tgz' },
+      'node_modules/@scope/native/node_modules/dup': { version: '0.1.0', hasInstallScript: true, resolved: 'https://registry.npmjs.org/dup/-/dup-0.1.0.tgz' },
+      'node_modules/clean-dep': { version: '3.0.0', resolved: 'https://registry.npmjs.org/clean-dep/-/clean-dep-3.0.0.tgz' },
+      // git / file / link dependencies run `prepare` on install and have no
+      // published manifest, so hasInstallScript never flags them.
+      'node_modules/from-git': { version: '1.0.0', resolved: 'git+ssh://git@github.com/evil/helper.git#abc' },
+      'node_modules/from-github-shorthand': { version: '1.0.0', resolved: 'github:evil/helper' },
+      'node_modules/from-local': { version: '1.0.0', resolved: 'file:../helper' },
+      'node_modules/linked': { version: '1.0.0', link: true },
+      'node_modules/from-mirror': { version: '1.0.0', resolved: 'https://mirror.attacker.invalid/pkg.tgz' }
+    }
+  };
+
+  it('uses npm hasInstallScript plus non-registry provenance, keyed by the bare package name', () => {
+    expect(collectFromLockfile(lock).map((p) => `${p.name}@${p.version}`).sort()).toEqual(
+      [
+        '@scope/native@1.0.0',
+        'dup@0.1.0',
+        'esbuild@0.27.2',
+        'from-git@1.0.0',
+        'from-github-shorthand@1.0.0',
+        'from-local@1.0.0',
+        'from-mirror@1.0.0',
+        'fsevents@2.3.3',
+        'linked@1.0.0'
+      ].sort()
+    );
+  });
+
+  it('ignores the root project entry and clean registry dependencies', () => {
+    const names = collectFromLockfile(lock).map((p) => p.name);
+    expect(names).not.toContain('self');
+    expect(names).not.toContain('clean-dep');
+  });
+
+  it('labels why a non-registry dependency was flagged', () => {
+    const found = collectFromLockfile(lock).find((p) => p.name === 'from-git');
+    expect(found?.hooks).toEqual(['non-registry-dep']);
+  });
+
+  it('returns nothing for a lockfile with no packages map', () => {
+    expect(collectFromLockfile({})).toEqual([]);
+    expect(collectFromLockfile(undefined)).toEqual([]);
+  });
 });
 
 describe('compare', () => {
@@ -82,7 +153,7 @@ describe('compare', () => {
     { name: 'newcomer', version: '9.9.9', hooks: ['install'] }
   ];
 
-  it('accepts exactly the allowlisted set', () => {
+  it('accepts exactly the allowlisted set, at the reviewed versions', () => {
     expect(compare(found, { esbuild: '0.27.2', newcomer: '9.9.9' })).toEqual({ problems: [], stale: [] });
   });
 
@@ -91,6 +162,22 @@ describe('compare', () => {
     expect(problems).toHaveLength(1);
     expect(problems[0]).toContain('newcomer@9.9.9');
     expect(problems[0]).toContain('not allowlisted');
+  });
+
+  it('flags an allowlisted package whose version moved, because that script was never reviewed', () => {
+    // Name-only matching would let a compromised esbuild release run anything.
+    const { problems } = compare([{ name: 'esbuild', version: '9.9.9-evil', hooks: ['postinstall'] }], { esbuild: '0.27.2' });
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain('esbuild@9.9.9-evil');
+    expect(problems[0]).toContain('allowlisted at 0.27.2');
+  });
+
+  it('does not let an inherited Object.prototype property satisfy the allowlist', () => {
+    for (const name of ['toString', 'constructor', 'hasOwnProperty', '__proto__']) {
+      const { problems } = compare([{ name, version: '1.0.0', hooks: ['postinstall'] }], { esbuild: '0.27.2' });
+      expect(problems, name).toHaveLength(1);
+      expect(problems[0], name).toContain('not allowlisted');
+    }
   });
 
   it('treats an allowlisted package that is not installed as a note, not a failure', () => {
@@ -102,43 +189,6 @@ describe('compare', () => {
   });
 });
 
-describe('collectFromLockfile', () => {
-  const lock = {
-    packages: {
-      '': { name: 'self', version: '0.5.0' },
-      'node_modules/esbuild': { version: '0.27.2', hasInstallScript: true },
-      'node_modules/fsevents': { version: '2.3.3', hasInstallScript: true, os: ['darwin'] },
-      'node_modules/@scope/native': { version: '1.0.0', hasInstallScript: true },
-      'node_modules/@scope/native/node_modules/dup': { version: '0.1.0', hasInstallScript: true },
-      'node_modules/gyp-only': { version: '2.0.0', gypfile: true },
-      'node_modules/clean-dep': { version: '3.0.0' }
-    }
-  };
-
-  it('uses npm hasInstallScript plus gypfile, keyed by the bare package name', () => {
-    expect(collectFromLockfile(lock).map((p) => `${p.name}@${p.version}`).sort()).toEqual(
-      [
-        '@scope/native@1.0.0',
-        'dup@0.1.0',
-        'esbuild@0.27.2',
-        'fsevents@2.3.3',
-        'gyp-only@2.0.0'
-      ].sort()
-    );
-  });
-
-  it('ignores the root project entry and clean dependencies', () => {
-    const names = collectFromLockfile(lock).map((p) => p.name);
-    expect(names).not.toContain('self');
-    expect(names).not.toContain('clean-dep');
-  });
-
-  it('returns nothing for a lockfile with no packages map', () => {
-    expect(collectFromLockfile({})).toEqual([]);
-    expect(collectFromLockfile(undefined)).toEqual([]);
-  });
-});
-
 describe('the repository allowlist', () => {
   const installed = fileURLToPath(new URL('../../node_modules', import.meta.url));
   const allowlistPath = fileURLToPath(new URL('../../build-scripts/install-scripts.json', import.meta.url));
@@ -146,22 +196,17 @@ describe('the repository allowlist', () => {
   it('covers everything the lockfile and node_modules contain', () => {
     // CI runs `npm run check:scripts`, but keeping the assertion here means a
     // plain `npm test` cannot pass while the gate is being bypassed.
-    if (!existsSync(allowlistPath)) {
-      return;
-    }
+    expect(existsSync(allowlistPath), `build-scripts/install-scripts.json is missing — run npm run check:scripts -- --write`).toBe(true);
     const { allow } = JSON.parse(readFileSync(allowlistPath, 'utf8')) as { allow: Record<string, string> };
     expect(compare(collectAll(installed), allow ?? {}).problems).toEqual([]);
   });
 
-  it('is not vacuously empty while the tree has install scripts', () => {
+  it('lists a reviewed version for every package it allowlists', () => {
     const { allow } = JSON.parse(readFileSync(allowlistPath, 'utf8')) as { allow: Record<string, string> };
     const found = collectAll(installed);
-    if (found.length === 0) {
-      return; // a dependency-free tree would legitimately look like this
-    }
-    expect(Object.keys(allow).length).toBeGreaterThan(0);
+    expect(found.length, 'node_modules has install-script packages but the allowlist is empty').toBeGreaterThan(0);
     for (const pkg of found) {
-      expect(allow).toHaveProperty(pkg.name);
+      expect(allow, pkg.name).toHaveProperty(pkg.name, pkg.version);
     }
   });
 });
