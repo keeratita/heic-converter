@@ -15,7 +15,10 @@ const convertHeicSpy = workerChunk.convertHeicInWorker as unknown as ReturnType<
 const convertManySpy = workerChunk.convertManyInWorker as unknown as ReturnType<typeof vi.fn>;
 
 const INPUT = new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70]);
-const OPTIONS = { format: 'webp' as const, quality: 0.5, output: 'arraybuffer' as const };
+// Real option names only — `to`, not `format`, and `'arrayBuffer'` with the
+// capital B. A misspelled option here would be silently dropped by the library
+// and the test would still pass, proving nothing about what it forwards.
+const OPTIONS = { to: 'webp' as const, quality: 0.5, workerUrl: '/worker.js', output: 'arrayBuffer' as const };
 const decodedBlob = new Blob([new Uint8Array([1, 2, 3])], { type: 'image/jpeg' });
 
 beforeEach(() => {
@@ -38,14 +41,16 @@ describe('convertHeicInWorker / convertManyInWorker pass the deferred module thr
   });
 
   it('resolves every OutputShape value verbatim', async () => {
-    const shapes = [
-      { blob: decodedBlob, width: 1, height: 1, format: 'jpeg' },
-      'data:image/jpeg;base64,AAA=',
-      new ArrayBuffer(3),
+    // Each shape is paired with the `output` that produces it: passing
+    // `output: 'blob'` for all three would only ever exercise one branch.
+    const cases = [
+      { output: 'blob' as const, value: decodedBlob },
+      { output: 'dataUrl' as const, value: 'data:image/jpeg;base64,AAA=' },
+      { output: 'arrayBuffer' as const, value: new ArrayBuffer(3) },
     ];
-    for (const shape of shapes) {
-      convertHeicSpy.mockResolvedValueOnce(shape);
-      await expect(convertHeicInWorker(INPUT, { ...OPTIONS, output: 'blob' })).resolves.toBe(shape);
+    for (const { output, value } of cases) {
+      convertHeicSpy.mockResolvedValueOnce(value);
+      await expect(convertHeicInWorker(INPUT, { ...OPTIONS, output })).resolves.toBe(value);
     }
   });
 
@@ -53,7 +58,7 @@ describe('convertHeicInWorker / convertManyInWorker pass the deferred module thr
     const results = [{ ok: true, result: { blob: decodedBlob } }, { ok: false, error: 'x' }];
     convertManySpy.mockResolvedValue(results);
     const inputs = [INPUT, INPUT];
-    const batchOptions = { maxConcurrentWorkers: 2, continueOnError: true };
+    const batchOptions = { workerUrl: '/worker.js', maxConcurrentWorkers: 2, continueOnError: true as const };
 
     const actual = await convertManyInWorker(inputs, batchOptions);
 
@@ -74,7 +79,7 @@ describe('convertHeicInWorker / convertManyInWorker pass the deferred module thr
 
     const failed = new HeicConverterError('decode_failed', 'bad heic');
     convertManySpy.mockRejectedValue(failed);
-    const batchError = await convertManyInWorker([INPUT], {}).catch((e) => e);
+    const batchError = await convertManyInWorker([INPUT], { workerUrl: '/worker.js' }).catch((e) => e);
     expect(batchError).toBe(failed);
     expect(batchError.code).toBe('decode_failed');
   });

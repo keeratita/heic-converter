@@ -232,12 +232,11 @@ describe('convertHeic - Options', () => {
     });
 
     it('should handle options with extra properties', async () => {
-      const result = await convertHeic(new Uint8Array([1]), {
-        to: 'png',
-        quality: 0.8,
-        onProgress: vi.fn(),
-        extraProperty: 'should be ignored' as any,
-      });
+      // Unknown keys must be tolerated, not rejected. Passed as a variable so
+      // the excess-property check (which only fires on fresh object literals)
+      // doesn't block the case being exercised.
+      const options = { to: 'png' as const, quality: 0.8, onProgress: vi.fn(), extraProperty: 'should be ignored' };
+      const result = await convertHeic(new Uint8Array([1]), options);
 
       expect(result).toBeInstanceOf(Blob);
     });
@@ -273,7 +272,7 @@ describe('convertHeic - applyOrientation', () => {
     resetConvertMocks();
   });
 
-  it.each([['yes'], [1], [0], [null], [{}, 'object'], [[], 'array']])(
+  it.each<[unknown, string?]>([['yes'], [1], [0], [null], [{}, 'object'], [[], 'array']])(
     'rejects non-boolean applyOrientation %p with invalid_input',
     async (value) => {
       const error = await convertHeic(new Uint8Array([1]), {
@@ -356,7 +355,7 @@ describe('convertHeic - Output shape', () => {
     expect(new TextDecoder().decode(new Uint8Array(result))).toBe('converted');
   });
 
-  it.each([
+  it.each<[unknown, string]>([
     ['base64', 'string'],
     ['Blob', 'case-wrong string'],
     ['', 'empty string'],
