@@ -27,13 +27,14 @@ npm run build:wasm   # then: npm run wasm:hashes
 
 ```bash
 npm run lint
-npm run test:coverage   # thresholds are enforced
+npm run typecheck       # src/ and test/ — the tests are excluded from tsconfig.json
+npm run build && npm run test:coverage   # thresholds are enforced; the real-decode suites read dist/
 npm run verify:wasm
 npm run check:scripts
-npm run build && npm run test:e2e
+npm run test:e2e
 ```
 
-- **Commit messages** follow [Conventional Commits](https://www.conventionalcommits.org/) (`feat|fix|docs|refactor|test|chore`, optional scope). A `commit-msg` hook enforces it; a `pre-commit` hook runs the linter.
+- **Commit messages** follow [Conventional Commits](https://www.conventionalcommits.org/) (`feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert`, optional scope). A `commit-msg` hook enforces it; a `pre-commit` hook runs the linter and the typecheck.
 - **Never edit generated files**: `src/wasm/wrapper/heic-decoder.js`, `src/wasm/public/heic-decoder.wasm`, anything under `dist/`, or the C++ under `build-wasm/src/`. Regenerate with `npm run build:wasm`, then `npm run wasm:hashes`.
 - **A WASM change is not done until it has been executed.** A smaller `heic-decoder.wasm` that fails to instantiate is worse than a bigger one; the real-decode and browser E2E suites must pass against the rebuilt artifact pair.
 - **New behaviour needs a test that fails without it.** Prove a new assertion by breaking the source it guards, then reverting.

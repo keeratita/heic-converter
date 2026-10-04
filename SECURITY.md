@@ -23,14 +23,14 @@ You should get an acknowledgement within 3 business days and a fix timeline with
 The decoder parses **attacker-supplied `.heic`/`.heif` files**, so anything that lets a crafted image do more than return an error is in scope:
 
 - Memory-safety or control-flow issues reachable through the WASM build of **libheif 1.23.5** / **libde265 1.1.3** (a malformed container, tile grid, property box, or EXIF block causing an out-of-bounds read/write, unbounded allocation, or module abort).
-- A `WebAssembly.RuntimeError` / `Aborted(...)` escaping as an uncaught error instead of a typed `HeicConverterError`, or bad input leaving the shared Emscripten module unusable for the rest of the page's life.
+- A `WebAssembly.RuntimeError` / `Aborted(...)` escaping as an uncaught error instead of a typed `HeicConverterError`, or bad input leaving a decoder instance usable again afterwards — each conversion gets its own instance, and one whose module faulted is discarded rather than returned to the pool.
 - Unvalidated options reaching the canvas/encoder path (`resize`, `crop`, `quality`) in a way that blocks the event loop or exhausts memory beyond the documented limits.
 - EXIF re-injection (`preserveExif`) writing bytes outside the segment/chunk it claims to insert, or leaking a block into a format that should not carry it.
 - Any path that reintroduces `eval()` / `new Function()` and therefore breaks the CSP guarantee the package exists to provide.
 
 ## Out of scope
 
-- Reports that a scanner labels the package for the **generated Emscripten glue** loading `heic-decoder.wasm` over the network, for the SVG XML namespace literal, or for minified output. These are documented in the README's _Supply chain signals_ section; if you think one of them is actually exploitable rather than just noisy, tell us what the attack is.
+- Reports that a scanner labels the package for the **generated Emscripten glue** loading `heic-decoder.wasm` over the network, for the SVG XML namespace literal, or for minified output. These are the three signals documented under _Scanner signals you will see_ in the [README](README.md#scanner-signals-you-will-see); if you think one of them is actually exploitable rather than just noisy, tell us what the attack is.
 - Vulnerabilities in a consumer's own code, bundler, or CDN configuration.
 - Extraction of metadata that the caller explicitly asked for with `preserveExif: true`. Note that EXIF is **off by default** precisely because it can carry GPS coordinates.
 

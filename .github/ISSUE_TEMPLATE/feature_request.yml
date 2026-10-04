@@ -18,7 +18,9 @@ body:
       label: Proposed API
       description: A code sketch of how you would call it.
       placeholder: |
-        await convertHeic(input, { format: 'webp', decoder: mySharedDecoder });
+        // `to`, not `format`; `decoder` is an instance you own (new LibheifDecoder()),
+        // which the library never frees for you.
+        await convertHeic(input, { to: 'webp', decoder: myDecoder });
   - type: dropdown
     id: area
     attributes:
