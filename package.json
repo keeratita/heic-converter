@@ -30,6 +30,8 @@
     "build:wasm": "bash build-scripts/build-wasm.sh",
     "verify:wasm": "node build-scripts/verify-wasm-artifacts.mjs",
     "wasm:hashes": "node build-scripts/verify-wasm-artifacts.mjs --write",
+    "check:scripts": "node build-scripts/check-install-scripts.mjs",
+    "verify:provenance": "node build-scripts/verify-npm-provenance.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "node test/browser/test-playwright.mjs",
@@ -42,13 +44,29 @@
   },
   "keywords": [
     "heic",
-    "convert",
+    "heif",
+    "heic-converter",
     "image",
+    "convert",
+    "jpeg",
+    "png",
+    "webp",
+    "avif",
+    "svg",
     "csp",
-    "wasm"
+    "wasm",
+    "emscripten",
+    "exif",
+    "orientation"
   ],
   "author": "Keerati Tansawatcharoen <keerati.tansawatcharoen@gmail.com>",
   "license": "MIT",
+  "funding": "https://github.com/sponsors/keeratita",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/",
+    "provenance": true
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/keeratita/heic-converter.git"
@@ -59,7 +77,6 @@
   "homepage": "https://github.com/keeratita/heic-converter#readme",
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@vitest/browser": "^5.0.3",
     "@vitest/coverage-v8": "^5.0.3",
     "eslint": "^10.12.0",
     "globals": "^17.13.0",
