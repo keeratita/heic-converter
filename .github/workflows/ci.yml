@@ -34,7 +34,15 @@ jobs:
       run: npm run build
 
     - name: Verify Build Artifacts Exist
-      run: test -f dist/heic-decoder.wasm && test -f test/fixtures/example.heic
+      # Every fixture the real-WASM suites gate on (integration, decoder,
+      # wasm-golden). Those suites fail hard on CI when something is missing, so
+      # this step exists to say which file, before a wall of test output.
+      run: |
+        test -f dist/heic-decoder.wasm
+        for f in example.heic colors-no-alpha.heic colors-with-alpha.heic \
+                 exif-orientation-6.heic irot-orientation-6.heic; do
+          test -f "test/fixtures/$f" || { echo "missing test/fixtures/$f" >&2; exit 1; }
+        done
 
     - name: Run Unit Tests (coverage thresholds enforced)
       run: npm run test:coverage
