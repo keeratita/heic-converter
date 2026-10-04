@@ -506,6 +506,8 @@ Two additions to that header are easy to miss:
 
 ## 📖 API Reference
 
+The sections below are the working reference. The exhaustive version — full signatures, per-API guarantees, the worker message protocol, and the complete error catalogue — lives in **[API.md](API.md)**.
+
 ### `convertHeic(input, options?)`
 
 Converts a HEIC image file to a standard web format.
