@@ -264,4 +264,54 @@ describe.skipIf(!hasArtifacts && !isCI)('WASM output goldens', () => {
     }
     expect(aborts).toEqual([]);
   });
+
+  it('survives a dense truncation sweep without aborting or wedging the module', async () => {
+    // The 66-mutation table samples truncation at four ratios. This sweeps the
+    // box-parsing paths much more finely — every offset in the container header
+    // plus a linear pass over the file — which is where a size or codegen change
+    // in libheif's reader is likeliest to turn a clean "cannot parse" into an
+    // assert (module abort) or a wrong-dimensions success.
+    //
+    // Two invariants, both of which a miscompile can break while "it decodes"
+    // still passes:
+    //   1. every input either decodes with positive dimensions or throws a typed
+    //      HeicConverterError — never a raw RuntimeError / Aborted(...) message;
+    //   2. the shared Emscripten module still decodes a good file afterwards, so
+    //      no bad input can leave it wedged for the rest of the page's life.
+    const bytes = fs.readFileSync(path.join(FIXTURE_DIR, 'example.heic'));
+    const offsets = [
+      ...[1, 2, 3, 4, 6, 8, 10, 12, 16, 20, 24, 28, 32, 40, 48, 56, 64],
+      ...Array.from({ length: 24 }, (_, i) => Math.floor(((i + 1) * bytes.length) / 25)),
+    ];
+
+    const problems: string[] = [];
+    let decoded = 0;
+    let refused = 0;
+    for (const at of offsets) {
+      const truncated = new Uint8Array(bytes.subarray(0, at));
+      try {
+        const result = await decodeFresh(truncated);
+        decoded += 1;
+        if (!(result.width > 0) || !(result.height > 0) || result.data.length !== result.width * result.height * 4) {
+          problems.push(`offset ${at}: decoded ${result.width}x${result.height}, ${result.data.length} bytes`);
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (!(error instanceof HeicConverterError) || /Aborted|RuntimeError/.test(message)) {
+          problems.push(`offset ${at}: ${error instanceof Error ? `${error.constructor.name}: ${message}` : message}`);
+        } else {
+          refused += 1;
+        }
+      }
+    }
+
+    expect(problems).toEqual([]);
+    // The sweep must actually have exercised both outcomes, or it proves nothing.
+    expect(refused, 'no truncation was refused — the sweep degenerated').toBeGreaterThan(0);
+    expect(decoded, 'every truncation failed — fixtures or decoder changed').toBeGreaterThan(0);
+
+    // And the module is still healthy afterwards.
+    const healthy = await decodeFresh(fs.readFileSync(path.join(FIXTURE_DIR, 'example.heic')));
+    expect(await sha256(healthy.data)).toBe(FIXTURE_GOLDENS['example.heic'].rgbaSha256);
+  });
 });
