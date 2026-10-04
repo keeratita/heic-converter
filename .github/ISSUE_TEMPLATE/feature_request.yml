@@ -1,0 +1,39 @@
+name: Feature request
+description: A new capability or an improvement to an existing one
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: The use case and why the current API cannot express it.
+      placeholder: |
+        We convert thousands of thumbnails and re-instantiate the decoder per call;
+        a documented pooling option would cut init cost.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed API
+      description: A code sketch of how you would call it.
+      placeholder: |
+        await convertHeic(input, { format: 'webp', decoder: mySharedDecoder });
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Output format / encoding
+        - Decoding or WASM build
+        - Options (resize, crop, orientation, EXIF)
+        - Batching or workers
+        - Types or DX
+        - Documentation
+        - Other
+  - type: markdown
+    attributes:
+      value: |
+        Two constraints before a feature can land: the package must keep **zero runtime
+        dependencies**, and the decoder must stay free of `eval()` / `new Function()`
+        (`-s DYNAMIC_EXECUTION=0`).

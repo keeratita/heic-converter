@@ -674,6 +674,37 @@ This script will automatically run the linter, build the TS library, run the uni
 
 ---
 
+## 🛡️ Supply Chain & Trust
+
+| Property | Status |
+| -------- | ------ |
+| Runtime dependencies | **none** — the package ships no `dependencies` at all |
+| Provenance | SLSA provenance attestation, from OIDC trusted publishing in `.github/workflows/publish.yml` |
+| Install-time code | two dev-tree packages — `esbuild` (links its platform binary) and `fsevents` (macOS-only native addon) — pinned in an allowlist that CI enforces (`npm run check:scripts`) |
+| `eval()` / `new Function()` | never generated (`-s DYNAMIC_EXECUTION=0`); CI scans the emitted glue for both |
+| Decoder artifacts | committed WASM + glue pinned to SHA-256 and re-verified on every CI run (`npm run verify:wasm`) |
+| Publish path | tag pushes only; the job asserts the attestation landed (`npm run verify:provenance`) |
+
+After installing, you can verify the attestation yourself in your own project:
+
+```bash
+npm audit signatures
+```
+
+### Scanner signals you will see
+
+Automated scanners report three signals on this package. All three are expected; they are documented here rather than engineered around:
+
+| Signal | What it actually is |
+| ------ | ------------------- |
+| **Network access** | The generated Emscripten glue calls `fetch()` / `XMLHttpRequest` to download `dist/heic-decoder.wasm` (~800 KB). That download is how a browser gets the decoder. Nothing else in the package touches the network — `src/` contains no `fetch`, `XMLHttpRequest`, or socket code. |
+| **URL strings** | The literal `http://www.w3.org/2000/svg`, the XML namespace on the root element of SVG output. It is a format identifier and is never fetched. |
+| **Minified code** | `dist/` is Terser-minified deliberately (~6% smaller gzipped, more on the glue). The published bytes come from the tagged commit through CI, with provenance attached. |
+
+If one of these ever becomes actually exploitable rather than merely noisy, that is a bug — see [SECURITY.md](SECURITY.md).
+
+---
+
 ## 📄 License
 
 MIT © Keerati Tansawatcharoen
