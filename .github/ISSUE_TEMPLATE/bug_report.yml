@@ -1,0 +1,71 @@
+name: Bug report
+description: Something does not work as documented
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For a **security issue**, use _Security → Report a vulnerability_ instead
+        (see [SECURITY.md](../main/SECURITY.md)); do not file it here.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Actual behaviour, and what you expected instead.
+      placeholder: |
+        Expected: convertHeic() resolves with a JPEG Blob.
+        Actual: rejects with HeicConverterError code "decode_failed".
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: |
+        The smallest code that triggers it. A link to a CodeSandbox/StackBlitz or a
+        repo is better than a snippet. Attach the offending `.heic` file if you can —
+        decoding bugs are nearly impossible to fix without it.
+      placeholder: |
+        import { convertHeic } from '@keeratita/heic-converter';
+        const blob = await convertHeic(file, { format: 'webp' });
+    validations:
+      required: true
+  - type: dropdown
+    id: environment
+    attributes:
+      label: Environment
+      options:
+        - Browser
+        - Node.js
+        - Web Worker
+        - Other / unknown
+    validations:
+      required: true
+  - type: input
+    id: browser
+    attributes:
+      label: Browser or Node version
+      placeholder: 'Chrome 141, Safari 26, Node 24.2 …'
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Package version
+      description: '`npm ls @keeratita/heic-converter`'
+      placeholder: '0.5.0'
+    validations:
+      required: true
+  - type: textarea
+    id: csp
+    attributes:
+      label: Content-Security-Policy
+      description: |
+        Paste the `img-src` / `worker-src` / `default-src` directives if you run under
+        a CSP — this package exists to work without `unsafe-eval`, so the header matters.
+  - type: textarea
+    id: error
+    attributes:
+      label: Error output
+      description: Include `error.code` from the thrown `HeicConverterError`.
+      render: shell

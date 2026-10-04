@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security issue
+    url: https://github.com/keeratita/heic-converter/security/advisories/new
+    about: Private vulnerability reporting — do not open a public issue.
+  - name: Live demo
+    url: https://keeratita.github.io/heic-converter/
+    about: Try a real conversion in the browser before filing a bug.

@@ -21,6 +21,8 @@ Key design constraints:
 | `npm run build:wasm` | Rebuild the WASM decoder (`build-scripts/build-wasm.sh`) — **requires Docker** |
 | `npm run verify:wasm` | Verify the committed Emscripten glue + WASM binary against the pinned SHA-256 hashes in `build-scripts/wasm-artifacts.json` and scan the glue for `eval`/`new Function` (runs in CI) |
 | `npm run wasm:hashes` | Regenerate `build-scripts/wasm-artifacts.json` — **must be run and committed after every `npm run build:wasm`**, or CI verification fails |
+| `npm run check:scripts` | Fail if any dev dependency declares `preinstall`/`install`/`postinstall` beyond the allowlist in `build-scripts/install-scripts.json` (`-- --write` regenerates it after review) |
+| `npm run verify:provenance` | Assert the published tarball carries a SLSA attestation, `gitHead`, and sha512 integrity (runs after `npm publish` in CI) |
 | `npm test` / `npm run test` | Run unit tests (Vitest, Node environment) |
 | `npm run test:watch` | Run unit tests in watch mode |
 | `npm run test:e2e` | Run browser E2E tests (real conversions in the CSP sandbox + GitHub Pages demo) via Playwright — requires `npx playwright install chromium` once |
@@ -56,6 +58,9 @@ build-scripts/
   patch-libheif.py          # Patches libheif context.cc to emit progress callbacks
   compress-wasm.mjs         # Emits dist/heic-decoder.wasm.gz/.br after the tsup build
   verify-wasm-artifacts.mjs # Checks committed glue/WASM against pinned SHA-256 + eval scan (npm run verify:wasm)
+  check-install-scripts.mjs # Dev-tree install-script allowlist gate (npm run check:scripts)
+  install-scripts.json      # Reviewed set of packages allowed to run install scripts
+  verify-npm-provenance.mjs # Post-publish SLSA attestation / gitHead / integrity check
   wasm-artifacts.json       # Pinned artifact hashes — regenerate with npm run wasm:hashes
   release.mjs               # SemVer release automation
 test/
@@ -93,3 +98,5 @@ test/
 - `.wasm` is externalized from the main bundle (`tsup.config.ts` `external`) and served separately; changing how it's located/loaded must stay compatible with `locateFile` and `wasmBinary` options.
 - Tests that decode real HEIC files require the built WASM artifact — run `npm run build:wasm` (or ensure `src/wasm/public/heic-decoder.wasm` exists) before running integration tests.
 - Keep the library environment-agnostic at import time: no top-level browser-only references (e.g. `document`, `Blob` usage is guarded).
+- **Never disguise a string to silence a scanner.** Scanners report three signals on this package and all three are correct-but-harmless: `Network access` (the generated Emscripten glue `fetch()`es `heic-decoder.wasm`), `URL strings` (the `http://www.w3.org/2000/svg` XML namespace in SVG output), and `Minified code` (Terser output on purpose). Concatenating a literal into fragments, hex-encoding it, or renaming it to dodge a heuristic is how malware behaves and how a maintainer loses trust — document it in the README's _Supply chain & trust_ table instead, and change the code only when the signal describes something actually wrong.
+- **Dev-tree install scripts are the only code-execution surface here** (the package has no runtime dependencies). `npm ci --ignore-scripts` is not usable because esbuild's postinstall links its platform binary, so the set of packages declaring `preinstall`/`install`/`postinstall` is pinned in `build-scripts/install-scripts.json` and CI fails on drift. When a legitimate dependency is added: read its script, then `npm run check:scripts -- --write` and commit the diff.
