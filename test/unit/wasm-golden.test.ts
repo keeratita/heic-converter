@@ -27,22 +27,11 @@ if (!hasArtifacts && isCI) {
 }
 
 /**
- * Output goldens for the committed WASM binary.
- *
- * Size work on this project has repeatedly produced a *smaller* decoder that
- * only failed at execution, and the cheapest such change — moving the
- * libde265/libheif compile level (currently -Oz, see build-scripts/build-wasm.sh)
- * — cannot be caught by "does it decode?" assertions: a codegen regression in the
- * IDCT, loop-filter or intra-prediction paths still yields a decodable image with
- * wrong pixels. These goldens pin the exact decoded RGBA of every fixture, plus
- * dimensions, the pending orientation and the EXIF payload length.
- *
- * The mutation table feeds each fixture through deterministic truncations,
- * empties, garbage and single-bit flips. Because several bit flips change the
- * decoded pixels, the expected output is sensitive to the bitstream decoder
- * itself; and because every malformed input must come back as a typed
- * HeicConverterError rather than a module abort, it also pins the error paths
- * that dead-stripping or an optimizer change is most likely to alter.
+ * Output goldens for the committed WASM. Smaller-build work here has repeatedly
+ * produced a decoder that only failed at execution, and a codegen regression in
+ * libde265's IDCT / loop-filter / intra-prediction paths still yields a
+ * *decodable* image with wrong pixels — so pin the exact RGBA, dimensions,
+ * pending orientation and EXIF length rather than asking "does it decode?".
  */
 
 type FixtureGolden = {
@@ -254,9 +243,8 @@ describe.skipIf(!hasArtifacts && !isCI)('WASM output goldens', () => {
         await decodeFresh(bytes);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        // An Emscripten abort (assert/abort/throw inside the module) surfaces as
-        // a raw WebAssembly.RuntimeError and leaves the module unusable; the
-        // documented contract is a HeicConverterError the caller can branch on.
+        // An abort inside the module surfaces as a raw WebAssembly.RuntimeError
+        // and leaves it unusable; the contract is a typed HeicConverterError.
         if (!(error instanceof HeicConverterError) || /Aborted|RuntimeError/.test(message)) {
           aborts.push(`${label}: ${error instanceof Error ? `${error.constructor.name}: ${message}` : message}`);
         }
@@ -266,18 +254,12 @@ describe.skipIf(!hasArtifacts && !isCI)('WASM output goldens', () => {
   });
 
   it('survives a dense truncation sweep without aborting or wedging the module', async () => {
-    // The 66-mutation table samples truncation at four ratios. This sweeps the
-    // box-parsing paths much more finely — every offset in the container header
-    // plus a linear pass over the file — which is where a size or codegen change
-    // in libheif's reader is likeliest to turn a clean "cannot parse" into an
-    // assert (module abort) or a wrong-dimensions success.
-    //
-    // Two invariants, both of which a miscompile can break while "it decodes"
-    // still passes:
-    //   1. every input either decodes with positive dimensions or throws a typed
-    //      HeicConverterError — never a raw RuntimeError / Aborted(...) message;
-    //   2. the shared Emscripten module still decodes a good file afterwards, so
-    //      no bad input can leave it wedged for the rest of the page's life.
+    // The table above samples truncation at four ratios; this sweeps the box
+    // parser much finer — every offset in the container header plus a linear
+    // pass over the file. Two invariants a miscompile can break while "it
+    // decodes" still passes: malformed input must yield sane dimensions or a
+    // typed error (never RuntimeError/abort), and the shared Emscripten module
+    // must still decode a good file afterwards rather than stay wedged.
     const bytes = fs.readFileSync(path.join(FIXTURE_DIR, 'example.heic'));
     const offsets = [
       ...[1, 2, 3, 4, 6, 8, 10, 12, 16, 20, 24, 28, 32, 40, 48, 56, 64],

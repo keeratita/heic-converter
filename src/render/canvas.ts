@@ -353,12 +353,8 @@ async function withExif(
   if (!preserveExif || !rawExif || rawExif.length === 0) {
     return blob;
   }
-  // EXIF injection is opt-in (default off — metadata can carry GPS), so the
-  // JPEG APP1 / PNG eXIf writers and the orientation-tag normalizer are
-  // fetched on demand rather than shipped in the render chunk every consumer
-  // pays for. Loading that chunk is part of the fail-safe contract below: if
-  // it cannot be fetched (incomplete `dist/` deployment, a bundler that did not
-  // emit the chunk), the conversion still succeeds and simply carries no EXIF.
+  // Opt-in (metadata can carry GPS), so the injectors are a lazy chunk. Failing
+  // to fetch it is part of the fail-safe contract: convert without EXIF.
   const exifModule = await import('./exif').catch(() => null);
   if (!exifModule) {
     return blob;

@@ -1,10 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 
-// The Web Worker implementation is a lazily imported chunk. Simulate the case
-// where it cannot be fetched (an incomplete dist/ deployment, or a bundler that
-// did not emit the chunk): the public contract is that these entry points
-// reject with a HeicConverterError carrying a machine-readable code, never with
-// a raw bundler / ERR_MODULE_NOT_FOUND error.
+// When the lazy worker chunk cannot be fetched, these entry points must reject with
+// a HeicConverterError carrying a machine-readable code, not a raw module-load error.
 vi.mock('../../src/worker', () => {
   throw new Error('Failed to fetch dynamically imported module .../dist/worker-XXXX.js');
 });
@@ -20,8 +17,7 @@ describe('worker entry points when the worker chunk cannot be loaded', () => {
     expect(error.code).toBe('worker_load_failed');
     expect(error.message).toContain('Web Worker implementation chunk');
     expect(error.message).toContain('dist/worker-');
-    // The original failure stays reachable for diagnostics (its text is
-    // vitest's mock-error placeholder here rather than the fetch message).
+    // The original failure stays reachable for diagnostics.
     expect(error.cause).toBeDefined();
   });
 

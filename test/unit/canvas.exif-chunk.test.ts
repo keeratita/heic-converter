@@ -1,9 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-// The EXIF writers are a lazily imported chunk. Simulate the deployment/bundler
-// failure where that chunk cannot be fetched: per the documented fail-safe
-// policy (and the AGENTS.md EXIF entry) the conversion must still succeed and
-// simply carry no EXIF, rather than rejecting with a module-load error.
+// The EXIF writers are a lazy chunk. When it cannot be fetched the conversion must
+// still succeed and carry no EXIF, not reject with a module-load error.
 vi.mock('../../src/render/exif', () => {
   throw new Error('Failed to fetch dynamically imported module .../dist/exif-XXXX.js');
 });
@@ -33,11 +31,7 @@ const decodedImage = (): DecodedImage => ({
   exif: EXIF_BLOCK,
 });
 
-/**
- * The lazy `./exif` import failing must degrade to "no metadata", not fail the
- * conversion — the same fail-safe contract that covers unparsable encoder output
- * and malformed EXIF blocks.
- */
+/** A failed lazy `./exif` import degrades to "no metadata", like the other fail-safe paths. */
 describe('renderAndEncode - preserveExif when the EXIF chunk cannot be loaded', () => {
   let originalDocument: typeof document;
   let originalOffscreenCanvas: typeof OffscreenCanvas;

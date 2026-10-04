@@ -24,9 +24,8 @@ const br = brotliCompressSync(raw, {
 writeFileSync(`${wasmPath}.gz`, gz);
 writeFileSync(`${wasmPath}.br`, br);
 
-// Round-trip what a CDN with gzip_static/brotli_static would actually serve:
-// a truncated or corrupt sidecar is invisible to every other check in the repo
-// and would break decoding only for the visitors served the precompressed file.
+// Round-trip the sidecars: a CDN with gzip_static/brotli_static serves these
+// bytes, and a truncated one would break decoding only for those visitors.
 const { gunzipSync, brotliDecompressSync } = await import('node:zlib');
 for (const [suffix, decompress] of [
   ['.gz', gunzipSync],

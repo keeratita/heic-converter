@@ -7,10 +7,9 @@
  * instead of inlining new ones.
  *
  * This module holds the strings the main-thread (in-process) path throws.
- * `Messages` is a single object literal, so an unused entry cannot be
- * tree-shaken out of it — anything only the lazy Web Worker entry points
- * throw therefore lives in `./worker` (`WorkerMessages`), where it stays
- * inside the chunk a caller only pays for when they use those APIs.
+ * `Messages` is one object literal, so an unused entry cannot be tree-shaken
+ * out of it — worker-only strings live in `./worker` (`WorkerMessages`) and
+ * stay inside the chunk a caller pays for only when they use those APIs.
  */
 export const Messages = {
   // index.ts

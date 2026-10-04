@@ -191,29 +191,23 @@ describe('injectExifIntoJpeg', () => {
   });
 
   it('walks past 0xFF fill bytes and still inserts after the APP0 run', () => {
-    // Fill bytes are legal before a marker and do appear in encoder output.
-    // Treating them as a desynchronized stream would silently drop metadata
-    // instead of inserting. One fill byte, so the leading run below is
-    // unambiguous (the APP0 marker contributes its own leading 0xFF).
+    // Fill bytes before a marker are legal and do occur; treating them as a
+    // desynchronized stream would silently drop metadata instead of inserting.
     const filled = concat(SOI, new Uint8Array([0xff]), JFIF_APP0, SOF0, EOI);
     const out = injectExifIntoJpeg(filled, EXIF_BLOCK);
     const afterLeading = SOI.length + 1 + JFIF_APP0.length; // SOI + fill + APP0
 
-    expect(out.length, 'fill bytes must not cause a refusal').toBe(
-      filled.length + 4 + EXIF_BLOCK.length
-    );
+    expect(out.length, 'fill bytes must not cause a refusal').toBe(filled.length + 4 + EXIF_BLOCK.length);
     expect(contains(out, EXIF_BLOCK)).toBe(true);
     expect(out.subarray(afterLeading, afterLeading + 2)).toEqual(new Uint8Array([0xff, 0xe1]));
-    // The leading run (including the fill byte) survives untouched, and so does
-    // everything from the insertion point onward.
+    // Leading run and tail must survive untouched.
     expect(out.subarray(0, afterLeading)).toEqual(filled.subarray(0, afterLeading));
     const tail = filled.length - afterLeading;
     expect(out.subarray(out.length - tail)).toEqual(filled.subarray(afterLeading));
   });
 
   it('returns the input unchanged when a segment header is cut off mid-field', () => {
-    // SOI + an APP0 marker with no length field: the walker cannot know where
-    // the segment ends, so it must refuse rather than guess an insertion point.
+    // APP0 marker with no length field: the insertion point is unlocatable.
     const truncated = concat(SOI, new Uint8Array([0xff, 0xe0]));
     expect(injectExifIntoJpeg(truncated, EXIF_BLOCK)).toBe(truncated);
   });
@@ -302,9 +296,8 @@ describe('injectExifIntoPng', () => {
   });
 
   it('refuses a container whose first chunk is not a 13-byte IHDR', () => {
-    // The injector anchors the eXIf chunk after IHDR, so it validates that
-    // first chunk. A misdeclared length or a mistyped chunk means we cannot
-    // locate the anchor — refuse instead of writing into a broken container.
+    // eXIf anchors after IHDR, so a misdeclared length or a mistyped first chunk
+    // means the anchor is unlocatable: refuse rather than write into a bad file.
     const wrongLength = png(pngChunk('IHDR', new Uint8Array(12)), IDAT, IEND);
     expect(injectExifIntoPng(wrongLength, EXIF_BLOCK)).toBe(wrongLength);
 
@@ -388,10 +381,8 @@ describe('normalizeOrientationTag', () => {
   });
 
   it('finds the orientation tag when it is not the first IFD0 entry', () => {
-    // Camera IFDs rarely put 274 first, so the scan must keep walking past
-    // unrelated entries. A `break` where the `continue` belongs would leave a
-    // stale orientation here and make consumers rotate an already-upright
-    // raster a second time — with no other test able to see it.
+    // Tag 274 is rarely first, so the scan must keep walking past unrelated
+    // entries; a stray `break` leaves a stale tag and double-rotation.
     const twoEntries = new Uint8Array([
       0x49, 0x49, 0x2a, 0x00, // II + magic 42
       0x08, 0x00, 0x00, 0x00, // IFD0 at 8
@@ -413,9 +404,8 @@ describe('normalizeOrientationTag', () => {
   });
 
   it('fails safe when the IFD0 offset points into the header itself', () => {
-    // Upper bound (offset past the block) has its own test; the lower bound is
-    // a separate guard, because an offset < 8 would read the byte-order mark
-    // and magic as an entry count.
+    // Upper bound has its own test; an offset < 8 would read the BOM and magic
+    // as an entry count.
     const block = blockWith([
       0x49, 0x49, 0x2a, 0x00,
       0x02, 0x00, 0x00, 0x00, // IFD0 at 2 — inside the header
@@ -431,12 +421,10 @@ describe('normalizeOrientationTag', () => {
 const MARKER_BYTES = [0x45, 0x78, 0x69, 0x66, 0x00, 0x00]; // "Exif\0\0"
 
 /**
- * All three injectors begin by validating the `"Exif\0\0" + TIFF` header, and
- * this is where a lax check would corrupt a real image rather than merely lose
- * metadata. Note the shape of the "truncated TIFF" case: hasExifMarker already
- * demands marker + 8 bytes, so a short header is refused there and isTiffHeader's
- * own `at + 8 > length` guard is unreachable through it — deliberate defence in
- * depth, not a branch a test can (or should pretend to) reach.
+ * All three injectors start by validating the `"Exif\0\0" + TIFF` header, where a
+ * lax check corrupts an image rather than merely losing metadata. A short header
+ * is refused by hasExifMarker first, so isTiffHeader's own bounds guard stays as
+ * defence in depth.
  */
 describe('a malformed EXIF header is refused by every injector', () => {
   const cases: Array<[string, Uint8Array]> = [

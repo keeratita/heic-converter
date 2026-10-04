@@ -1,11 +1,8 @@
 /**
- * Error message templates thrown only by the Web Worker entry points
- * (`convertHeicInWorker` / `convertManyInWorker`).
- *
- * Kept separate from `./core` because `Messages` is one object literal and
- * unused entries in it cannot be tree-shaken: living here means these strings
- * stay inside the lazily-loaded worker chunk instead of the main bundle that
- * every consumer of the package pays for.
+ * Error messages thrown only by the Web Worker entry points
+ * (`convertHeicInWorker` / `convertManyInWorker`). Separate from `./core` so
+ * the text stays in the lazily-loaded worker chunk — `Messages` is one object
+ * literal and cannot be tree-shaken per property.
  */
 export const WorkerMessages = {
   WorkerUnsupported: 'Web Worker is not supported in the current environment',
