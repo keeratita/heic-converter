@@ -1,8 +1,9 @@
 /**
- * Error messages thrown only by the Web Worker entry points
- * (`convertHeicInWorker` / `convertManyInWorker`). Separate from `./core` so
- * the text stays in the lazily-loaded worker chunk — `Messages` is one object
- * literal and cannot be tree-shaken per property.
+ * Error strings thrown from `src/worker.ts`, which is the lazily loaded worker
+ * chunk. Add a string here when the *chunk* throws it — not when the API is
+ * worker-related: text that `src/index.ts` or `src/validate.ts` can reach must
+ * go to `./core`, or the eager bundle grows, because an object literal cannot
+ * be tree-shaken per property.
  */
 export const WorkerMessages = {
   WorkerUnsupported: 'Web Worker is not supported in the current environment',
@@ -26,9 +27,25 @@ export const WorkerMessages = {
       lastPercent?: number;
       unknownType?: string;
       workerUrl?: string | URL;
+      /** Required, not optional: the caller knows whether a slot was granted, and
+       *  guessing from an omitted field would decide the diagnosis for it. */
+      startedAt: number | undefined;
+      queueWaitMs?: number;
     }
   ): string => {
+    if (stats.startedAt === undefined) {
+      // Nothing ever ran, so progress counts would be meaningless and the
+      // "large image" advice below would point at the wrong knob.
+      return (
+        `Web Worker conversion timed out after ${timeoutMs}ms before a worker slot was granted — ` +
+        'the deadline was spent waiting behind other conversions (timeoutMs includes queue wait). ' +
+        'Raise maxConcurrentWorkers or timeoutMs, or set timeoutMs to 0 to disable the timeout.'
+      );
+    }
     const details: string[] = [`${stats.progressMessages} progress message(s) received`];
+    if (stats.queueWaitMs !== undefined && stats.queueWaitMs > 0) {
+      details.unshift(`started after ${stats.queueWaitMs}ms queued`);
+    }
     if (stats.lastPercent !== undefined) {
       details.push(`last percent ${stats.lastPercent}`);
     }
@@ -44,4 +61,8 @@ export const WorkerMessages = {
       'verify the worker script implements the { type: "progress" | "result" } protocol.'
     );
   },
+  MaxConcurrentWorkersInvalid: (value: unknown): string =>
+    `maxConcurrentWorkers must be a positive integer, got: ${value}`,
+  TimeoutInvalid: (value: unknown): string =>
+    `timeoutMs must be a finite number >= 0 (0 disables the timeout), got: ${value}`
 } as const;

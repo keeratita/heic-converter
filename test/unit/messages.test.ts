@@ -31,10 +31,6 @@ describe('Messages', () => {
       expect(Messages.DecoderInitFailed('boom')).toContain('wasm-unsafe-eval');
       expect(Messages.RenderEncodeFailed('png', 'oops')).toContain('as png: oops');
       expect(Messages.ConcurrencyInvalid(0)).toContain('got: 0');
-      expect(Messages.MaxConcurrentWorkersInvalid(1.5)).toContain(
-        'maxConcurrentWorkers must be a positive integer, got: 1.5'
-      );
-      expect(Messages.TimeoutInvalid(-1)).toContain('timeoutMs must be a finite number >= 0');
       expect(Messages.InputsMustBeArray).toBe('Inputs must be an array of HEIC images');
       expect(Messages.ConvertManyItemFailed(2, 3, 'nope')).toBe(
         'Conversion of item 2 of 3 failed: nope'
@@ -97,12 +93,35 @@ describe('Messages', () => {
     });
 
     it('formats minimal timeout diagnostics', () => {
-      const message = WorkerMessages.WorkerTimeout(5000, { progressMessages: 0 });
+      const message = WorkerMessages.WorkerTimeout(5000, { progressMessages: 0, startedAt: 1 });
       expect(message).toContain('timed out after 5000ms');
       expect(message).toContain('0 progress message(s) received');
       expect(message).not.toContain('last percent');
       expect(message).not.toContain('unknown message type');
+      expect(message).not.toContain('before a worker slot was granted');
       expect(message).toContain('Increase timeoutMs');
+    });
+
+    it('diagnoses a timeout spent waiting for a worker slot, not inside the worker', () => {
+      // A call that never got a slot produced no progress, so the progress
+      // counts and the "large image" advice would point at the wrong knob.
+      const message = WorkerMessages.WorkerTimeout(5000, { progressMessages: 0, startedAt: undefined });
+      expect(message).toContain('before a worker slot was granted');
+      expect(message).toContain('timeoutMs includes queue wait');
+      expect(message).toContain('maxConcurrentWorkers');
+      expect(message).not.toContain('progress message(s) received');
+      expect(message).not.toContain('Increase timeoutMs for large images');
+    });
+
+    it('reports the queue wait once a slot was granted mid-deadline', () => {
+      const message = WorkerMessages.WorkerTimeout(5000, {
+        progressMessages: 1,
+        startedAt: 2000,
+        queueWaitMs: 1200,
+      });
+      expect(message).toContain('started after 1200ms queued');
+      expect(message).toContain('1 progress message(s) received');
+      expect(message).not.toContain('before a worker slot was granted');
     });
 
     it('formats full timeout diagnostics with percent, unknown type, and worker URL', () => {
@@ -111,6 +130,7 @@ describe('Messages', () => {
         lastPercent: 40,
         unknownType: 'log',
         workerUrl: '/slow.js',
+        startedAt: 1,
       });
       expect(message).toContain('3 progress message(s) received');
       expect(message).toContain('last percent 40');
@@ -124,6 +144,15 @@ describe('Messages', () => {
       expect(WorkerMessages.WorkerConversionFailed).toContain('Worker conversion failed');
       expect(WorkerMessages.WorkerUnsupported).toContain('Web Worker is not supported');
       expect(WorkerMessages.WorkerDecoderUnsupported).toContain('decoder option is not supported');
+    });
+
+    it('owns the worker-only option validation text', () => {
+      // Only src/worker.ts throws these, so the strings must stay in this chunk;
+      // bundle.test.ts asserts they never appear in the eagerly loaded graph.
+      expect(WorkerMessages.MaxConcurrentWorkersInvalid(1.5)).toContain(
+        'maxConcurrentWorkers must be a positive integer, got: 1.5'
+      );
+      expect(WorkerMessages.TimeoutInvalid(-1)).toContain('timeoutMs must be a finite number >= 0');
     });
   });
 
