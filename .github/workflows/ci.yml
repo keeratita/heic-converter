@@ -17,6 +17,8 @@ jobs:
     # step that needs them, and it requires Docker.
     - name: Checkout Repository
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false # no job here pushes; don't leave a git credential behind
 
     - name: Setup Node.js
       uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -26,6 +28,11 @@ jobs:
 
     - name: Install Dependencies
       run: npm ci
+
+    # Fails if a dev dependency started running code at install time. The only
+    # entry today is esbuild; see build-scripts/install-scripts.json.
+    - name: Verify Install-Script Allowlist
+      run: npm run check:scripts
 
     - name: Verify WASM Artifacts (pinned hashes + CSP scan)
       run: node build-scripts/verify-wasm-artifacts.mjs
