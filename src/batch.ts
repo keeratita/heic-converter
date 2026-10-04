@@ -1,5 +1,5 @@
 import { HeicConverterError } from './errors';
-import { Messages } from './messages';
+import { Messages } from './messages/core';
 import type { ConvertItemResult } from './types';
 
 /**

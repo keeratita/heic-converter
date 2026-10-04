@@ -5,7 +5,8 @@ import type {
   HeicInput,
   OutputShape,
 } from './types';
-import { Messages } from './messages';
+import { Messages } from './messages/core';
+import { WorkerMessages } from './messages/worker';
 import { clampPercent } from './progress';
 import { HeicConverterError } from './errors';
 import { runBoundedBatch } from './batch';
@@ -223,11 +224,11 @@ export function convertHeicInWorker<S extends OutputShape = 'blob'>(
 ): Promise<ConvertResult<S>> {
   return new Promise<ConvertResult<S>>((resolve, reject) => {
     if (typeof Worker === 'undefined') {
-      reject(new HeicConverterError('worker_unsupported', Messages.WorkerUnsupported));
+      reject(new HeicConverterError('worker_unsupported', WorkerMessages.WorkerUnsupported));
       return;
     }
     if ((options as ConvertOptions).decoder !== undefined) {
-      reject(new HeicConverterError('invalid_input', Messages.WorkerDecoderUnsupported));
+      reject(new HeicConverterError('invalid_input', WorkerMessages.WorkerDecoderUnsupported));
       return;
     }
     try {
@@ -285,7 +286,7 @@ export function convertHeicInWorker<S extends OutputShape = 'blob'>(
         reject(
           new HeicConverterError(
             'worker_timeout',
-            Messages.WorkerTimeout(timeoutMs, {
+            WorkerMessages.WorkerTimeout(timeoutMs, {
               progressMessages: stats.progressMessages,
               lastPercent: stats.lastPercent,
               unknownType: stats.unknownType,
@@ -332,7 +333,7 @@ export function convertHeicInWorker<S extends OutputShape = 'blob'>(
         resolve(message.blob as ConvertResult<S>);
       } else {
         reject(
-          new HeicConverterError('worker_failed', message.error ?? Messages.WorkerConversionFailed)
+          new HeicConverterError('worker_failed', message.error ?? WorkerMessages.WorkerConversionFailed)
         );
       }
     };
@@ -343,7 +344,7 @@ export function convertHeicInWorker<S extends OutputShape = 'blob'>(
       reject(
         new HeicConverterError(
           'worker_failed',
-          `${event.message || Messages.WorkerFailed(options.workerUrl)}${location}`
+          `${event.message || WorkerMessages.WorkerFailed(options.workerUrl)}${location}`
         )
       );
     };
@@ -358,7 +359,7 @@ export function convertHeicInWorker<S extends OutputShape = 'blob'>(
             ? detail.message
             : detail !== undefined
               ? String(detail)
-              : Messages.WorkerFailed(options.workerUrl),
+              : WorkerMessages.WorkerFailed(options.workerUrl),
           { cause: detail }
         )
       );
@@ -395,7 +396,7 @@ export function convertHeicInWorker<S extends OutputShape = 'blob'>(
         reject(
           new HeicConverterError(
             'worker_create_failed',
-            Messages.WorkerCreateFailed(error instanceof Error ? error.message : String(error)),
+            WorkerMessages.WorkerCreateFailed(error instanceof Error ? error.message : String(error)),
             { cause: error }
           )
         );
@@ -414,7 +415,7 @@ export function convertHeicInWorker<S extends OutputShape = 'blob'>(
         reject(
           new HeicConverterError(
             'worker_post_failed',
-            Messages.WorkerPostFailed(error instanceof Error ? error.message : String(error)),
+            WorkerMessages.WorkerPostFailed(error instanceof Error ? error.message : String(error)),
             { cause: error }
           )
         );
@@ -498,10 +499,10 @@ export async function convertManyInWorker<S extends OutputShape = 'blob'>(
     throw new HeicConverterError('invalid_input', Messages.InputsMustBeArray);
   }
   if (typeof Worker === 'undefined') {
-    throw new HeicConverterError('worker_unsupported', Messages.WorkerUnsupported);
+    throw new HeicConverterError('worker_unsupported', WorkerMessages.WorkerUnsupported);
   }
   if ((options as ConvertOptions).decoder !== undefined) {
-    throw new HeicConverterError('invalid_input', Messages.WorkerDecoderUnsupported);
+    throw new HeicConverterError('invalid_input', WorkerMessages.WorkerDecoderUnsupported);
   }
   // Same up-front shared validation as convertMany: option typos surface
   // their own code on the main thread instead of returning stringified as

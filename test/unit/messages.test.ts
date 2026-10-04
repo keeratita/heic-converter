@@ -1,12 +1,27 @@
 import { describe, expect, it } from 'vitest';
-import { Messages } from '../../src/messages';
+import { Messages } from '../../src/messages/core';
+import { WorkerMessages } from '../../src/messages/worker';
 
 /**
  * Message builders are the single source of user-facing error text. These
  * tests pin the template contracts (including the optional-detail branches
  * of the worker diagnostics) so callers' message assertions stay stable.
+ *
+ * The split between `Messages` (main-thread) and `WorkerMessages` (lazy worker
+ * chunk) is what keeps the worker-only text out of the bundle every consumer
+ * pays for, so the boundary itself is asserted below.
  */
 describe('Messages', () => {
+  describe('bundle-size boundary', () => {
+    it('keeps worker-only builders out of the main-thread message object', () => {
+      const workerKeys = Object.keys(WorkerMessages);
+      expect(workerKeys.length).toBeGreaterThan(0);
+      for (const key of workerKeys) {
+        expect(Messages).not.toHaveProperty(key);
+      }
+    });
+  });
+
   describe('index.ts builders', () => {
     it('formats the core validation messages', () => {
       expect(Messages.QualityInvalid(2)).toContain('Quality must be a number between 0.0 and 1.0, got: 2');
@@ -65,24 +80,24 @@ describe('Messages', () => {
 
   describe('worker builders', () => {
     it('names the worker script when a URL is known', () => {
-      const message = Messages.WorkerFailed('/worker.js');
+      const message = WorkerMessages.WorkerFailed('/worker.js');
       expect(message).toContain('Worker failed');
       expect(message).toContain('could not load worker script at /worker.js');
       expect(message).toContain('text/javascript');
     });
 
     it('falls back to a bare message when the worker URL is unknown', () => {
-      expect(Messages.WorkerFailed()).toBe('Worker failed');
-      expect(Messages.WorkerFailed(undefined)).toBe('Worker failed');
+      expect(WorkerMessages.WorkerFailed()).toBe('Worker failed');
+      expect(WorkerMessages.WorkerFailed(undefined)).toBe('Worker failed');
     });
 
     it('accepts URL instances in the failure hint', () => {
       const url = new URL('https://example.com/w.js');
-      expect(Messages.WorkerFailed(url)).toContain(String(url));
+      expect(WorkerMessages.WorkerFailed(url)).toContain(String(url));
     });
 
     it('formats minimal timeout diagnostics', () => {
-      const message = Messages.WorkerTimeout(5000, { progressMessages: 0 });
+      const message = WorkerMessages.WorkerTimeout(5000, { progressMessages: 0 });
       expect(message).toContain('timed out after 5000ms');
       expect(message).toContain('0 progress message(s) received');
       expect(message).not.toContain('last percent');
@@ -91,7 +106,7 @@ describe('Messages', () => {
     });
 
     it('formats full timeout diagnostics with percent, unknown type, and worker URL', () => {
-      const message = Messages.WorkerTimeout(1000, {
+      const message = WorkerMessages.WorkerTimeout(1000, {
         progressMessages: 3,
         lastPercent: 40,
         unknownType: 'log',
@@ -104,11 +119,11 @@ describe('Messages', () => {
     });
 
     it('includes the create/post failure causes verbatim', () => {
-      expect(Messages.WorkerCreateFailed('SecurityError')).toContain('SecurityError');
-      expect(Messages.WorkerPostFailed('DataCloneError')).toContain('DataCloneError');
-      expect(Messages.WorkerConversionFailed).toContain('Worker conversion failed');
-      expect(Messages.WorkerUnsupported).toContain('Web Worker is not supported');
-      expect(Messages.WorkerDecoderUnsupported).toContain('decoder option is not supported');
+      expect(WorkerMessages.WorkerCreateFailed('SecurityError')).toContain('SecurityError');
+      expect(WorkerMessages.WorkerPostFailed('DataCloneError')).toContain('DataCloneError');
+      expect(WorkerMessages.WorkerConversionFailed).toContain('Worker conversion failed');
+      expect(WorkerMessages.WorkerUnsupported).toContain('Web Worker is not supported');
+      expect(WorkerMessages.WorkerDecoderUnsupported).toContain('decoder option is not supported');
     });
   });
 

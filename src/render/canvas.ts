@@ -1,12 +1,7 @@
 import type { CropOptions, DecodedImage, ImageFormat, ResizeOptions } from '../types';
-import { Messages } from '../messages';
+import { Messages } from '../messages/core';
 import { HeicConverterError } from '../errors';
 import { validateCrop, validateFormat, validateResize } from '../validate';
-import {
-  injectExifIntoJpeg,
-  injectExifIntoPng,
-  normalizeOrientationTag,
-} from './exif';
 
 // Option validators live in src/validate.ts (single source of truth shared
 // with the orchestration layer); re-exported here for the render stage's own
@@ -358,6 +353,11 @@ async function withExif(
   if (!preserveExif || !rawExif || rawExif.length === 0) {
     return blob;
   }
+  // EXIF injection is opt-in (default off — metadata can carry GPS), so the
+  // JPEG APP1 / PNG eXIf writers and the orientation-tag normalizer are
+  // fetched on demand rather than shipped in the render chunk every consumer
+  // pays for.
+  const { injectExifIntoJpeg, injectExifIntoPng, normalizeOrientationTag } = await import('./exif');
   // The rendered raster is already upright whenever the pending rotation was
   // applied (or none was pending): the orientation tag must then say "normal"
   // or consumers would rotate the image a second time. With

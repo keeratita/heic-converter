@@ -5,6 +5,12 @@
  * functions that produce the final string at the call site. Keep all
  * user-facing error strings here (grouped by the file that throws them)
  * instead of inlining new ones.
+ *
+ * This module holds the strings the main-thread (in-process) path throws.
+ * `Messages` is a single object literal, so an unused entry cannot be
+ * tree-shaken out of it — anything only the lazy Web Worker entry points
+ * throw therefore lives in `./worker` (`WorkerMessages`), where it stays
+ * inside the chunk a caller only pays for when they use those APIs.
  */
 export const Messages = {
   // index.ts
@@ -98,45 +104,4 @@ export const Messages = {
     `HEIC decoding failed: ${detail} (input: ${bytes} bytes)`,
   ProgressCallbackThrew: (message: string): string =>
     `onProgress callback threw during decode: ${message}`,
-
-  // worker.ts
-  WorkerUnsupported: 'Web Worker is not supported in the current environment',
-  WorkerCreateFailed: (message: string): string => `Failed to create Web Worker: ${message}`,
-  WorkerPostFailed: (message: string): string => `Failed to post message to Web Worker: ${message}`,
-  WorkerConversionFailed: 'Worker conversion failed',
-  WorkerDecoderUnsupported:
-    'The decoder option is not supported by convertHeicInWorker: the worker creates its own ' +
-    'decoder (functions and class instances cannot cross the worker boundary). Use convertHeic ' +
-    'with an injected decoder instead.',
-  WorkerFailed: (workerUrl?: string | URL): string =>
-    'Worker failed' +
-    (workerUrl !== undefined
-      ? ` (could not load worker script at ${String(workerUrl)}; check the path resolves and the ` +
-        'script is served as JavaScript, e.g. Content-Type: text/javascript)'
-      : ''),
-  WorkerTimeout: (
-    timeoutMs: number,
-    stats: {
-      progressMessages: number;
-      lastPercent?: number;
-      unknownType?: string;
-      workerUrl?: string | URL;
-    }
-  ): string => {
-    const details: string[] = [`${stats.progressMessages} progress message(s) received`];
-    if (stats.lastPercent !== undefined) {
-      details.push(`last percent ${stats.lastPercent}`);
-    }
-    if (stats.unknownType !== undefined) {
-      details.push(`last unknown message type '${stats.unknownType}' (worker may not implement the progress/result protocol)`);
-    }
-    if (stats.workerUrl !== undefined) {
-      details.push(`worker ${String(stats.workerUrl)}`);
-    }
-    return (
-      `Web Worker conversion timed out after ${timeoutMs}ms (${details.join('; ')}). ` +
-      'Increase timeoutMs for large images, set timeoutMs to 0 to disable the timeout, and ' +
-      'verify the worker script implements the { type: "progress" | "result" } protocol.'
-    );
-  },
 } as const;

@@ -1,5 +1,5 @@
 import type { IHeicDecoder, DecodedImage } from '../types';
-import { Messages } from '../messages';
+import { Messages } from '../messages/core';
 import { clampPercent } from '../progress';
 import { HeicConverterError } from '../errors';
 

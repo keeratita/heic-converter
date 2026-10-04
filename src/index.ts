@@ -5,7 +5,7 @@ import {
   assertEncodeCapability,
   blobToBase64,
 } from './render/canvas';
-import { Messages } from './messages';
+import { Messages } from './messages/core';
 import { clampPercent } from './progress';
 import { HeicConverterError } from './errors';
 import { runBoundedBatch } from './batch';
@@ -27,13 +27,74 @@ import { DEFAULT_QUALITY } from './types';
 export * from './types';
 export { LibheifDecoder } from './wasm';
 export type { LibheifDecoderOptions } from './wasm';
-export { convertHeicInWorker, convertManyInWorker } from './worker';
 export type {
   WorkerConvertOptions,
   WorkerBatchOptions,
   WorkerResultMessage,
   WorkerProgressMessage,
 } from './worker';
+import type { WorkerBatchOptions, WorkerConvertOptions } from './worker';
+
+/**
+ * Loads the Web Worker implementation on first use instead of bundling it into
+ * the initial chunk: the worker transport, per-URL semaphore, and worker
+ * diagnostics are code an in-process `convertHeic` call never touches, so they
+ * ship as a chunk fetched only when a worker conversion is actually requested.
+ * The module registry caches the chunk, so the per-URL worker semaphore stays
+ * shared across calls exactly as it did with a static import.
+ */
+function loadWorkerModule(): Promise<typeof import('./worker')> {
+  return import('./worker');
+}
+
+/**
+ * Converts a single HEIC image inside a Web Worker.
+ *
+ * Deferred wrapper around `convertHeicInWorker` in `src/worker.ts` — see that
+ * file for the full contract (worker protocol, `workerUrl`/`workerType`,
+ * abort, and the rejected `decoder` option).
+ */
+export function convertHeicInWorker<S extends OutputShape = 'blob'>(
+  input: HeicInput,
+  options: WorkerConvertOptions & { output?: S }
+): Promise<ConvertResult<S>> {
+  return loadWorkerModule().then((worker) => worker.convertHeicInWorker<S>(input, options));
+}
+
+/**
+ * Converts multiple HEIC images in Web Workers with bounded concurrency.
+ *
+ * Deferred wrapper around `convertManyInWorker` in `src/worker.ts` — see that
+ * file for the full contract (per-URL semaphore, abort semantics, and
+ * `continueOnError` summaries).
+ */
+export function convertManyInWorker<S extends OutputShape = 'blob'>(
+  inputs: HeicInput[],
+  options: WorkerBatchOptions & { output?: S; continueOnError: true }
+): Promise<ConvertItemResult<ConvertResult<S>>[]>;
+export function convertManyInWorker<S extends OutputShape = 'blob'>(
+  inputs: HeicInput[],
+  options: WorkerBatchOptions & { output?: S; continueOnError?: false }
+): Promise<ConvertResult<S>[]>;
+export function convertManyInWorker<S extends OutputShape = 'blob'>(
+  inputs: HeicInput[],
+  options: WorkerBatchOptions & { output?: S; continueOnError: boolean }
+): Promise<Array<ConvertResult<S> | ConvertItemResult<ConvertResult<S>>>>;
+export function convertManyInWorker<S extends OutputShape = 'blob'>(
+  inputs: HeicInput[],
+  options: WorkerBatchOptions & { output?: S }
+): Promise<Array<ConvertResult<S> | ConvertItemResult<ConvertResult<S>>>> {
+  // The `continueOnError` discriminant is what picks the public overload; the
+  // deferred call goes through the boolean overload, whose union return type
+  // is exactly what the implementation signature promises.
+  return loadWorkerModule().then((worker) =>
+    worker.convertManyInWorker<S>(
+      inputs,
+      options as WorkerBatchOptions & { output?: S; continueOnError: boolean }
+    )
+  );
+}
+
 export { HeicConverterError } from './errors';
 export type { HeicConverterErrorCode } from './errors';
 

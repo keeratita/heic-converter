@@ -1,4 +1,4 @@
-import { Messages } from './messages';
+import { Messages } from './messages/core';
 import { HeicConverterError } from './errors';
 import { SUPPORTED_FORMATS } from './types';
 import type { CropOptions, ImageFormat, ResizeOptions } from './types';
