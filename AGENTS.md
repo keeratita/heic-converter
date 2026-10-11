@@ -17,7 +17,7 @@ Key design constraints:
 
 | Command | Description |
 | --- | --- |
-| `npm run build` | Build the TS library to `dist/` (CJS + ESM + `.d.ts`) via tsup, then gzip/brotli-compress the WASM (`build-scripts/compress-wasm.mjs`) |
+| `npm run build` | Build the TS library to `dist/` — CJS + ESM via tsup, `.d.ts` via `tsc --emitDeclarationOnly` (not tsup's DTS pass — it injects the TS 6-deprecated `baseUrl`), then gzip/brotli-compress the WASM (`build-scripts/compress-wasm.mjs`) |
 | `npm run build:wasm` | Rebuild the WASM decoder (`build-scripts/build-wasm.sh`) — **requires Docker** |
 | `npm run verify:wasm` | Verify the committed Emscripten glue + WASM binary against the pinned SHA-256 hashes in `build-scripts/wasm-artifacts.json` and scan the glue for `eval`/`new Function` (runs in CI) |
 | `npm run wasm:hashes` | Regenerate `build-scripts/wasm-artifacts.json` — **must be run and committed after every `npm run build:wasm`**, or CI verification fails |

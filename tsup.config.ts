@@ -3,7 +3,15 @@ import { defineConfig } from 'tsup';
 export default defineConfig({
   entry: ['src/index.ts'],
   format: ['cjs', 'esm'],
-  dts: true,
+  // Declarations come from `tsc --emitDeclarationOnly` (see the build script),
+  // not tsup's bundled rollup-plugin-dts: tsup 8.5.1 hard-codes
+  // `baseUrl: compilerOptions.baseUrl || '.'` into the DTS program
+  // (dist/rollup.js), which TS 6 rejects as a hard TS5101 deprecation error,
+  // and the option is unremovable through tsup's config surface. The repo's
+  // own tsconfigs use no deprecated options, so emitting from tsc is
+  // deprecation-free without any `ignoreDeprecations` silencing. Revisit if
+  // tsup ever drops the injected baseUrl.
+  dts: false,
   clean: true,
   // Copies src/wasm/public/* (the decoder binary) into dist/ as a static
   // asset so it can be served next to the bundle.

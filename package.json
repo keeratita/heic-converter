@@ -26,7 +26,7 @@
     "node": ">=20.0.0"
   },
   "scripts": {
-    "build": "tsup && node build-scripts/compress-wasm.mjs",
+    "build": "tsup && tsc -p tsconfig.json --emitDeclarationOnly && node build-scripts/compress-wasm.mjs",
     "build:wasm": "bash build-scripts/build-wasm.sh",
     "verify:wasm": "node build-scripts/verify-wasm-artifacts.mjs",
     "wasm:hashes": "node build-scripts/verify-wasm-artifacts.mjs --write",
@@ -86,7 +86,7 @@
     "playwright": "^1.64.0",
     "terser": "^5.51.2",
     "tsup": "^8.0.0",
-    "typescript": "^5.0.0",
+    "typescript": "^6.0.3",
     "typescript-eslint": "^8.71.1",
     "vitest": "^5.0.3"
   }
