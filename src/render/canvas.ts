@@ -37,7 +37,7 @@ export function assertEncodeEnvironment(): void {
  * cached, and only `false` may produce `format_unsupported`. `undefined` means
  * the probe was indeterminate (wedged `toBlob`, or a throwing canvas under
  * memory pressure): callers must proceed and let the encode-time `blob.type`
- * check decide, and the next call re-probes.
+ * check decide, and the next call re-probes once the cooldown has passed.
  */
 type AvifSupport = boolean | undefined;
 
@@ -45,6 +45,16 @@ let avifSupport: Promise<AvifSupport> | null = null;
 
 /** How long the probe's toBlob may take before the attempt is deemed indeterminate. */
 const AVIF_PROBE_TIMEOUT_MS = 5000;
+
+/**
+ * An indeterminate verdict is never cached as truth, but re-probing per call
+ * makes a starved-toBlob host pay the full window each time. The latest
+ * "don't know" is honoured for this cooldown; consumers deny only on
+ * `=== false`, matching an in-flight indeterminate probe.
+ */
+/** Exported (internally) so tests advance past the cooldown, not around it. */
+export const AVIF_INDETERMINATE_COOLDOWN_MS = 10000;
+let indeterminateUntil = 0;
 
 async function runAvifProbe(): Promise<AvifSupport> {
   let probe: HTMLCanvasElement | OffscreenCanvas;
@@ -80,13 +90,17 @@ async function runAvifProbe(): Promise<AvifSupport> {
 
 export function canEncodeAvif(): Promise<AvifSupport> {
   if (avifSupport === null) {
-    // A rejected/toBlob-throwing probe is definitive (the encoder refused the
-    // type); only an indeterminate outcome stays uncached.
+    if (Date.now() < indeterminateUntil) {
+      return Promise.resolve(undefined);
+    }
+    // Rejection is definitive; indeterminate stays uncached but starts the
+    // cooldown so a burst shares one starved window.
     const attempt = runAvifProbe().catch(() => false as const);
     avifSupport = attempt;
     void attempt.then((result) => {
       if (result === undefined && avifSupport === attempt) {
         avifSupport = null;
+        indeterminateUntil = Date.now() + AVIF_INDETERMINATE_COOLDOWN_MS;
       }
     });
   }
@@ -110,6 +124,7 @@ export async function assertEncodeCapability(format: ImageFormat): Promise<void>
 /** @internal Reset the cached AVIF capability probe (tests only). */
 export function __resetAvifProbe(): void {
   avifSupport = null;
+  indeterminateUntil = 0;
 }
 
 /** @internal Re-arm the one-shot EXIF-chunk warning (tests only). */

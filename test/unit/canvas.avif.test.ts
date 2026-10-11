@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { renderAndEncode, canEncodeAvif, assertEncodeCapability, __resetAvifProbe } from '../../src/render/canvas';
+import {
+  renderAndEncode,
+  canEncodeAvif,
+  assertEncodeCapability,
+  __resetAvifProbe,
+  AVIF_INDETERMINATE_COOLDOWN_MS,
+} from '../../src/render/canvas';
 import type { DecodedImage } from '../../src/types';
 
 interface MockCanvasObject {
@@ -184,8 +190,36 @@ describe('renderAndEncode - AVIF capability probe', () => {
       // be told the browser cannot encode AVIF.
       expect(await first).toBeUndefined();
 
-      // Indeterminate results are NOT cached — a healthy next probe succeeds.
+      // Indeterminate verdicts are not cached as truth — once the cooldown
+      // passes, a healthy next probe succeeds.
       toBlobImpl = (_index, callback) => callback(new Blob(['ok'], { type: 'image/avif' }));
+      await vi.advanceTimersByTimeAsync(AVIF_INDETERMINATE_COOLDOWN_MS + 1);
+      expect(await canEncodeAvif()).toBe(true);
+      expect(toBlobCalls.filter((call) => call.type === 'image/avif')).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('bursts share one starved probe window (cooldown, never a denial)', async () => {
+    vi.useFakeTimers();
+    try {
+      toBlobImpl = () => {
+        // Wedged engine, same as above — the first call pays the 5s window.
+      };
+      const first = canEncodeAvif();
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(await first).toBeUndefined();
+
+      // Inside the cooldown: no re-probe (each costs a starved window) and
+      // no denial (only `=== false` denies).
+      toBlobImpl = (_index, callback) => callback(new Blob(['ok'], { type: 'image/avif' }));
+      expect(await canEncodeAvif()).toBeUndefined();
+      expect(await canEncodeAvif()).toBeUndefined();
+      expect(toBlobCalls.filter((call) => call.type === 'image/avif')).toHaveLength(1);
+
+      // Past the cooldown the engine gets a fresh chance.
+      await vi.advanceTimersByTimeAsync(AVIF_INDETERMINATE_COOLDOWN_MS + 1);
       expect(await canEncodeAvif()).toBe(true);
       expect(toBlobCalls.filter((call) => call.type === 'image/avif')).toHaveLength(2);
     } finally {
@@ -233,7 +267,14 @@ describe('renderAndEncode - AVIF capability probe', () => {
     });
     expect(await canEncodeAvif()).toBeUndefined();
 
-    expect(await canEncodeAvif()).toBe(true);
+    // Indeterminate starts the cooldown; the re-probe happens once it passes.
+    vi.useFakeTimers();
+    try {
+      await vi.advanceTimersByTimeAsync(AVIF_INDETERMINATE_COOLDOWN_MS + 1);
+      expect(await canEncodeAvif()).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
     expect(toBlobCalls.filter((call) => call.type === 'image/avif')).toHaveLength(1);
   });
 });
