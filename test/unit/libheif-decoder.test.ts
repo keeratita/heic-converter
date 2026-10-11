@@ -158,6 +158,33 @@ describe('LibheifDecoder (mocked glue)', () => {
       await expect(decoder.decode(mockData)).rejects.toThrow('HEIC decoding failed: Invalid HEIC format');
     });
 
+    it('should clamp an oversized decoder error detail to 200 characters', async () => {
+      // Decoder strings are partly built from raw container bytes and land in
+      // error.message (logs, demo DOM): oversized details must be clamped to
+      // 200 characters with an ellipsis, control characters stripped.
+      const mockData = new Uint8Array([1, 2, 3, 4]);
+      mockState.mockDecoderInstance.decode.mockReturnValue(
+        `heif: ${'x'.repeat(300)}\u0000trailing`
+      );
+
+      const decoder = new LibheifDecoder();
+      await decoder.initialize();
+
+      const error = await decoder.decode(mockData).catch((e) => e);
+      expect(error).toBeInstanceOf(HeicConverterError);
+      // Full template: `HEIC decoding failed: ${detail} (input: ${bytes} bytes)`.
+      const prefix = 'HEIC decoding failed: ';
+      const suffix = ` (input: ${mockData.byteLength} bytes)`;
+      expect(error.message.startsWith(prefix)).toBe(true);
+      expect(error.message.endsWith(suffix)).toBe(true);
+      const detail = error.message.slice(prefix.length, -suffix.length);
+      expect(detail).toHaveLength(200);
+      expect(detail.endsWith('...')).toBe(true);
+      // Matching control characters *is* the point: asserting the strip step.
+      // eslint-disable-next-line no-control-regex
+      expect(detail).not.toMatch(/[\u0000\u0007]/);
+    });
+
     it('should auto-initialize if not initialized before decode', async () => {
       const mockData = new Uint8Array([1, 2, 3, 4]);
       const mockResult = {

@@ -644,6 +644,44 @@ describe('convertMany - reuseDecoders (pool)', () => {
   );
 });
 
+describe('convertMany - reuseDecoders: disposal', () => {
+  it('frees an in-flight leased decoder even after the batch disposed the pool', async () => {
+    // An early rejection disposes the pool while the slow item still holds
+    // its lease: release() must free the handed-out instance instead of
+    // re-parking it — and a throwing free() must stay swallowed there,
+    // because a poisoned cleanup must not turn into an unhandled rejection.
+    let slowFree: ReturnType<typeof vi.fn> | undefined;
+    resetConvertMocks({
+      decodeImpl: async (data, _onProgress, self) => {
+        const value = data[0];
+        if (value === 9) {
+          throw new Error('decode failed for input 9');
+        }
+        slowFree = vi.fn(() => {
+          throw new Error('free boom');
+        });
+        if (self) {
+          self.free = slowFree;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        return { width: 1, height: 1, data: new Uint8ClampedArray([1, 0, 0, 255]) };
+      },
+    });
+
+    await expect(
+      convertMany([new Uint8Array([9]), new Uint8Array([1])], {
+        concurrency: 2,
+        reuseDecoders: true,
+      })
+    ).rejects.toThrow('decode failed for input 9');
+
+    // The slow item settles in the background; its lease goes through the
+    // disposed branch of pool.release() and survives the throwing free().
+    await vi.waitFor(() => expect(slowFree).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(mockState.decoderInstances).toHaveLength(2));
+  });
+});
+
 describe('convertMany - AbortSignal', () => {
   beforeEach(() => {
     resetConvertMocks({ renderAndEncode: renderFromPixel, decodeImpl: batchDecodeImpl });

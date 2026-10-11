@@ -133,6 +133,45 @@ describe('convertHeic - Input Types', () => {
     expect(error.message).toContain('late crash');
   });
 
+  it('should stringify a non-Error throw from the final 100% callback', async () => {
+    // Hosts and minifiers can throw non-Error values; the wrapper must still
+    // name them in the message instead of reading .message off a string.
+    const error = await convertHeic(new Uint8Array([1]), {
+      onProgress: (percent) => {
+        if (percent >= 100) {
+          throw 'late string crash';
+        }
+      },
+    }).catch((e) => e);
+
+    expect(error.code).toBe('progress_callback_failed');
+    expect(error.message).toContain('late string crash');
+    expect(error.cause).toBe('late string crash');
+  });
+
+  it('should stringify a non-Error throw recorded mid-decode and surface it at completion', async () => {
+    resetConvertMocks({
+      decodeImpl: async (_data, onProgress) => {
+        onProgress?.(50);
+        return { width: 1, height: 1, data: new Uint8ClampedArray(4) };
+      },
+    });
+
+    // Mid-decode throws are recorded, not thrown, so the conversion can
+    // finish; the recorded non-Error must be stringified at complete().
+    const error = await convertHeic(new Uint8Array([1]), {
+      onProgress: (percent) => {
+        if (percent < 100) {
+          throw 'mid-decode string';
+        }
+      },
+    }).catch((e) => e);
+
+    expect(error.code).toBe('progress_callback_failed');
+    expect(error.message).toContain('mid-decode string');
+    expect(error.cause).toBe('mid-decode string');
+  });
+
   it('should throw on unsupported input type', async () => {
     const invalidInput = { foo: 'bar' } as unknown as Uint8Array;
 

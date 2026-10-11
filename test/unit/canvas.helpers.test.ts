@@ -50,6 +50,32 @@ describe('blobToBase64', () => {
     expect(result).toContain('dGVzdA=='); // base64 of "test"
   });
 
+  it('should reject with a generic cause when FileReader.error is unset', async () => {
+    // Hosts may fire onerror without ever populating error; the rejection
+    // must stay typed with a fallback cause instead of reading
+    // undefined.message.
+    const blob = new Blob(['hello world'], { type: 'text/plain' });
+
+    class MockFileReaderNoError {
+      result: string | null = null;
+      onloadend: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+
+      readAsDataURL(): void {
+        setTimeout(() => {
+          this.onerror?.();
+        }, 0);
+      }
+    }
+
+    global.FileReader = MockFileReaderNoError as unknown as typeof FileReader;
+
+    const error = await blobToBase64(blob).catch((e) => e);
+    expect(error.code).toBe('render_encode_failed');
+    expect(error.message).toContain('FileReader failed');
+    expect(error.cause).toBeUndefined();
+  });
+
   it('should reject when FileReader result is not a string', async () => {
     const blob = new Blob(['test'], { type: 'image/png' });
 

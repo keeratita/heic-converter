@@ -445,3 +445,45 @@ describe('a malformed EXIF header is refused by every injector', () => {
     expect(normalizeOrientationTag(block), label).toBe(block);
   });
 });
+
+/**
+ * The injector catch-alls implement "metadata loss, never corruption": any
+ * surprise while splicing returns the original bytes untouched. Overriding
+ * the view methods the splicing itself relies on is the sharpest way to
+ * reach those catches without touching production code — it simulates
+ * encoder output that trips the splice, not a malformed EXIF block.
+ */
+describe('the catch-alls return the original bytes when splicing throws', () => {
+  class HostileSubarray extends Uint8Array {
+    override subarray(): never {
+      throw new Error('hostile subarray');
+    }
+  }
+  class HostileSlice extends Uint8Array {
+    override slice(): never {
+      throw new Error('hostile slice');
+    }
+  }
+
+  // Hostile bytes must go through Sub.from(), not `new Sub(...bytes)`: the
+  // inherited TypedArray constructor reads a numeric first argument as the
+  // *length* and returns zeros, which the magic-byte guards reject long
+  // before the splice (0xff as the first JPEG byte made exactly that bug
+  // pass green without touching a single catch).
+  it('injectExifIntoJpeg returns the original JPEG unchanged', () => {
+    const hostile = HostileSubarray.from(jpeg(SOS));
+    expect(injectExifIntoJpeg(hostile, EXIF_BLOCK)).toBe(hostile);
+  });
+
+  it('injectExifIntoPng returns the original PNG unchanged', () => {
+    const hostile = HostileSubarray.from(png(IHDR, IDAT, IEND));
+    expect(injectExifIntoPng(hostile, EXIF_BLOCK)).toBe(hostile);
+  });
+
+  it('normalizeOrientationTag returns the original block unchanged', () => {
+    // EXIF_BLOCK carries orientation 6, so the rewrite reaches block.slice()
+    // — the copy it can never complete must fall back to the input itself.
+    const hostile = HostileSlice.from(EXIF_BLOCK);
+    expect(normalizeOrientationTag(hostile)).toBe(hostile);
+  });
+});

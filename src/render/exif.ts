@@ -27,6 +27,7 @@ function hasExifMarker(block: Uint8Array): boolean {
 }
 
 function isTiffHeader(bytes: Uint8Array, at: number): boolean {
+  /* v8 ignore next 2 -- the sole caller (hasExifMarker) pre-checks block.length >= marker + 8 before invoking; bounds guard is defence in depth */
   if (at + 8 > bytes.length) {
     return false;
   }

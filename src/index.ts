@@ -50,6 +50,7 @@ import type { WorkerBatchOptions, WorkerConvertOptions } from './worker';
  */
 function loadWorkerModule(): Promise<typeof import('./worker')> {
   return import('./worker').catch((cause: unknown) => {
+    /* v8 ignore next 1 -- chunk fetches reject with Errors on every real host, and vitest's module mocker wraps factory throws in an Error, so the String(cause) arm of this ternary is not reproducible under test */
     const reason = cause instanceof Error ? cause.message : String(cause);
     throw new HeicConverterError('worker_load_failed', Messages.WorkerChunkLoadFailed(reason), {
       cause
@@ -288,6 +289,7 @@ function createProgressReporter(
       }
     },
     complete: (): void => {
+      /* v8 ignore if -- convertHeic calls complete() exactly once per conversion (its only call site), and every conversion gets a fresh wrapper */
       if (done) {
         return;
       }
@@ -462,10 +464,12 @@ class DecoderPool {
     if (idle) {
       return idle;
     }
+    /* v8 ignore else -- the pool bound equals the runner count (both sides call runnerCountFor() with the same arguments), so every runner's acquire is satisfiable without queueing; the waiting arm is a deadlock guard for that invariant */
     if (this.leasedCount < this.max) {
       this.leasedCount += 1;
       return new LibheifDecoder();
     }
+    /* v8 ignore next 1 -- waiters cannot form; see the acquire() invariant comment */
     return new Promise<LibheifDecoder>((resolve) => this.waiters.push(resolve));
   }
 
@@ -491,6 +495,7 @@ class DecoderPool {
         // Best-effort cleanup.
       }
       const waiter = this.waiters.shift();
+      /* v8 ignore if -- waiters cannot form (pool bound === runner count); this hand-off is part of the deadlock guard */
       if (waiter) {
         this.leasedCount += 1;
         waiter(new LibheifDecoder());
@@ -498,6 +503,7 @@ class DecoderPool {
       return;
     }
     const waiter = this.waiters.shift();
+    /* v8 ignore if -- waiters cannot form (pool bound === runner count); every release today takes the else and re-parks */
     if (waiter) {
       waiter(decoder);
     } else {
@@ -518,6 +524,7 @@ class DecoderPool {
     // Defensive: never leave an acquire() parked forever. Handed-out
     // instances are freed by release() on the disposed branch.
     for (const resolve of this.waiters.splice(0)) {
+      /* v8 ignore next 1 -- waiters cannot form; the splice loop exists so a future invariant break can never park an acquire forever */
       resolve(new LibheifDecoder());
     }
   }

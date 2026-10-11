@@ -26,7 +26,7 @@ Key design constraints:
 | `npm test` / `npm run test` | Run unit tests (Vitest, Node environment) |
 | `npm run test:watch` | Run unit tests in watch mode |
 | `npm run test:e2e` | Run browser E2E tests (real conversions in the CSP sandbox + GitHub Pages demo) via Playwright — requires `npx playwright install chromium` once |
-| `npm run test:coverage` | Run tests with coverage; thresholds are enforced in `vitest.config.ts` (80% lines/functions/statements, 70% branches) |
+| `npm run test:coverage` | Run tests with coverage; thresholds are enforced in `vitest.config.ts` (100% lines, functions, statements and branches — unreachable guards carry `/* v8 ignore */` with a documented reason) |
 | `npm run sandbox` | Start the interactive CSP sandbox server at `http://localhost:3000` (`test/browser/server.mjs`) |
 | `npm run lint` | ESLint over the whole repo (also runs via the `pre-commit` husky hook) |
 | `npm run typecheck` | `tsc --noEmit -p tsconfig.test.json` over **`src/` and `test/`** — `tsconfig.json` excludes `test/`, so without this the ~650 tests are never type-checked (runs in CI and `pre-commit`) |
