@@ -39,6 +39,8 @@ export const Messages = {
     `continueOnError must be a boolean, got: ${value}`,
   PreserveExifInvalid: (value: unknown): string =>
     `preserveExif must be a boolean, got: ${value}`,
+  NativeDecodeInvalid: (value: unknown): string =>
+    `nativeDecode must be a boolean, got: ${value}`,
   SignalInvalid: (value: unknown): string =>
     `signal must be an AbortSignal, got: ${value}`,
   Aborted: 'Conversion aborted (AbortSignal was aborted)',

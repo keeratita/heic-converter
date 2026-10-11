@@ -101,6 +101,54 @@ export class MockLibheifDecoder {
   }
 }
 
+interface NativeMockState {
+  support: boolean | undefined;
+  instances: MockDecoderInstance[];
+  decodeShouldThrow: boolean;
+  initializeShouldThrow: boolean;
+  getSupport: ReturnType<typeof vi.fn>;
+  markSupported: ReturnType<typeof vi.fn>;
+  markUnsupported: ReturnType<typeof vi.fn>;
+}
+
+/** State for the vi.mock('../../src/wasm/native') factory; tests pre-seed `support`. */
+export const nativeMockState: NativeMockState = {
+  support: undefined,
+  instances: [],
+  decodeShouldThrow: false,
+  initializeShouldThrow: false,
+  getSupport: vi.fn(() => nativeMockState.support),
+  markSupported: vi.fn(() => {
+    nativeMockState.support = true;
+  }),
+  markUnsupported: vi.fn(() => {
+    nativeMockState.support = false;
+  }),
+};
+
+/** Mock of NativeHeicDecoder used by the vi.mock('../../src/wasm/native') factory. */
+export class MockNativeHeicDecoder {
+  initialize = vi.fn(async (): Promise<void> => {
+    if (nativeMockState.initializeShouldThrow) {
+      throw new Error('Native HEIC decoding is unavailable in this environment.');
+    }
+  });
+  decode = vi.fn(async (): Promise<DecodedImage> => {
+    if (nativeMockState.decodeShouldThrow) {
+      throw new Error('createImageBitmap refused the HEIC');
+    }
+    return {
+      ...mockState.defaultDecodedImage,
+      data: new Uint8ClampedArray(mockState.defaultDecodedImage.data),
+    } satisfies DecodedImage;
+  });
+  free = vi.fn(() => undefined);
+
+  constructor() {
+    nativeMockState.instances.push(this as unknown as MockDecoderInstance);
+  }
+}
+
 /**
  * Reset all mock state between tests. Pass `overrides` for suites with
  * custom render/decode behavior (the custom implementation becomes the
@@ -120,6 +168,13 @@ export function resetConvertMocks(overrides?: {
   mockState.decodeImpl = overrides?.decodeImpl ?? null;
   mockState.initializeShouldThrow = false;
   mockState.initializeThrowValue = null;
+  nativeMockState.support = undefined;
+  nativeMockState.instances.length = 0;
+  nativeMockState.decodeShouldThrow = false;
+  nativeMockState.initializeShouldThrow = false;
+  nativeMockState.getSupport.mockClear();
+  nativeMockState.markSupported.mockClear();
+  nativeMockState.markUnsupported.mockClear();
   if (overrides?.decodedImage) {
     mockState.defaultDecodedImage = overrides.decodedImage;
   }

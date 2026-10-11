@@ -1263,6 +1263,7 @@ describe('worker entry-point validation (main thread)', () => {
     ['unknown output shape', { output: 'json' }, 'invalid_input'],
     ['zero-width crop', { crop: { x: 0, y: 0, width: 0, height: 1 } }, 'invalid_crop'],
     ['non-boolean preserveExif', { preserveExif: 'yes' }, 'invalid_input'],
+    ['non-boolean nativeDecode', { nativeDecode: 'yes' }, 'invalid_input'],
     ['non-positive scale', { scale: 0 }, 'invalid_resize'],
     ['fractional maxConcurrentWorkers', { maxConcurrentWorkers: 1.5 }, 'invalid_concurrency'],
     ['negative timeoutMs', { timeoutMs: -5 }, 'invalid_input'],

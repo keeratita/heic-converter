@@ -229,6 +229,19 @@ export interface ConvertOptions extends ResizeOptions {
    * @default false
    */
   preserveExif?: boolean;
+
+  /**
+   * Decode with the platform's native HEIC stack (`createImageBitmap` on
+   * Safari/iOS, Edge, Windows) instead of the bundled libheif WASM decoder,
+   * skipping its ~300 KB payload. Hosts without native HEIC support fall
+   * back to libheif on the same conversion; the refusal is cached per realm.
+   *
+   * Ignored (libheif used) with an injected `decoder`, `preserveExif: true`
+   * or `applyOrientation: false`. Native output is upright and progress
+   * fires only at completion (tile progress is a libheif feature).
+   * @default false
+   */
+  nativeDecode?: boolean;
 }
 
 export interface ConvertManyOptions extends Omit<ConvertOptions, 'onProgress'> {

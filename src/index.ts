@@ -21,7 +21,9 @@ import type {
   ConvertManyOptions,
   ConvertOptions,
   ConvertResult,
+  DecodedImage,
   HeicInput,
+  IHeicDecoder,
   OutputShape,
 } from './types';
 import { DEFAULT_QUALITY } from './types';
@@ -352,11 +354,35 @@ export async function convertHeic<S extends OutputShape = 'blob'>(
   const buffer = await resolveInputBytes(input);
   throwIfAborted(signal);
 
-  // 3. Select decoder (user-injected, a pooled instance injected by
-  // convertMany, or a fresh per-call instance, so concurrent conversions
-  // never share mutable WASM state).
-  const decoder = options?.decoder ?? new LibheifDecoder();
-  const ownsDecoder = !options?.decoder;
+  // 3. Select the decode strategy: an injected instance (incl. the pooled
+  // lease) wins; opted-in nativeDecode uses the platform decoder when policy
+  // allows — EXIF and stored-geometry contracts are libheif-only, so those
+  // options pin the WASM path. Owned instances stay exclusive here.
+  let decoder: IHeicDecoder;
+  let ownsDecoder: boolean;
+  let usingNative = false;
+  let nativeModule: typeof import('./wasm/native') | undefined;
+  if (options?.decoder) {
+    decoder = options.decoder;
+    ownsDecoder = false;
+  } else if (
+    options?.nativeDecode === true &&
+    options?.preserveExif !== true &&
+    options?.applyOrientation !== false
+  ) {
+    // Capability lives in the lazy chunk; importing it is the opt-in cost.
+    nativeModule = await import('./wasm/native');
+    if (nativeModule.getNativeHeicSupport() === false) {
+      decoder = new LibheifDecoder(); // a previous attempt already refused
+    } else {
+      decoder = new nativeModule.NativeHeicDecoder();
+      usingNative = true;
+    }
+    ownsDecoder = true;
+  } else {
+    decoder = new LibheifDecoder();
+    ownsDecoder = true;
+  }
 
   // Release the owned decoder right after decode() (before the memory-hungry
   // render/encode stage) and again in finally; never free a user-injected one.
@@ -375,20 +401,38 @@ export async function convertHeic<S extends OutputShape = 'blob'>(
   };
 
   try {
-    // 4. Initialize and decode
-    try {
-      await decoder.initialize();
-    } catch (error) {
-      throw new HeicConverterError(
-        'decoder_init_failed',
-        Messages.DecoderInitFailed(error instanceof Error ? error.message : String(error)),
-        { cause: error }
-      );
-    }
-    throwIfAborted(signal);
-
+    // 4. Initialize and decode. A failed native attempt degrades
+    // transparently: mark the realm unsupported and retry once with
+    // libheif, the reference decoder.
     const progress = createProgressReporter(options?.onProgress);
-    const decoded = await decoder.decode(buffer, progress ? progress.report : undefined);
+    const initAndDecode = async (strategy: IHeicDecoder): Promise<DecodedImage> => {
+      try {
+        await strategy.initialize();
+      } catch (error) {
+        throw new HeicConverterError(
+          'decoder_init_failed',
+          Messages.DecoderInitFailed(error instanceof Error ? error.message : String(error)),
+          { cause: error }
+        );
+      }
+      throwIfAborted(signal);
+      return strategy.decode(buffer, progress ? progress.report : undefined);
+    };
+
+    let decoded: DecodedImage;
+    try {
+      decoded = await initAndDecode(decoder);
+    } catch (error) {
+      if (!usingNative) {
+        throw error;
+      }
+      nativeModule!.markNativeHeicUnsupported();
+      freeDecoder();
+      decoder = new LibheifDecoder();
+      decoderFreed = false;
+      usingNative = false;
+      decoded = await initAndDecode(decoder);
+    }
 
     // Pixel data is heap-independent (see LibheifDecoder), so freeing the
     // decoder here is safe.
@@ -589,7 +633,10 @@ export async function convertMany<S extends OutputShape = 'blob'>(
     ...itemOptions
   } = options ?? {};
 
-  const usePool = reuseDecoders === true && options?.decoder === undefined;
+  // The pool leases LibheifDecoder instances; leasing one into a native
+  // batch would silently defeat nativeDecode, so native batches bypass it.
+  const usePool =
+    reuseDecoders === true && options?.decoder === undefined && options?.nativeDecode !== true;
   const pool = usePool ? new DecoderPool(runnerCountFor(concurrency, inputs.length)) : null;
 
   try {

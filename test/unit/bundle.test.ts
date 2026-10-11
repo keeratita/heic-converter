@@ -19,10 +19,20 @@ const isBuilt = existsSync(`${DIST}/index.mjs`);
 // still copying publicDir would otherwise delete every guard in this file.
 const isCI = !!process.env.CI;
 
-const EAGER_BUDGET_BYTES = 22_000;
+// 23_000 (from 22_000): the nativeDecode selection policy and option
+// validator are eager by necessity — they decide whether the lazy chunk may
+// be used — and cannot be deferred. ESM (what browsers load) is ~21.2 K; the
+// CJS interop helpers push the CJS pass over the old ceiling.
+const EAGER_BUDGET_BYTES = 23_000;
 /** A hoisted implementation leaves a re-export stub on the dynamic edge, so the import() check alone passes. */
 const DEFERRED_CHUNK_MIN_BYTES = 1_000;
-const DEFERRED_MODULES = ['worker', 'exif', 'heic-decoder'];
+/** Prefix → floor. The native Strategy is ~970 B raw; a hoist stub is <200 B. */
+const DEFERRED_MODULES: Array<{ prefix: string; min: number }> = [
+  { prefix: 'worker', min: DEFERRED_CHUNK_MIN_BYTES },
+  { prefix: 'exif', min: DEFERRED_CHUNK_MIN_BYTES },
+  { prefix: 'heic-decoder', min: DEFERRED_CHUNK_MIN_BYTES },
+  { prefix: 'native', min: 600 },
+];
 
 // Deliberately loose (~15-20%): these catch a dropped build flag, not version
 // drift. Losing -s FILESYSTEM=0 trips the glue ceilings; losing the -Oz archives
@@ -94,16 +104,14 @@ describe.skipIf(!isBuilt && !isCI)('bundle boundaries (requires npm run build)',
 
   // ESM and CJS are separate tsup passes: each is checked so one cannot regress
   // while the other stays deferred.
-  it.each(DEFERRED_MODULES)('defers %s behind a dynamic import', (prefix) => {
+  it.each(DEFERRED_MODULES)('defers $prefix behind a dynamic import', ({ prefix, min }) => {
     const chunk = chunkFile(prefix);
     for (const [file, source] of eagerGraph()) {
       expect(new RegExp(`from\\s*"\\./${chunk}"`).test(source), `${file} statically imports ${chunk}`).toBe(false);
     }
     expect(entrySource(), `${chunk} is not reachable from the entry`).toContain(`./${chunk}`);
     const bytes = bytesOf(chunk);
-    expect(bytes, `${chunk} is ${bytes} bytes — its code was hoisted into the eager chunk`).toBeGreaterThan(
-      DEFERRED_CHUNK_MIN_BYTES
-    );
+    expect(bytes, `${chunk} is ${bytes} bytes — its code was hoisted into the eager chunk`).toBeGreaterThan(min);
   });
 
   it('keeps worker-only error text out of the eagerly loaded graph', () => {
@@ -127,7 +135,7 @@ describe.skipIf(!isBuilt && !isCI)('bundle boundaries (requires npm run build)',
     ).toBeLessThan(EAGER_BUDGET_BYTES);
   });
 
-  it.each(DEFERRED_MODULES)('defers %s behind a dynamic import in the CJS build too', (prefix) => {
+  it.each(DEFERRED_MODULES)('defers $prefix behind a dynamic import in the CJS build too', ({ prefix, min }) => {
     const chunk = chunkFile(prefix, '.js');
     for (const [file, source] of staticGraph('index.js', CJS_DEP)) {
       expect(
@@ -141,9 +149,7 @@ describe.skipIf(!isBuilt && !isCI)('bundle boundaries (requires npm run build)',
     // above (a static edge would have made this graph include the chunk).
     expect(cjsEntry, `${chunk} is not reachable from the CJS entry`).toContain(`./${chunk}`);
     const bytes = bytesOf(chunk);
-    expect(bytes, `${chunk} is ${bytes} bytes — its code was hoisted into the eager CJS chunk`).toBeGreaterThan(
-      DEFERRED_CHUNK_MIN_BYTES
-    );
+    expect(bytes, `${chunk} is ${bytes} bytes — its code was hoisted into the eager CJS chunk`).toBeGreaterThan(min);
   });
 
   it('keeps the eagerly loaded CJS within budget', () => {

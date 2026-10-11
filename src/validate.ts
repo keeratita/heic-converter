@@ -21,6 +21,7 @@ export function validateConvertOptions(options?: {
   signal?: AbortSignal;
   crop?: CropOptions;
   preserveExif?: boolean;
+  nativeDecode?: boolean;
   maxWidth?: number;
   maxHeight?: number;
   scale?: number;
@@ -34,6 +35,7 @@ export function validateConvertOptions(options?: {
   validateSignal(options?.signal);
   validateCrop(options?.crop);
   validatePreserveExif(options?.preserveExif);
+  validateNativeDecode(options?.nativeDecode);
   validateResize(
     options?.maxWidth !== undefined || options?.maxHeight !== undefined || options?.scale !== undefined
       ? options
@@ -105,6 +107,13 @@ export function validateContinueOnError(continueOnError: unknown): void {
 export function validatePreserveExif(preserveExif: unknown): void {
   if (preserveExif !== undefined && typeof preserveExif !== 'boolean') {
     throw new HeicConverterError('invalid_input', Messages.PreserveExifInvalid(preserveExif));
+  }
+}
+
+/** @throws `invalid_input` for a non-boolean nativeDecode flag. */
+export function validateNativeDecode(nativeDecode: unknown): void {
+  if (nativeDecode !== undefined && typeof nativeDecode !== 'boolean') {
+    throw new HeicConverterError('invalid_input', Messages.NativeDecodeInvalid(nativeDecode));
   }
 }
 
