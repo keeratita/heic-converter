@@ -78,15 +78,15 @@ function loadWorkerModule(): Promise<typeof import('./worker')> {
  * import { convertHeic } from '@keeratita/heic-converter';
  *
  * self.onmessage = async (event) => {
- *   const { input, options } = event.data;
+ *   const { id, input, options } = event.data;
  *   try {
  *     const blob = await convertHeic(input, {
  *       ...options,
- *       onProgress: (percent) => self.postMessage({ type: 'progress', percent }),
+ *       onProgress: (percent) => self.postMessage({ id, type: 'progress', percent }),
  *     });
- *     self.postMessage({ type: 'result', ok: true, blob });
+ *     self.postMessage({ id, type: 'result', ok: true, blob });
  *   } catch (error) {
- *     self.postMessage({ type: 'result', ok: false, error: error?.stack ?? error?.message ?? String(error) });
+ *     self.postMessage({ id, type: 'result', ok: false, error: error?.stack ?? error?.message ?? String(error) });
  *   }
  * };
  * ```
@@ -135,11 +135,13 @@ export function convertHeicInWorker<S extends OutputShape = 'blob'>(
  * or `continueOnError` per-item results). Concurrency is bounded by
  * `maxConcurrentWorkers` (default `navigator.hardwareConcurrency` clamped to
  * 1–8): items queue behind the worker semaphore, so a large batch never
- * exhausts memory or the browser's worker limit. Each item runs in its own
- * worker instance via {@link convertHeicInWorker}, which means `decoder` cannot
- * be injected and `workerUrl` is required. See that function for the worker
- * script protocol and the caveats about `timeoutMs`, the worker boundary, and
- * `worker_load_failed`.
+ * exhausts memory or the browser's worker limit. Workers are pooled per
+ * `workerUrl`, so items reuse live instances rather than paying boot per
+ * item (see the worker-protocol note above — the script must stay alive
+ * across requests). Via {@link convertHeicInWorker}, which means `decoder`
+ * cannot be injected and `workerUrl` is required. See that function for the
+ * worker script protocol and the caveats about `timeoutMs`, the worker
+ * boundary, and `worker_load_failed`.
  *
  * ```ts
  * const blobs = await convertManyInWorker(heicFiles, {
@@ -311,6 +313,39 @@ function createProgressReporter(
 }
 
 /**
+ * The `nativeDecode` selection policy — single source of truth: `convertHeic`
+ * consults it before picking a Strategy and `convertMany` consults it before
+ * leasing from the DecoderPool, so they can never drift (a drift would let
+ * the pool lease libheif into a native batch, or silently drop the opt-in).
+ * The native Strategy yields no Exif item and cannot report stored geometry,
+ * so those options pin the libheif path.
+ */
+function nativeDecodeEligible(
+  options: Pick<ConvertOptions, 'nativeDecode' | 'preserveExif' | 'applyOrientation'> | undefined
+): boolean {
+  return (
+    options?.nativeDecode === true &&
+    options?.preserveExif !== true &&
+    options?.applyOrientation !== false
+  );
+}
+
+let nativeChunkWarned = false;
+
+/**
+ * A failed fetch of the native chunk is a deployment problem (partial
+ * upload, wrong MIME), not a platform verdict: warn once — like the EXIF
+ * chunk degradation — and keep using libheif without caching a refusal.
+ */
+function warnNativeChunkLoad(reason: string): void {
+  if (nativeChunkWarned) {
+    return;
+  }
+  nativeChunkWarned = true;
+  console.warn(Messages.NativeChunkLoadWarning(reason));
+}
+
+/**
  * Converts HEIC image data to a standard web format (JPEG, PNG, WebP, AVIF,
  * or SVG).
  *
@@ -365,18 +400,19 @@ export async function convertHeic<S extends OutputShape = 'blob'>(
   if (options?.decoder) {
     decoder = options.decoder;
     ownsDecoder = false;
-  } else if (
-    options?.nativeDecode === true &&
-    options?.preserveExif !== true &&
-    options?.applyOrientation !== false
-  ) {
+  } else if (nativeDecodeEligible(options)) {
     // Capability lives in the lazy chunk; importing it is the opt-in cost.
-    nativeModule = await import('./wasm/native');
-    if (nativeModule.getNativeHeicSupport() === false) {
-      decoder = new LibheifDecoder(); // a previous attempt already refused
-    } else {
+    try {
+      nativeModule = await import('./wasm/native');
+    } catch (cause) {
+      /* v8 ignore next 1 -- hosts reject with Errors; the String(cause) arm is unreproducible */
+      warnNativeChunkLoad(cause instanceof Error ? cause.message : String(cause));
+    }
+    if (nativeModule !== undefined && !nativeModule.isNativeHeicRefused()) {
       decoder = new nativeModule.NativeHeicDecoder();
       usingNative = true;
+    } else {
+      decoder = new LibheifDecoder(); // a previous attempt refused, or the chunk is unavailable
     }
     ownsDecoder = true;
   } else {
@@ -426,7 +462,19 @@ export async function convertHeic<S extends OutputShape = 'blob'>(
       if (!usingNative) {
         throw error;
       }
-      nativeModule!.markNativeHeicUnsupported();
+      if (error instanceof HeicConverterError && error.code === 'aborted') {
+        // Cancellation is not a capability verdict: never mark on it.
+        throw error;
+      }
+      if (error instanceof HeicConverterError && error.code === 'decoder_init_failed') {
+        // Environment-class failure (missing platform API): stable for the
+        // realm, so cache it and skip later attempts. Decode-class failures
+        // are input properties (corrupt file, absurd declared size, transient
+        // 2D pressure) — marking those would let one bad upload cost native
+        // speed for the whole page.
+        nativeModule!.markNativeHeicRefused();
+      }
+      throwIfAborted(signal); // do not pay for a WASM load on a cancelled conversion
       freeDecoder();
       decoder = new LibheifDecoder();
       decoderFreed = false;
@@ -633,10 +681,11 @@ export async function convertMany<S extends OutputShape = 'blob'>(
     ...itemOptions
   } = options ?? {};
 
-  // The pool leases LibheifDecoder instances; leasing one into a native
-  // batch would silently defeat nativeDecode, so native batches bypass it.
-  const usePool =
-    reuseDecoders === true && options?.decoder === undefined && options?.nativeDecode !== true;
+  // The pool leases LibheifDecoder instances; leasing one into a batch that
+  // is actually taking the native path would silently defeat nativeDecode,
+  // so it bypasses the pool. Batches whose opt-in is policy-pinned to
+  // libheif (preserveExif etc.) still pool — see nativeDecodeEligible.
+  const usePool = reuseDecoders === true && options?.decoder === undefined && !nativeDecodeEligible(options);
   const pool = usePool ? new DecoderPool(runnerCountFor(concurrency, inputs.length)) : null;
 
   try {

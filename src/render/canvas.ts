@@ -13,9 +13,11 @@ export { validateCrop, validateFormat, validateResize } from '../validate';
  * (e.g. 16384px per side in Chrome); this guard turns absurd scale
  * factors into a clear error instead of an allocation failure. The WASM
  * wrapper (build-wasm/wrapper/main.cpp) enforces the same per-side cap
- * before allocating decoded pixels — keep the two in sync.
+ * before allocating decoded pixels, as does the native Strategy
+ * (`src/wasm/native.ts`) before its canvas + ImageData readback — keep
+ * them in sync.
  */
-const MAX_CANVAS_DIMENSION = 16384;
+export const MAX_CANVAS_DIMENSION = 16384;
 
 /**
  * Cheap probe for canvas support, safe to call before an expensive decode.
@@ -43,16 +45,16 @@ type AvifSupport = boolean | undefined;
 
 let avifSupport: Promise<AvifSupport> | null = null;
 
-/** How long the probe's toBlob may take before the attempt is deemed indeterminate. */
-const AVIF_PROBE_TIMEOUT_MS = 5000;
+/** How long the probe's toBlob may take before the attempt is deemed indeterminate. Exported so tests control the window. */
+export const AVIF_PROBE_TIMEOUT_MS = 5000;
 
 /**
  * An indeterminate verdict is never cached as truth, but re-probing per call
  * makes a starved-toBlob host pay the full window each time. The latest
  * "don't know" is honoured for this cooldown; consumers deny only on
  * `=== false`, matching an in-flight indeterminate probe.
+ * Exported (internally) so tests advance past the cooldown, not around it.
  */
-/** Exported (internally) so tests advance past the cooldown, not around it. */
 export const AVIF_INDETERMINATE_COOLDOWN_MS = 10000;
 let indeterminateUntil = 0;
 

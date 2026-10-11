@@ -26,6 +26,10 @@ export const Messages = {
     `Failed to initialize HEIC decoder: ${message} — verify heic-decoder.wasm is served (dist/heic-decoder.wasm; see the README "Serving and Locating WASM" section / locateFile option) and that your CSP allows 'wasm-unsafe-eval'`,
   WorkerChunkLoadFailed: (message: string): string =>
     `Failed to load the Web Worker implementation chunk (dist/worker-*.mjs): ${message} — deploy every file in dist/ together, or use convertHeic to convert in the current thread`,
+  NativeChunkLoadWarning: (message: string): string =>
+    '@keeratita/heic-converter: the native-decode chunk could not be loaded (' +
+    `${message}) — converting with the bundled decoder; serve every file in dist/ together, ` +
+    'with dist/native-*.mjs as JavaScript',
   RenderEncodeFailed: (format: string, message: string): string =>
     `Failed to render and encode image as ${format}: ${message}`,
   ConcurrencyInvalid: (value: unknown): string =>

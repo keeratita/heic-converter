@@ -2,6 +2,14 @@ import { HeicConverterError } from '../errors';
 import type { DecodedImage, IHeicDecoder } from '../types';
 
 /**
+ * Decoded-dimension cap, duplicated from `MAX_CANVAS_DIMENSION` in
+ * `render/canvas.ts` — `native-decoder.test.ts` pins the two equal. The
+ * number is copied rather than imported so this lazy chunk stays out of
+ * the render module graph.
+ */
+export const MAX_NATIVE_DECODE_DIMENSION = 16384;
+
+/**
  * Platform-native HEIC decoding — the Strategy behind `nativeDecode: true`.
  * On HEIC-capable hosts (Safari/iOS, Edge, Windows) ImageIO decodes in
  * hardware and the bundled libheif payload is never fetched. Dynamic-import
@@ -9,30 +17,43 @@ import type { DecodedImage, IHeicDecoder } from '../types';
  */
 
 /**
- * Per-realm verdict: undefined = unprobed. There is no HEIC-support API, so
- * the first opted-in conversion doubles as the probe; failures are sticky
- * and successes stop later calls re-attempting.
+ * Per-realm refusal flag. Only an environment-class failure (missing
+ * platform APIs at initialize()) is sticky: it is a property of the realm.
+ * Decode-class failures (corrupt file, absurd declared size, transient 2D
+ * pressure) are properties of the input, so convertHeic retries them with
+ * libheif without caching — one bad upload must not cost the page its
+ * native acceleration. Success is deliberately not cached: capable hosts
+ * keep taking the native path, and there is no pre-decode API that tells a
+ * decodable file from a corrupt one.
  */
-let nativeHeicSupport: boolean | undefined;
+let nativeHeicRefused = false;
+let refusedWarned = false;
 
-/** @internal Read the cached capability verdict (decoder selection). */
-export function getNativeHeicSupport(): boolean | undefined {
-  return nativeHeicSupport;
+/** @internal Whether this realm has refused native decoding (decoder selection). */
+export function isNativeHeicRefused(): boolean {
+  return nativeHeicRefused;
 }
 
-/** @internal Record a native success (the probe verdict). */
-export function markNativeHeicSupported(): void {
-  nativeHeicSupport = true;
+/**
+ * @internal Record an environment-class native failure so later calls skip
+ * the attempt. Warns once as a breadcrumb: without it a page silently loses
+ * the opt-in with nothing naming the cause.
+ */
+export function markNativeHeicRefused(): void {
+  nativeHeicRefused = true;
+  if (!refusedWarned) {
+    refusedWarned = true;
+    console.warn(
+      '@keeratita/heic-converter: native HEIC decoding is unavailable in this environment — ' +
+        'nativeDecode conversions will use the bundled decoder on this page.'
+    );
+  }
 }
 
-/** @internal Record a native failure so later calls skip the attempt. */
-export function markNativeHeicUnsupported(): void {
-  nativeHeicSupport = false;
-}
-
-/** @internal Reset the capability verdict (tests only). */
+/** @internal Clear the refusal verdict and its breadcrumb (tests only). */
 export function __resetNativeHeicProbe(): void {
-  nativeHeicSupport = undefined;
+  nativeHeicRefused = false;
+  refusedWarned = false;
 }
 
 /**
@@ -41,9 +62,9 @@ export function __resetNativeHeicProbe(): void {
  * `imageOrientation: 'from-image'` applies the display transform (EXIF and
  * irot/imir), so results are upright with no pending orientation — the
  * selection policy only picks this Strategy when `applyOrientation` is not
- * false. Errors here never reach a consumer: convertHeic marks the realm
- * unsupported and retries with libheif, which produces the typed error of
- * record, so these strings stay chunk-local (like worker-only messages).
+ * false. Errors here never reach a consumer: convertHeic retries with
+ * libheif, which produces the typed error of record, so these strings stay
+ * chunk-local (like worker-only messages).
  */
 export class NativeHeicDecoder implements IHeicDecoder {
   async initialize(): Promise<void> {
@@ -62,6 +83,17 @@ export class NativeHeicDecoder implements IHeicDecoder {
       imageOrientation: 'from-image',
     });
     try {
+      if (bitmap.width > MAX_NATIVE_DECODE_DIMENSION || bitmap.height > MAX_NATIVE_DECODE_DIMENSION) {
+        // Container-declared dimensions are attacker-controlled. The canvas +
+        // ImageData pair below would allocate outside the WASM heap — an
+        // uncatchable tab crash — so bail before allocating and let libheif
+        // decide under its bounded-heap semantics. The platform bitmap
+        // itself cannot be capped pre-decode; it is browser-managed.
+        throw new HeicConverterError(
+          'decode_failed',
+          `Native HEIC decoding is limited to ${MAX_NATIVE_DECODE_DIMENSION}px per side, got ${bitmap.width}x${bitmap.height}.`
+        );
+      }
       const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
       const ctx = canvas.getContext('2d', { willReadFrequently: true });
       if (!ctx) {
@@ -73,7 +105,6 @@ export class NativeHeicDecoder implements IHeicDecoder {
       ctx.drawImage(bitmap, 0, 0);
       // ImageData.data is owned: pixels survive close(), like the WASM copy.
       const image = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
-      markNativeHeicSupported();
       return { width: image.width, height: image.height, data: image.data };
     } finally {
       bitmap.close?.();

@@ -19,11 +19,14 @@ const isBuilt = existsSync(`${DIST}/index.mjs`);
 // still copying publicDir would otherwise delete every guard in this file.
 const isCI = !!process.env.CI;
 
-// 23_000 (from 22_000): the nativeDecode selection policy and option
-// validator are eager by necessity — they decide whether the lazy chunk may
-// be used — and cannot be deferred. ESM (what browsers load) is ~21.2 K; the
-// CJS interop helpers push the CJS pass over the old ceiling.
-const EAGER_BUDGET_BYTES = 23_000;
+// 23_500 (from 23_000): the native-chunk degradation breadcrumb
+// (Messages.NativeChunkLoadWarning + the once-only warn helper) and the
+// fallback error-class discrimination (aborted re-throw vs. init-class
+// marking vs. the throwIfAborted gate before the WASM load) are entry-thread
+// logic — they decide what the lazy chunks get asked to do and cannot be
+// deferred. ESM (what browsers load) is ~21.6 K; the CJS interop helpers
+// push the CJS pass over the old ceiling.
+const EAGER_BUDGET_BYTES = 23_500;
 /** A hoisted implementation leaves a re-export stub on the dynamic edge, so the import() check alone passes. */
 const DEFERRED_CHUNK_MIN_BYTES = 1_000;
 /** Prefix → floor. The native Strategy is ~970 B raw; a hoist stub is <200 B. */

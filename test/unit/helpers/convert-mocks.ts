@@ -102,38 +102,46 @@ export class MockLibheifDecoder {
 }
 
 interface NativeMockState {
-  support: boolean | undefined;
+  refused: boolean;
   instances: MockDecoderInstance[];
   decodeShouldThrow: boolean;
   initializeShouldThrow: boolean;
-  getSupport: ReturnType<typeof vi.fn>;
-  markSupported: ReturnType<typeof vi.fn>;
-  markUnsupported: ReturnType<typeof vi.fn>;
+  /** When set, replaces the mock initialize (abort-timing scenarios). */
+  initializeImpl: (() => Promise<void>) | null;
+  /** When set, replaces the mock decode entirely (abort/delay scenarios). */
+  decodeImpl: (() => Promise<DecodedImage>) | null;
+  isRefused: ReturnType<typeof vi.fn>;
+  markRefused: ReturnType<typeof vi.fn>;
 }
 
-/** State for the vi.mock('../../src/wasm/native') factory; tests pre-seed `support`. */
+/** State for the vi.mock('../../src/wasm/native') factory; tests pre-seed `refused`. */
 export const nativeMockState: NativeMockState = {
-  support: undefined,
+  refused: false,
   instances: [],
   decodeShouldThrow: false,
   initializeShouldThrow: false,
-  getSupport: vi.fn(() => nativeMockState.support),
-  markSupported: vi.fn(() => {
-    nativeMockState.support = true;
-  }),
-  markUnsupported: vi.fn(() => {
-    nativeMockState.support = false;
+  initializeImpl: null,
+  decodeImpl: null,
+  isRefused: vi.fn(() => nativeMockState.refused),
+  markRefused: vi.fn(() => {
+    nativeMockState.refused = true;
   }),
 };
 
 /** Mock of NativeHeicDecoder used by the vi.mock('../../src/wasm/native') factory. */
 export class MockNativeHeicDecoder {
   initialize = vi.fn(async (): Promise<void> => {
+    if (nativeMockState.initializeImpl) {
+      return nativeMockState.initializeImpl();
+    }
     if (nativeMockState.initializeShouldThrow) {
       throw new Error('Native HEIC decoding is unavailable in this environment.');
     }
   });
   decode = vi.fn(async (): Promise<DecodedImage> => {
+    if (nativeMockState.decodeImpl) {
+      return nativeMockState.decodeImpl();
+    }
     if (nativeMockState.decodeShouldThrow) {
       throw new Error('createImageBitmap refused the HEIC');
     }
@@ -168,13 +176,14 @@ export function resetConvertMocks(overrides?: {
   mockState.decodeImpl = overrides?.decodeImpl ?? null;
   mockState.initializeShouldThrow = false;
   mockState.initializeThrowValue = null;
-  nativeMockState.support = undefined;
+  nativeMockState.refused = false;
   nativeMockState.instances.length = 0;
   nativeMockState.decodeShouldThrow = false;
   nativeMockState.initializeShouldThrow = false;
-  nativeMockState.getSupport.mockClear();
-  nativeMockState.markSupported.mockClear();
-  nativeMockState.markUnsupported.mockClear();
+  nativeMockState.initializeImpl = null;
+  nativeMockState.decodeImpl = null;
+  nativeMockState.isRefused.mockClear();
+  nativeMockState.markRefused.mockClear();
   if (overrides?.decodedImage) {
     mockState.defaultDecodedImage = overrides.decodedImage;
   }

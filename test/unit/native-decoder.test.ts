@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { HeicConverterError } from '../../src/errors';
+import { MAX_CANVAS_DIMENSION } from '../../src/render/canvas';
 import {
+  MAX_NATIVE_DECODE_DIMENSION,
   NativeHeicDecoder,
   __resetNativeHeicProbe,
-  getNativeHeicSupport,
-  markNativeHeicUnsupported,
+  isNativeHeicRefused,
+  markNativeHeicRefused,
 } from '../../src/wasm/native';
 
 /**
@@ -84,7 +86,7 @@ describe('NativeHeicDecoder', () => {
 
     const decoded = await new NativeHeicDecoder().decode(INPUT);
     expect(decoded).toEqual({ width: 10, height: 8, data: rgba });
-    expect(getNativeHeicSupport()).toBe(true); // success is the probe verdict
+    expect(isNativeHeicRefused()).toBe(false); // success does not cache a verdict
 
     const [blob, options] = createImageBitmapMock.mock.calls[0];
     expect(blob).toBeInstanceOf(Blob);
@@ -102,8 +104,40 @@ describe('NativeHeicDecoder', () => {
     getContextImpl = () => null;
     const error = await new NativeHeicDecoder().decode(INPUT).catch((e) => e);
     expect((error as HeicConverterError).code).toBe('decode_failed');
-    expect(getNativeHeicSupport()).toBeUndefined(); // failure is not a verdict
+    expect(isNativeHeicRefused()).toBe(false); // a decode failure is not a realm verdict
     expect(bitmaps[0].close).toHaveBeenCalledOnce();
+  });
+
+  it('bails on absurd declared dimensions before allocating a canvas', async () => {
+    // Container-declared size is attacker-controlled: the canvas + ImageData
+    // pair would allocate outside the WASM heap (uncatchable), so the cap
+    // must fire before OffscreenCanvas is ever constructed.
+    const canvasBoots: Array<[number, number]> = [];
+    vi.stubGlobal(
+      'OffscreenCanvas',
+      class {
+        getContext = vi.fn(() => makeCtx(new Uint8ClampedArray(4)));
+        constructor(
+          public width: number,
+          public height: number
+        ) {
+          canvasBoots.push([width, height]);
+        }
+      }
+    );
+    createImageBitmapMock = vi.fn(async () => {
+      const bitmap: FakeBitmap = { width: 99999, height: 8, close: vi.fn() };
+      bitmaps.push(bitmap);
+      return bitmap;
+    });
+    vi.stubGlobal('createImageBitmap', createImageBitmapMock);
+
+    const error = await new NativeHeicDecoder().decode(INPUT).catch((e) => e);
+    expect((error as HeicConverterError).code).toBe('decode_failed');
+    expect((error as Error).message).toContain(`${MAX_NATIVE_DECODE_DIMENSION}px per side`);
+    expect(canvasBoots).toHaveLength(0); // never allocated
+    expect(bitmaps[0].close).toHaveBeenCalledOnce(); // the bitmap itself is released
+    expect(isNativeHeicRefused()).toBe(false); // input property, not a realm verdict
   });
 
   it('propagates a createImageBitmap refusal before any bitmap exists', async () => {
@@ -114,7 +148,7 @@ describe('NativeHeicDecoder', () => {
 
     await expect(new NativeHeicDecoder().decode(INPUT)).rejects.toThrow('unsupported image type');
     expect(bitmaps).toHaveLength(0);
-    expect(getNativeHeicSupport()).toBeUndefined();
+    expect(isNativeHeicRefused()).toBe(false);
   });
 
   it('tolerates a bitmap without close()', async () => {
@@ -141,10 +175,28 @@ describe('NativeHeicDecoder', () => {
     expect(() => new NativeHeicDecoder().free()).not.toThrow();
   });
 
-  it('honours a pre-marked unsupported verdict until reset', () => {
-    markNativeHeicUnsupported();
-    expect(getNativeHeicSupport()).toBe(false);
-    __resetNativeHeicProbe();
-    expect(getNativeHeicSupport()).toBeUndefined();
+  it('keeps the decode cap in sync with the canvas cap', () => {
+    // native.ts copies the number to stay out of the render module graph
+    // (lazy-chunk purity); this is the sync gate for the duplicated fact.
+    expect(MAX_NATIVE_DECODE_DIMENSION).toBe(MAX_CANVAS_DIMENSION);
+  });
+
+  it('refuses the realm only on mark, warns once, and clears on reset', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      expect(isNativeHeicRefused()).toBe(false);
+      markNativeHeicRefused();
+      markNativeHeicRefused(); // second mark (later conversions) must not repeat the breadcrumb
+      expect(isNativeHeicRefused()).toBe(true);
+      expect(warn).toHaveBeenCalledOnce();
+      expect(warn.mock.calls[0][0]).toContain('native HEIC decoding is unavailable');
+
+      __resetNativeHeicProbe();
+      expect(isNativeHeicRefused()).toBe(false);
+      markNativeHeicRefused(); // fresh realm after reset warns again
+      expect(warn).toHaveBeenCalledTimes(2);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
