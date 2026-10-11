@@ -447,11 +447,9 @@ describe('a malformed EXIF header is refused by every injector', () => {
 });
 
 /**
- * The injector catch-alls implement "metadata loss, never corruption": any
- * surprise while splicing returns the original bytes untouched. Overriding
- * the view methods the splicing itself relies on is the sharpest way to
- * reach those catches without touching production code — it simulates
- * encoder output that trips the splice, not a malformed EXIF block.
+ * Catch-all contract: a surprise while splicing returns the original bytes
+ * untouched. Overriding the view methods the splice relies on reaches those
+ * catches without touching production code.
  */
 describe('the catch-alls return the original bytes when splicing throws', () => {
   class HostileSubarray extends Uint8Array {
@@ -465,11 +463,9 @@ describe('the catch-alls return the original bytes when splicing throws', () => 
     }
   }
 
-  // Hostile bytes must go through Sub.from(), not `new Sub(...bytes)`: the
-  // inherited TypedArray constructor reads a numeric first argument as the
-  // *length* and returns zeros, which the magic-byte guards reject long
-  // before the splice (0xff as the first JPEG byte made exactly that bug
-  // pass green without touching a single catch).
+  // Hostile bytes go through Sub.from(), not `new Sub(...bytes)`: the
+  // inherited constructor reads a numeric first arg as *length* and yields
+  // zeros the magic-byte guards reject — a vacuously green catch.
   it('injectExifIntoJpeg returns the original JPEG unchanged', () => {
     const hostile = HostileSubarray.from(jpeg(SOS));
     expect(injectExifIntoJpeg(hostile, EXIF_BLOCK)).toBe(hostile);

@@ -159,9 +159,8 @@ describe('LibheifDecoder (mocked glue)', () => {
     });
 
     it('should clamp an oversized decoder error detail to 200 characters', async () => {
-      // Decoder strings are partly built from raw container bytes and land in
-      // error.message (logs, demo DOM): oversized details must be clamped to
-      // 200 characters with an ellipsis, control characters stripped.
+      // Decoder strings reach error.message (logs, demo DOM): oversized
+      // details clamp to 200 chars with an ellipsis, control chars stripped.
       const mockData = new Uint8Array([1, 2, 3, 4]);
       mockState.mockDecoderInstance.decode.mockReturnValue(
         `heif: ${'x'.repeat(300)}\u0000trailing`

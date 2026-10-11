@@ -50,7 +50,7 @@ import type { WorkerBatchOptions, WorkerConvertOptions } from './worker';
  */
 function loadWorkerModule(): Promise<typeof import('./worker')> {
   return import('./worker').catch((cause: unknown) => {
-    /* v8 ignore next 1 -- chunk fetches reject with Errors on every real host, and vitest's module mocker wraps factory throws in an Error, so the String(cause) arm of this ternary is not reproducible under test */
+    /* v8 ignore next 1 -- real hosts and vitest's mocker both reject with Errors; the String(cause) arm is unreproducible */
     const reason = cause instanceof Error ? cause.message : String(cause);
     throw new HeicConverterError('worker_load_failed', Messages.WorkerChunkLoadFailed(reason), {
       cause
@@ -289,7 +289,7 @@ function createProgressReporter(
       }
     },
     complete: (): void => {
-      /* v8 ignore if -- convertHeic calls complete() exactly once per conversion (its only call site), and every conversion gets a fresh wrapper */
+      /* v8 ignore if -- single call site, fresh wrapper per conversion */
       if (done) {
         return;
       }
@@ -464,12 +464,12 @@ class DecoderPool {
     if (idle) {
       return idle;
     }
-    /* v8 ignore else -- the pool bound equals the runner count (both sides call runnerCountFor() with the same arguments), so every runner's acquire is satisfiable without queueing; the waiting arm is a deadlock guard for that invariant */
+    /* v8 ignore else -- pool bound === runner count (both call runnerCountFor); waiting is the deadlock guard */
     if (this.leasedCount < this.max) {
       this.leasedCount += 1;
       return new LibheifDecoder();
     }
-    /* v8 ignore next 1 -- waiters cannot form; see the acquire() invariant comment */
+    /* v8 ignore next 1 -- waiters cannot form; see acquire() */
     return new Promise<LibheifDecoder>((resolve) => this.waiters.push(resolve));
   }
 
@@ -495,7 +495,7 @@ class DecoderPool {
         // Best-effort cleanup.
       }
       const waiter = this.waiters.shift();
-      /* v8 ignore if -- waiters cannot form (pool bound === runner count); this hand-off is part of the deadlock guard */
+      /* v8 ignore if -- waiters cannot form (pool bound === runner count) */
       if (waiter) {
         this.leasedCount += 1;
         waiter(new LibheifDecoder());
@@ -503,7 +503,7 @@ class DecoderPool {
       return;
     }
     const waiter = this.waiters.shift();
-    /* v8 ignore if -- waiters cannot form (pool bound === runner count); every release today takes the else and re-parks */
+    /* v8 ignore if -- waiters cannot form (pool bound === runner count) */
     if (waiter) {
       waiter(decoder);
     } else {
@@ -524,7 +524,7 @@ class DecoderPool {
     // Defensive: never leave an acquire() parked forever. Handed-out
     // instances are freed by release() on the disposed branch.
     for (const resolve of this.waiters.splice(0)) {
-      /* v8 ignore next 1 -- waiters cannot form; the splice loop exists so a future invariant break can never park an acquire forever */
+      /* v8 ignore next 1 -- waiters cannot form; guards a future invariant break */
       resolve(new LibheifDecoder());
     }
   }

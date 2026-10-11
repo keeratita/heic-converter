@@ -134,8 +134,7 @@ describe('convertHeic - Input Types', () => {
   });
 
   it('should stringify a non-Error throw from the final 100% callback', async () => {
-    // Hosts and minifiers can throw non-Error values; the wrapper must still
-    // name them in the message instead of reading .message off a string.
+    // Hosts can throw non-Error values; the message must still name them.
     const error = await convertHeic(new Uint8Array([1]), {
       onProgress: (percent) => {
         if (percent >= 100) {
@@ -222,6 +221,27 @@ describe('convertHeic - Input Types', () => {
     expect(error.code).toBe('invalid_input');
     expect(error.message).toContain('Unsupported input type');
     expect(mockState.decoderInstances).toHaveLength(0);
+  });
+
+  it('should accept SharedArrayBuffer-backed views', async () => {
+    let seen: Uint8Array | undefined;
+    resetConvertMocks({
+      decodeImpl: async (data) => {
+        seen = data;
+        return { width: 1, height: 1, data: new Uint8ClampedArray(4) };
+      },
+    });
+    const view = new Uint8Array(new SharedArrayBuffer(4));
+    view.set([1, 2, 3, 4]);
+
+    await convertHeic(view);
+
+    expect(Array.from(seen ?? [])).toEqual([1, 2, 3, 4]);
+  });
+
+  it('should reject a raw SharedArrayBuffer (not a view)', async () => {
+    const error = await convertHeic(new SharedArrayBuffer(4) as never, {}).catch((e) => e);
+    expect(error.code).toBe('invalid_input');
   });
 
   it('should accept other ArrayBufferViews (DataView)', async () => {

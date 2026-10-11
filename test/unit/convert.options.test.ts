@@ -56,6 +56,12 @@ describe('convertHeic - Options', () => {
       });
     });
 
+    it('accepts negative zero (the bound test is `< 0`, which -0 passes)', async () => {
+      await expect(convertHeic(new Uint8Array([1]), { quality: -0 })).resolves.toBeInstanceOf(
+        Blob
+      );
+    });
+
     it('should validate quality even for formats that ignore it (png)', async () => {
       // A 0-100 scale value like `quality: 90` is fatal regardless of format,
       // so mistakes surface instead of silently producing default output.

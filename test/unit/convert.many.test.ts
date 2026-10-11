@@ -646,10 +646,9 @@ describe('convertMany - reuseDecoders (pool)', () => {
 
 describe('convertMany - reuseDecoders: disposal', () => {
   it('frees an in-flight leased decoder even after the batch disposed the pool', async () => {
-    // An early rejection disposes the pool while the slow item still holds
-    // its lease: release() must free the handed-out instance instead of
-    // re-parking it — and a throwing free() must stay swallowed there,
-    // because a poisoned cleanup must not turn into an unhandled rejection.
+    // Early rejection disposes the pool while the slow item still holds its
+    // lease: release() must free it, not re-park it, and swallow a throwing
+    // free() rather than leak an unhandled rejection.
     let slowFree: ReturnType<typeof vi.fn> | undefined;
     resetConvertMocks({
       decodeImpl: async (data, _onProgress, self) => {
@@ -679,6 +678,22 @@ describe('convertMany - reuseDecoders: disposal', () => {
     // disposed branch of pool.release() and survives the throwing free().
     await vi.waitFor(() => expect(slowFree).toHaveBeenCalledTimes(1));
     await vi.waitFor(() => expect(mockState.decoderInstances).toHaveLength(2));
+  });
+});
+
+describe('convertMany - concurrency clamping', () => {
+  it('clamps absurd concurrency to the item count instead of spawning runaway runners', async () => {
+    // runnerCountFor() caps the runner pool at inputs.length; without the
+    // cap, MAX_SAFE_INTEGER would materialize that many runner closures.
+    resetConvertMocks({ decodeImpl: batchDecodeImpl });
+    active.count = 0;
+    active.max = 0;
+
+    const inputs = [new Uint8Array([10]), new Uint8Array([11]), new Uint8Array([12])];
+    const results = await convertMany(inputs, { concurrency: Number.MAX_SAFE_INTEGER });
+
+    expect(results.every((blob) => blob instanceof Blob)).toBe(true);
+    expect(active.max).toBeLessThanOrEqual(inputs.length);
   });
 });
 

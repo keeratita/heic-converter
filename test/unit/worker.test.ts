@@ -1147,6 +1147,11 @@ describe('worker entry-point validation (main thread)', () => {
     ['non-positive scale', { scale: 0 }, 'invalid_resize'],
     ['fractional maxConcurrentWorkers', { maxConcurrentWorkers: 1.5 }, 'invalid_concurrency'],
     ['negative timeoutMs', { timeoutMs: -5 }, 'invalid_input'],
+    ['non-finite timeoutMs', { timeoutMs: Number.POSITIVE_INFINITY }, 'invalid_input'],
+    ['NaN timeoutMs', { timeoutMs: NaN }, 'invalid_input'],
+    ['string timeoutMs', { timeoutMs: '5000' }, 'invalid_input'],
+    ['zero maxConcurrentWorkers', { maxConcurrentWorkers: 0 }, 'invalid_concurrency'],
+    ['non-finite maxConcurrentWorkers', { maxConcurrentWorkers: Number.POSITIVE_INFINITY }, 'invalid_concurrency'],
   ];
 
   it.each(cases)('convertHeicInWorker rejects %s on the main thread', async (_label, options, code) => {

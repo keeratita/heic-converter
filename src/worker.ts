@@ -229,7 +229,7 @@ export function convertHeicInWorker<S extends OutputShape = 'blob'>(
     let releaseSlot: (() => void) | undefined;
 
     const cleanup = (): void => {
-      /* v8 ignore if -- each settle path (message, error, timeout, abort) calls cleanup exactly once and removes the worker listeners inside the same call; a double settle cannot interleave on a single thread, the guard survives a future async-settle refactor */
+      /* v8 ignore if -- each settle path calls cleanup once and removes listeners inline; double-settle is impossible single-threaded */
       if (settled) {
         return;
       }
@@ -366,7 +366,7 @@ export function convertHeicInWorker<S extends OutputShape = 'blob'>(
       releaseSlot = release;
       // The call may already have timed out while queued; do not spawn a
       // worker for a settled promise.
-      /* v8 ignore if -- release() prunes cancelled queue entries before grant() can reach them, so a settled call is never started today; the guard is kept for a future async-grant semaphore */
+      /* v8 ignore if -- release() prunes cancelled queue entries, so grant() never reaches a settled call */
       if (settled) {
         return;
       }
@@ -479,7 +479,7 @@ export async function convertManyInWorker<S extends OutputShape = 'blob'>(
   validateTimeoutMs(options?.timeoutMs);
 
   // Batch-only knobs stay out of the per-item worker options.
-  /* v8 ignore next 1 -- options is required by every overload, and a JS caller omitting it throws at the decoder check above, so the ?? {} arm is dead */
+  /* v8 ignore next 1 -- options is required by every overload; omitting it throws at the decoder check above */
   const { onProgress, continueOnError: _continueOnError, ...perItemOptions } = options ?? {};
 
   return runBoundedBatch<ConvertResult<S>>(

@@ -134,7 +134,7 @@ export async function runBoundedBatch<T>(
 
     if (completedCount === inputs.length) {
       return results.map((entry) => {
-        /* v8 ignore if -- the completedCount bookkeeping above guarantees every entry is recorded and ok when this maps runs; dead by construction */
+        /* v8 ignore if -- completedCount bookkeeping records every entry ok; dead by construction */
         if (!entry || !entry.ok) {
           // Unreachable: any failure throws below; any success is recorded.
           throw new HeicConverterError(
@@ -150,13 +150,13 @@ export async function runBoundedBatch<T>(
     if (signal?.aborted) {
       throw new HeicConverterError('aborted', Messages.Aborted);
     }
-    /* v8 ignore else -- the race settles early only via failure or abort, and completion returned above; !failed here is impossible */
+    /* v8 ignore else -- the race only settles via completion, failure, or abort */
     if (failed) {
       const message = firstError instanceof Error ? firstError.message : String(firstError);
       let text = Messages.ConvertManyItemFailed(firstErrorIndex + 1, inputs.length, message);
       if (failedCount > 1) {
         text += Messages.ConvertManyExtraFailures(failedCount, inputs.length);
-        /* v8 ignore else -- every failure after the first pushes its message (capped at 2), so failedCount > 1 implies at least one entry */
+        /* v8 ignore else -- failedCount > 1 always pushed at least one extra message */
         if (otherErrorMessages.length > 0) {
           text += Messages.ConvertManyOtherErrors(otherErrorMessages);
         }

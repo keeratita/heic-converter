@@ -70,7 +70,7 @@ async function runAvifProbe(): Promise<AvifSupport> {
     // reject `format_unsupported` on a browser that can encode AVIF fine.
     return result === 'timeout' ? undefined : result.type === 'image/avif' && result.size > 0;
   } finally {
-    /* v8 ignore else -- the deadline promise executor assigns timer synchronously before the race is awaited, so it is always set here */
+    /* v8 ignore else -- the deadline executor assigns timer synchronously */
     if (timer !== undefined) {
       clearTimeout(timer);
     }
@@ -552,7 +552,7 @@ export async function renderAndEncode(
     }
     return blob;
   }
-  /* v8 ignore else -- jpeg/jpg/png/webp/avif each return inside their branch above, and validateFormat left nothing else through */
+  /* v8 ignore else -- jpeg/jpg/png/webp/avif all return above; validateFormat admits nothing else */
   if (normalizedFormat === 'svg') {
     // SVG wrapping of the raster image (an <image> element embedding a PNG —
     // note this is a wrapper format, not vector output; PNG is smaller).
@@ -570,6 +570,6 @@ export async function renderAndEncode(
     return new Blob([svgPrefix, base64Url, svgSuffix], { type: 'image/svg+xml' });
   }
   // Unreachable: validateFormat rejected other formats above.
-  /* v8 ignore next 1 -- see the svg branch above; no supported format reaches this line */
+  /* v8 ignore next 1 -- no supported format reaches here */
   throw new HeicConverterError('invalid_format', Messages.UnsupportedFormat(String(format)));
 }

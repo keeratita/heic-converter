@@ -51,9 +51,8 @@ describe('blobToBase64', () => {
   });
 
   it('should reject with a generic cause when FileReader.error is unset', async () => {
-    // Hosts may fire onerror without ever populating error; the rejection
-    // must stay typed with a fallback cause instead of reading
-    // undefined.message.
+    // Hosts may fire onerror with no error set; the rejection must stay
+    // typed with the fallback cause, not crash on undefined.message.
     const blob = new Blob(['hello world'], { type: 'text/plain' });
 
     class MockFileReaderNoError {
