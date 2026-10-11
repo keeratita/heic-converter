@@ -256,6 +256,7 @@ These fields are shared by [`convertHeic`](#convertheicinput-options) and [`conv
 | `applyOrientation` | `boolean` | `true` | Rotate/flip the output to match the source's EXIF orientation. `false` keeps the exact stored-pixel geometry | `invalid_input` |
 | `crop` | [`CropOptions`](#cropoptions) | — | Rectangle cut from the image **before** resize | `invalid_crop` |
 | `preserveExif` | `boolean` | `false` | Re-inject the source EXIF block into JPEG (APP1) / PNG (`eXIf`) output | `invalid_input` |
+| `nativeDecode` | `boolean` | `false` | Decode with the platform's native HEIC support (`createImageBitmap`) instead of the bundled libheif WASM; falls back to libheif transparently. Ignored when `decoder` is injected, `preserveExif: true`, or `applyOrientation: false` | `invalid_input` |
 | `output` | [`OutputShape`](#outputshape) | `'blob'` | Representation of the result; also selects the return type | `invalid_input` |
 | `signal` | `AbortSignal` | — | Cooperative cancellation; rejects with `aborted` | `invalid_input` |
 | `decoder` | [`IHeicDecoder`](#iheicdecoder) | fresh `LibheifDecoder` | Inject a custom decoder. The library never calls `free()` on an injected instance | — (worker APIs: `invalid_input`) |
@@ -267,7 +268,7 @@ These fields are shared by [`convertHeic`](#convertheicinput-options) and [`conv
 | --- | --- | --- | --- | --- |
 | `concurrency` | `number` | `4` | Maximum concurrent conversions; must be a positive integer | `invalid_concurrency` |
 | `continueOnError` | `boolean` | `false` | Resolve with per-item results instead of rejecting on the first failure | `invalid_input` |
-| `reuseDecoders` | `boolean` | `false` | Hand each batch runner one pooled library-owned `LibheifDecoder`, reused across items — amortizes the WASM module load for batches much larger than the concurrency. Ignored when `decoder` is injected | `invalid_input` |
+| `reuseDecoders` | `boolean` | `false` | Hand each batch runner one pooled library-owned `LibheifDecoder`, reused across items — amortizes the WASM module load for batches much larger than the concurrency. Ignored when `decoder` is injected or `nativeDecode: true` (the pool leases libheif instances) | `invalid_input` |
 
 ### Resize, crop, and orientation compose in one pass
 
@@ -282,6 +283,19 @@ Crop coordinates are in **post-orientation display pixels**: the geometry the im
 Off by default because EXIF can carry GPS. When enabled, the source Exif item is copied into JPEG (as an APP1 segment after APP0) and PNG (as an `eXIf` chunk before the first IDAT); WebP and SVG ignore it. Because the rendered raster is already upright, tag 274 is rewritten to `1` first so consumers do not rotate a second time — with `applyOrientation: false` the tag stays verbatim.
 
 Both injectors are **fail-safe**: unparsable encoder output, a malformed block, a payload beyond the 65,533-byte JPEG segment limit, or a missing `dist/exif-*.mjs` chunk all yield the image *without* metadata rather than a failed conversion (the chunk case logs a one-time `console.warn`, since a deployment problem should not look like a file that had no Exif item).
+
+### Decode strategy (`nativeDecode`)
+
+HEIC is a system format on Apple platforms and Windows; `nativeDecode: true` lets those hosts decode with the platform's own stack via `createImageBitmap` + `OffscreenCanvas` — hardware decode, and the ~300 KB gzipped libheif payload is never fetched. It is **opt-in** (default `false`): the libheif path stays the byte-for-byte reference everywhere.
+
+There is no HEIC-support API, so support is discovered by trying: the first opted-in conversion doubles as the probe. If the platform refuses — missing APIs, no HEIC codec, a file it chokes on — the library marks the realm native-ineligible, retries the conversion with libheif, and skips the attempt for later calls. The caller sees the same successful result either way.
+
+Constraints by design:
+
+- **Fallback rules** — libheif is always used when a `decoder` is injected, `preserveExif: true` (the native path yields no Exif item), or `applyOrientation: false` (it cannot report stored geometry).
+- **Orientation** — the platform applies the display transform (EXIF and `irot`/`imir`); results are upright with no pending orientation.
+- **Progress** — fires at completion only; tile-level progress is a libheif feature.
+- Node.js has no `createImageBitmap`, so the flag is a no-op there (libheif raw decode as usual).
 
 ---
 
@@ -467,11 +481,33 @@ if (exif) pipeline = pipeline.withMetadata({ exif: Buffer.from(exif) });
 await pipeline.toFormat('jpeg').toFile('out.jpg');
 ```
 
+```ts
+// Share one compiled module across decoders: Emscripten compiles the WASM
+// per LibheifDecoder; pages that create many (or re-instantiate after
+// free()) can compile once and hand WebAssembly.instantiate the cached
+// Module to every instance. Verified by test/unit/integration.test.ts.
+const compiled = WebAssembly.compile(
+  await (await fetch(wasmUrl)).arrayBuffer()
+);
+const decoder = new LibheifDecoder({
+  moduleOverrides: {
+    instantiateWasm: (imports: WebAssembly.Imports, receiveInstance: (instance: WebAssembly.Instance) => void) => {
+      // Synchronous, and the exports must be returned: wasmExports is
+      // assigned from the override's return value.
+      return receiveInstance(new WebAssembly.Instance(compiled, imports));
+    },
+  },
+});
+await decoder.initialize(); // no fetch, no compile — instantiate only
+```
+
 ---
 
 ## Web Worker protocol
 
 `convertHeicInWorker` / `convertManyInWorker` post one message to your script and wait for one terminal reply.
+
+**Worker reuse:** the transport keeps live workers across a batch — a worker that answered `ok: true` keeps its listeners and receives the next queued request, so boot and glue evaluation are paid once per worker, not per item. Workers that timed out, were aborted, or hit a transport error are terminated immediately and never reused. Worker scripts must therefore be request-oriented: keep the `onmessage` handler installed and **do not call `self.close()`** after posting a result, or the next queued conversion waits out its `timeoutMs`.
 
 **Request** (main thread → worker):
 

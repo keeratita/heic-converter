@@ -18,7 +18,8 @@ Designed specifically for environments with strict **Content Security Policy (CS
 - 🧭 **EXIF-Orientation Aware**: Images stored rotated with an EXIF orientation flag come out upright, matching what viewers display. Opt out with `applyOrientation: false`.
 - 🗂 **Metadata Preservation**: `preserveExif: true` keeps the source EXIF block in JPEG (APP1) and PNG (`eXIf`) output; raw-decode consumers get the block via `DecodedImage.exif`.
 - 📚 **Batch Conversion**: Convert many images at once with bounded concurrency via `convertMany` — with per-item results (`continueOnError`) and pooled decoders (`reuseDecoders`) for large batches.
-- 🧵 **Web Worker Helpers**: Offload single conversions (`convertHeicInWorker`) or whole batches (`convertManyInWorker`) to Web Workers to keep the UI thread responsive.
+- 🧵 **Web Worker Helpers**: Offload single conversions (`convertHeicInWorker`) or whole batches (`convertManyInWorker`) to Web Workers to keep the UI thread responsive — live workers are reused across batch items, not booted per file.
+- 🍎 **Native Decode Opt-in**: `nativeDecode: true` decodes with the platform's HEIC stack (`createImageBitmap` on Safari/iOS, Edge, Windows) instead of the bundled WASM decoder, skipping its ~300 KB payload; hosts without native HEIC support fall back to libheif automatically.
 - 🎛 **Output Shapes & Cancellation**: Return Blobs, base64 data URLs, or ArrayBuffers (`output`), and cancel in-flight work with an `AbortSignal` (`signal`) — worker conversions terminate immediately.
 
 ---
@@ -172,7 +173,9 @@ Fetching a `.gz`/`.br` variant URL directly will not work — see the compressio
 
 #### Reducing the download size
 
-The WASM binary (~794 KB, ~288 KB gzipped) dominates the payload; everything else is small and lazy. The Emscripten glue is a separate chunk fetched only on the first decode, and the Web Worker implementation and the opt-in EXIF injectors are separate chunks fetched only when you first call `convertHeicInWorker`/`convertManyInWorker` or pass `preserveExif: true`. What every consumer pays for up front is a few kilobytes of gzipped JavaScript — `test/unit/bundle.test.ts` fails the build if one of those boundaries moves or the eager budget grows, so the numbers live in the tests rather than here.
+The WASM binary (~794 KB, ~288 KB gzipped) dominates the payload; everything else is small and lazy. The Emscripten glue is a separate chunk fetched only on the first decode, and the Web Worker implementation, the opt-in EXIF injectors, and the opt-in native-decode strategy are separate chunks fetched only when you first call `convertHeicInWorker`/`convertManyInWorker` or pass `preserveExif: true` / `nativeDecode: true`. What every consumer pays for up front is a few kilobytes of gzipped JavaScript — `test/unit/bundle.test.ts` fails the build if one of those boundaries moves or the eager budget grows, so the numbers live in the tests rather than here.
+
+On HEIC-capable hosts (Safari/iOS, Edge, Windows) `nativeDecode: true` skips the WASM binary entirely — the platform decodes. Pages that instantiate decoders repeatedly (or re-instantiate after `free()`) can instead compile the WASM once and share it via `moduleOverrides.instantiateWasm` — see the recipe in [API.md](API.md#libheifdecoderoptions).
 
 `npm run build` also emits pre-compressed copies — `dist/heic-decoder.wasm.gz` (~288 KB) and `dist/heic-decoder.wasm.br` (~230 KB) — and verifies each one decompresses back to the binary, so a corrupt sidecar cannot reach a CDN. Most static hosts and CDNs (GitHub Pages, Netlify, Vercel, Cloudflare) already compress `application/wasm` automatically when the browser sends `Accept-Encoding`; verify with:
 
@@ -440,6 +443,8 @@ self.onmessage = async (event) => {
 };
 ```
 
+**Worker reuse:** the transport keeps live workers across batch items — one that answered `ok: true` receives the next queued request instead of being booted again (workers that timed out, aborted, or errored are terminated). Your script must therefore stay request-oriented: keep `onmessage` installed and do **not** call `self.close()` after posting a result, or the next queued conversion waits out its `timeoutMs`. The script above already complies.
+
 Then convert from the main thread:
 
 ```typescript
@@ -526,6 +531,7 @@ Converts a HEIC image file to a standard web format.
   - `preserveExif`: `boolean` (Re-inject the source EXIF block into JPEG (APP1) / PNG (`eXIf`) output. Metadata may contain GPS — opt-in. Default: `false`. Fail-safe: unparsable encoder output, a malformed block, or an oversized payload returns the image without metadata rather than failing — as does a missing `dist/exif-*.mjs` chunk, which logs a one-time warning so a deployment problem is distinguishable from a file that simply had no Exif item)
   - `output`: `'blob' | 'dataUrl' | 'arrayBuffer'` (Result representation. Default: `'blob'`; see [Usage section 10](#10-output-shapes-blob-data-url-arraybuffer))
   - `signal`: `AbortSignal` (Cancel pending work; rejects with `aborted`. Default: none)
+  - `nativeDecode`: `boolean` (Decode via the platform's native HEIC stack — `createImageBitmap` on Safari/iOS, Edge, Windows — skipping the WASM payload; falls back to libheif transparently where unavailable. Ignored with an injected `decoder`, `preserveExif: true`, or `applyOrientation: false`. Default: `false`)
 - **Returns**: `Promise<Blob>` — or `Promise<string>` / `Promise<ArrayBuffer>` with the typed `output` overloads
 
 ### `convertMany(inputs, options?)`
@@ -538,7 +544,7 @@ Converts multiple HEIC images with bounded concurrency. Results are returned in 
   - `onProgress`: `(index: number, percent: number) => void` (Per-item progress callback; fires only for successful items)
   - `decoder`: `IHeicDecoder` (Optional. When provided, the same instance is shared by all concurrent conversions and must be safe for concurrent `decode()` calls; the library never frees an injected decoder; `reuseDecoders` is ignored)
   - `continueOnError`: `boolean` (Return per-item `{ index, ok, result | error }` entries instead of rejecting on the first failure. Default: `false`)
-  - `reuseDecoders`: `boolean` (Hand each batch runner one pooled `LibheifDecoder` reused across items — amortizes WASM init for large batches while keeping exclusive use. Default: `false`)
+  - `reuseDecoders`: `boolean` (Hand each batch runner one pooled `LibheifDecoder` reused across items — amortizes WASM init for large batches while keeping exclusive use. Ignored when `decoder` is set or `nativeDecode: true`. Default: `false`)
 - **Returns**: `Promise<Blob[]>` — or `Promise<string[]>` / `Promise<ArrayBuffer[]>` with the typed `output` overloads; `Promise<ConvertItemResult[]>` with `continueOnError` (also typed by `output`)
 
 ### `convertHeicInWorker(input, options)`
