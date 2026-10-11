@@ -26,7 +26,7 @@ export const WorkerMessages = {
       progressMessages: number;
       lastPercent?: number;
       unknownType?: string;
-      /** Results ignored for not echoing the request id — a reply left over from this pooled worker's previous lease, or a script that replies twice. */
+      /** Replies ignored for not echoing the request id (duplicates or late replies). */
       staleResults?: number;
       /** The lease came from the pool rather than a fresh boot. */
       adopted?: boolean;

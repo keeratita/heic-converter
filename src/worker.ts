@@ -13,10 +13,9 @@ import { runBoundedBatch } from './batch';
 import { validateConvertOptions, validateContinueOnError } from './validate';
 
 /**
- * Worker-only option validators live here, not in `./validate`: `validate.ts` is
- * eagerly imported by `index.ts`, so a validator that reads a `WorkerMessages`
- * string would drag that text into the eager chunk. Same call sites, same error
- * codes — only the module they live in keeps ~120 B out of the first load.
+ * Worker-only option validators live here, not in `./validate`: validate.ts is
+ * eagerly imported, so a validator reading a `WorkerMessages` string would drag
+ * that text into the eager chunk. Same call sites, same error codes.
  */
 
 /** @throws `invalid_concurrency` for a non-positive-integer maxConcurrentWorkers. */
@@ -67,10 +66,9 @@ export interface WorkerConvertOptions extends Omit<ConvertOptions, 'decoder'> {
 }
 
 /**
- * Correlation token. Each request carries a fresh `id`; every reply must
- * echo the `id` of the request it answers. Workers are pooled, so a script
- * that posts a duplicate or late reply would otherwise settle the *next*
- * lease with the previous item's result.
+ * Correlation token: every reply must echo the `id` of the request it answers.
+ * Workers are pooled, so a duplicate or late reply would otherwise settle the
+ * *next* lease with the previous item's result.
  */
 interface CorrelatedMessage {
   id: number;
@@ -87,10 +85,9 @@ export interface WorkerResultMessage extends CorrelatedMessage {
   type: 'result';
   ok: boolean;
   /**
-   * The converted image exactly as `convertHeic` returned it inside the
-   * worker: a Blob, a data-URL string (`output: 'dataUrl'`), or an
-   * ArrayBuffer (`output: 'arrayBuffer'`). The field name `blob` is kept
-   * for protocol compatibility.
+   * The converted image as `convertHeic` returned it inside the worker: Blob,
+   * data-URL string, or ArrayBuffer. The field name `blob` is kept for
+   * protocol compatibility.
    */
   blob?: Blob | string | ArrayBuffer;
   error?: string;
@@ -116,10 +113,10 @@ function defaultMaxWorkers(): number {
 
 /**
  * Per-workerUrl concurrency + reuse: calls beyond the cap queue, so a batch
- * cannot spawn unbounded workers. Workers answering a clean `ok: true` are
- * parked (listeners detached) and adopted by the next grant instead of
- * paying boot again; anything less clean is terminated, so a faulted module
- * never serves the next item. An idle slot keeps parked workers warm for
+ * cannot spawn unbounded workers. A clean `ok: true` worker is parked
+ * (listeners detached) and adopted by the next grant instead of paying boot
+ * again; anything less clean is terminated, so a faulted module never serves
+ * the next item. An idle slot keeps parked workers warm for
  * WORKER_POOL_IDLE_MS, then terminates them and drops the entry.
  */
 const workerSlots = new Map<
@@ -132,16 +129,12 @@ const WORKER_POOL_IDLE_MS = 5000;
 
 /**
  * Parked workers per URL cap: each keeps a grown WASM heap alive for
- * WORKER_POOL_IDLE_MS, so beyond a couple the memory cost outweighs the
- * boot saved. The oldest is evicted (least likely to be adopted again).
+ * WORKER_POOL_IDLE_MS, so beyond a couple the memory cost outweighs the boot
+ * saved. Oldest evicted first.
  */
 const MAX_PARKED_WORKERS = 2;
 
-/**
- * Monotonic per-page request id. Every reply must echo it: a parked worker
- * can still have queued messages from its previous lease, which must never
- * settle the next caller.
- */
+/** Monotonic per-page request id; replies echo it (see CorrelatedMessage). */
 let nextRequestId = 1;
 
 /** Hands the lease back; a `recycle` worker is parked for the next grant. */
@@ -222,10 +215,9 @@ function reserveWorkerSlot(
     }
     state.granted = true;
     slot!.active += 1;
-    // The release callback is handed to start() directly: start may fail
-    // (worker construction throw) synchronously, before the caller has had
-    // a chance to store the returned release function. A parked worker is
-    // adopted; start() attaches listeners and posts either way.
+    // The release callback is handed to start() directly: start may throw
+    // synchronously, before the caller stores the returned release. A parked
+    // worker is adopted; start() attaches listeners and posts either way.
     start(release, slot!.parked.pop());
   };
 
@@ -257,10 +249,9 @@ export const __semaphoreTestHooks = {
 };
 
 /**
- * @internal Terminate parked workers, cancel idle prunes and drop slot
- * entries, so a parked worker is never adopted across tests. Like the other
- * hooks this ships inside the lazy worker chunk (a few dozen dead bytes
- * outside tests, inert); the chunk is only fetched by the worker APIs.
+ * @internal Terminate parked workers, cancel idle prunes and drop slot entries,
+ * so tests never adopt a worker parked by an earlier case. Like the other hooks
+ * this ships inside the lazy worker chunk — dead but inert bytes outside tests.
  */
 export function __resetWorkerPool(): void {
   for (const slot of workerSlots.values()) {
@@ -277,11 +268,9 @@ export function __resetWorkerPool(): void {
 
 /**
  * Implementation behind the public `convertHeicInWorker` wrapper in
- * `src/index.ts`, which carries the published JSDoc: the worker-script message
- * protocol, the `workerType` and `decoder` rules, and the caveats about
- * `timeoutMs` (queue wait counts) and the stringified worker boundary. Keep
- * behaviour in sync with that doc — it is what `dist/index.d.ts` ships, and
- * this file's comments do not reach consumers.
+ * `src/index.ts`, which carries the published JSDoc (worker-script protocol,
+ * `workerType`/`decoder` rules, `timeoutMs` caveats) — that is what
+ * `dist/index.d.ts` ships, so keep behaviour in sync with that doc.
  */
 export function convertHeicInWorker<S extends OutputShape = 'blob'>(
   input: HeicInput,
@@ -298,8 +287,7 @@ export function convertHeicInWorker<S extends OutputShape = 'blob'>(
     }
     try {
       // Same up-front validation as the in-process APIs: a typo surfaces its
-      // own error code on the main thread instead of coming back stringified
-      // as worker_failed from inside the worker.
+      // own error code on the main thread instead of stringified worker_failed.
       validateConvertOptions(options);
       validateMaxConcurrentWorkers(options?.maxConcurrentWorkers);
       validateTimeoutMs(options?.timeoutMs);
@@ -407,9 +395,9 @@ export function convertHeicInWorker<S extends OutputShape = 'blob'>(
         return;
       }
       if (message.id !== requestId) {
-        // A duplicate or late reply from the previous lease of this pooled
-        // worker — exactly the message that would otherwise settle the wrong
-        // item. Never terminal; counted so a timeout diagnostic can say so.
+        // Duplicate or late reply from this pooled worker's previous lease —
+        // exactly the message that would settle the wrong item. Counted for
+        // the timeout diagnostic.
         stats.staleResults = (stats.staleResults ?? 0) + 1;
         return;
       }
@@ -460,9 +448,9 @@ export function convertHeicInWorker<S extends OutputShape = 'blob'>(
     };
 
     // Functions and class instances (decoder, onProgress, signal) are not
-    // structured-cloneable, and workerUrl/timeoutMs/workerType/
-    // maxConcurrentWorkers are only needed on the main thread;
-    // rest-destructuring forwards all remaining options.
+    // structured-cloneable and workerUrl/timeoutMs/workerType/
+    // maxConcurrentWorkers are main-thread-only; rest-destructuring forwards
+    // the remaining options.
     const {
       workerUrl,
       onProgress: _onProgress,
@@ -474,9 +462,8 @@ export function convertHeicInWorker<S extends OutputShape = 'blob'>(
     } = options;
 
     const start = (release: WorkerReleaser, recycled: Worker | undefined): void => {
-      // Store the slot releaser first: every failure path below runs cleanup(),
-      // which must be able to hand the slot back even if the worker never
-      // got constructed.
+      // Store the slot releaser first: cleanup() on the failure paths below
+      // must hand the slot back even if the worker was never constructed.
       releaseSlot = release;
       // The call may already have timed out while queued; do not spawn a
       // worker for a settled promise.
@@ -558,10 +545,8 @@ function toRunnerConcurrency(maxConcurrentWorkers: number | undefined): number {
 
 /**
  * Implementation behind the public `convertManyInWorker` wrapper in
- * `src/index.ts`, which carries the published JSDoc (semantics, the
- * `maxConcurrentWorkers` default, `continueOnError` result shapes). This is the
- * code the worker chunk actually runs; the entry point just resolves the lazy
- * chunk and forwards.
+ * `src/index.ts`, which carries the published JSDoc — keep behaviour in sync
+ * with that doc; the entry point just resolves the lazy chunk and forwards.
  */
 export function convertManyInWorker<S extends OutputShape = 'blob'>(
   inputs: HeicInput[],
@@ -588,9 +573,8 @@ export async function convertManyInWorker<S extends OutputShape = 'blob'>(
   if ((options as ConvertOptions).decoder !== undefined) {
     throw new HeicConverterError('invalid_input', WorkerMessages.WorkerDecoderUnsupported);
   }
-  // Same up-front shared validation as convertMany: option typos surface
-  // their own code on the main thread instead of returning stringified as
-  // worker_failed from inside the worker.
+  // Same up-front shared validation as convertMany: option typos surface their
+  // own code on the main thread, not stringified worker_failed.
   validateConvertOptions(options);
   validateContinueOnError(options?.continueOnError);
   validateMaxConcurrentWorkers(options?.maxConcurrentWorkers);

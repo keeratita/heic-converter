@@ -47,9 +47,8 @@ class MockWorker {
   }
 
   emit(type: string, event: any): void {
-    // Simulate a protocol-compliant script: hand-written result/progress
-    // payloads without an explicit `id` get the id of the last posted
-    // request echoed back. Stale/duplicate tests pass `id` explicitly.
+    // Protocol-compliant simulation: result/progress payloads without an
+    // explicit `id` get the last posted request id echoed; stale tests pass `id`.
     const data = event?.data as { type?: string; id?: number } | undefined;
     if (type === 'message' && data && (data.type === 'result' || data.type === 'progress') && data.id === undefined) {
       const last = this.posted[this.posted.length - 1] as { id?: number } | undefined;

@@ -262,10 +262,10 @@ export class LibheifDecoder implements IHeicDecoder {
     const width = result.width;
     const height = result.height;
 
-    // Validate the reported orientation before exposing it: anything outside
-    // EXIF's 1-8 range (or absent on an older glue) is identity. Only set the
-    // field when a rotation is actually pending, keeping the result shape
-    // backwards compatible.
+    // Validate the reported orientation before exposing it: outside EXIF's 1-8
+    // range (or absent on an older glue) is identity. Only set the field when
+    // a rotation is actually pending, keeping the result shape backwards
+    // compatible.
     const rawOrientation = result.orientation;
     const orientation =
       typeof rawOrientation === 'number' &&
@@ -292,12 +292,9 @@ export class LibheifDecoder implements IHeicDecoder {
     if (orientation > 1) {
       decoded.orientation = orientation;
     }
-    // Expose the raw EXIF block for metadata preservation (preserveExif) and
-    // for raw-decode consumers (e.g. Node + sharp). Same ownership rule as
-    // `data`: the block must outlive free(), so copy only when HEAPU8 shows it
-    // is a live heap view — the C++ wrapper hands back a JS-allocated array,
-    // so this is normally a zero-copy wrap (it was previously an extra full
-    // copy of a payload that can reach 4 MB). Require at least a marker plus a
+    // Same ownership rule as `data`: the block must outlive free(), so copy
+    // only when HEAPU8 shows a live heap view (the C++ wrapper hands back a
+    // JS-allocated array — normally a zero-copy wrap). Require a marker plus a
     // minimal TIFF header to be useful.
     const rawExif = result.exif;
     if (rawExif instanceof Uint8Array && rawExif.length >= 14) {

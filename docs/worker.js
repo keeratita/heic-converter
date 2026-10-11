@@ -10,9 +10,7 @@
 //
 // Every reply must echo the request's `id` — workers are pooled, so a reply
 // without it (or with a stale one) is ignored and the conversion times out.
-// Keep in sync with test/browser/worker.js (same protocol, different import
-// path) — src/worker.ts validates this contract and reports timeouts when a
-// worker stops speaking it.
+// Keep in sync with test/browser/worker.js (same protocol, different import path).
 import { convertHeic } from './dist/index.mjs';
 
 self.onmessage = async (event) => {

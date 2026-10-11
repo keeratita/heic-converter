@@ -69,10 +69,9 @@ describe('convertHeic - native decode strategy', () => {
   });
 
   it('rejects with aborted when the signal fires during the native decode, without marking or loading WASM', async () => {
-    // Aborting must not be mistaken for "this platform cannot decode HEIC",
-    // and the cancelled conversion must not pay for the libheif fallback.
-    // The started-gate proves the abort lands mid-decode: aborting earlier
-    // would be caught by the entry pre-check and exercise nothing here.
+    // Aborting is not a capability verdict, and a cancelled conversion must not
+    // pay for the libheif fallback. The started-gate proves the abort lands
+    // mid-decode — earlier, the entry pre-check would catch it instead.
     const controller = new AbortController();
     let decodeStarted!: () => void;
     const started = new Promise<void>((resolve) => {
@@ -109,9 +108,8 @@ describe('convertHeic - native decode strategy', () => {
   });
 
   it('re-throws a typed aborted raised inside the native attempt, unmarked and without the fallback', async () => {
-    // Abort lands while native initialize() is in flight: the post-initialize
-    // throwIfAborted raises the typed aborted the catch must re-throw as-is,
-    // before the decode and before any fallback is considered.
+    // Abort lands mid-initialize(): the post-initialize throwIfAborted raises
+    // the typed aborted the catch must re-throw before any fallback.
     const controller = new AbortController();
     let initStarted!: () => void;
     const started = new Promise<void>((resolve) => {

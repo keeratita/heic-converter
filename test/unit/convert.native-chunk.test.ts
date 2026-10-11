@@ -17,11 +17,9 @@ vi.mock('../../src/wasm', async () => {
   return { LibheifDecoder: MockLibheifDecoder };
 });
 
-// Simulate the deployment failure this suite exists for: the native chunk
-// cannot be fetched (partial upload, wrong MIME type), so the dynamic import
-// rejects. The conversion must degrade to libheif — typed, transparently,
-// and without caching a platform refusal that the deploy has nothing to do
-// with. Sequential conversions only: the module mocker mis-resolves racing
+// Simulate the deployment failure: the native chunk fetch rejects (partial
+// upload, wrong MIME). The conversion must degrade to libheif without caching
+// a platform refusal. Sequential only: the module mocker mis-resolves racing
 // dynamic imports of the same path.
 vi.mock('../../src/wasm/native', async () => {
   throw new Error('Failed to fetch dynamically imported module: /dist/native-ABC123.mjs');

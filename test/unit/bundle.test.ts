@@ -19,13 +19,11 @@ const isBuilt = existsSync(`${DIST}/index.mjs`);
 // still copying publicDir would otherwise delete every guard in this file.
 const isCI = !!process.env.CI;
 
-// 23_500 (from 23_000): the native-chunk degradation breadcrumb
-// (Messages.NativeChunkLoadWarning + the once-only warn helper) and the
-// fallback error-class discrimination (aborted re-throw vs. init-class
-// marking vs. the throwIfAborted gate before the WASM load) are entry-thread
-// logic — they decide what the lazy chunks get asked to do and cannot be
-// deferred. ESM (what browsers load) is ~21.6 K; the CJS interop helpers
-// push the CJS pass over the old ceiling.
+// 23_500 (from 23_000): the native-chunk degradation breadcrumb and the
+// fallback error-class discrimination are entry-thread logic — they decide what
+// the lazy chunks get asked to do and cannot be deferred. ESM (what browsers
+// load) is ~21.6 K; the CJS interop helpers pushed the CJS pass over the old
+// ceiling.
 const EAGER_BUDGET_BYTES = 23_500;
 /** A hoisted implementation leaves a re-export stub on the dynamic edge, so the import() check alone passes. */
 const DEFERRED_CHUNK_MIN_BYTES = 1_000;

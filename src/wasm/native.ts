@@ -2,10 +2,9 @@ import { HeicConverterError } from '../errors';
 import type { DecodedImage, IHeicDecoder } from '../types';
 
 /**
- * Decoded-dimension cap, duplicated from `MAX_CANVAS_DIMENSION` in
- * `render/canvas.ts` — `native-decoder.test.ts` pins the two equal. The
- * number is copied rather than imported so this lazy chunk stays out of
- * the render module graph.
+ * Decoded-dimension cap, a duplicate of `MAX_CANVAS_DIMENSION` in
+ * render/canvas.ts (pinned equal by native-decoder.test.ts) so this lazy
+ * chunk stays out of the render module graph.
  */
 export const MAX_NATIVE_DECODE_DIMENSION = 16384;
 
@@ -17,14 +16,12 @@ export const MAX_NATIVE_DECODE_DIMENSION = 16384;
  */
 
 /**
- * Per-realm refusal flag. Only an environment-class failure (missing
- * platform APIs at initialize()) is sticky: it is a property of the realm.
- * Decode-class failures (corrupt file, absurd declared size, transient 2D
- * pressure) are properties of the input, so convertHeic retries them with
- * libheif without caching — one bad upload must not cost the page its
- * native acceleration. Success is deliberately not cached: capable hosts
- * keep taking the native path, and there is no pre-decode API that tells a
- * decodable file from a corrupt one.
+ * Per-realm refusal flag, sticky only for an environment-class failure
+ * (missing platform APIs at initialize()). Decode-class failures — corrupt
+ * file, absurd declared size, transient 2D pressure — are input properties,
+ * so convertHeic retries them without caching: one bad upload must not cost
+ * the page its native acceleration. Success is not cached: there is no
+ * pre-decode API that tells a decodable file from a corrupt one.
  */
 let nativeHeicRefused = false;
 let refusedWarned = false;
@@ -36,8 +33,8 @@ export function isNativeHeicRefused(): boolean {
 
 /**
  * @internal Record an environment-class native failure so later calls skip
- * the attempt. Warns once as a breadcrumb: without it a page silently loses
- * the opt-in with nothing naming the cause.
+ * the attempt. The once-only warn is the breadcrumb: without it the page
+ * silently loses the opt-in with nothing naming the cause.
  */
 export function markNativeHeicRefused(): void {
   nativeHeicRefused = true;
@@ -62,9 +59,8 @@ export function __resetNativeHeicProbe(): void {
  * `imageOrientation: 'from-image'` applies the display transform (EXIF and
  * irot/imir), so results are upright with no pending orientation — the
  * selection policy only picks this Strategy when `applyOrientation` is not
- * false. Errors here never reach a consumer: convertHeic retries with
- * libheif, which produces the typed error of record, so these strings stay
- * chunk-local (like worker-only messages).
+ * false. Errors never reach a consumer: convertHeic retries with libheif,
+ * which produces the typed error of record, so these strings stay chunk-local.
  */
 export class NativeHeicDecoder implements IHeicDecoder {
   async initialize(): Promise<void> {
@@ -84,11 +80,10 @@ export class NativeHeicDecoder implements IHeicDecoder {
     });
     try {
       if (bitmap.width > MAX_NATIVE_DECODE_DIMENSION || bitmap.height > MAX_NATIVE_DECODE_DIMENSION) {
-        // Container-declared dimensions are attacker-controlled. The canvas +
-        // ImageData pair below would allocate outside the WASM heap — an
-        // uncatchable tab crash — so bail before allocating and let libheif
-        // decide under its bounded-heap semantics. The platform bitmap
-        // itself cannot be capped pre-decode; it is browser-managed.
+        // Container-declared dimensions are attacker-controlled: the canvas +
+        // ImageData pair below would allocate outside the WASM heap (an
+        // uncatchable tab crash). Bail to libheif's bounded-heap semantics;
+        // the platform bitmap itself cannot be capped pre-decode.
         throw new HeicConverterError(
           'decode_failed',
           `Native HEIC decoding is limited to ${MAX_NATIVE_DECODE_DIMENSION}px per side, got ${bitmap.width}x${bitmap.height}.`

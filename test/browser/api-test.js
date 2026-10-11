@@ -195,10 +195,9 @@ async function runWorkerBatchTest() {
 }
 
 async function runWorkerReuseTest() {
-  // Sequential items behind one slot must adopt the live worker rather than
-  // boot one per item — and the request-id protocol must survive real
-  // park/adopt cycles (a stale reply from the previous lease may not settle
-  // the next item). Unique workerUrl so earlier cases cannot share the pool.
+  // Sequential items behind one slot must adopt the live worker, not boot one
+  // per item — and the id protocol must survive real park/adopt cycles.
+  // Unique workerUrl so earlier cases cannot share the pool.
   const blob = await fetchFixture('colors-with-alpha.heic');
   const RealWorker = Worker;
   let booted = 0;

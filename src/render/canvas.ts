@@ -9,13 +9,10 @@ import { validateCrop, validateFormat, validateResize } from '../validate';
 export { validateCrop, validateFormat, validateResize } from '../validate';
 
 /**
- * Maximum supported canvas dimension per side. Browsers cap canvas sizes
- * (e.g. 16384px per side in Chrome); this guard turns absurd scale
- * factors into a clear error instead of an allocation failure. The WASM
- * wrapper (build-wasm/wrapper/main.cpp) enforces the same per-side cap
- * before allocating decoded pixels, as does the native Strategy
- * (`src/wasm/native.ts`) before its canvas + ImageData readback — keep
- * them in sync.
+ * Maximum supported canvas dimension per side (browsers cap around this):
+ * turns absurd scale factors into a clear error instead of an allocation
+ * failure. The WASM wrapper (main.cpp) and the native Strategy apply the same
+ * cap before allocating — keep them in sync.
  */
 export const MAX_CANVAS_DIMENSION = 16384;
 
@@ -33,13 +30,12 @@ export function assertEncodeEnvironment(): void {
 
 /**
  * Environment probe: some browsers cannot encode AVIF via canvas (e.g.
- * Safari), and per spec `toBlob` silently falls back to PNG for unknown
- * types — so trusting the requested type would emit a PNG under an AVIF
- * label. Probed once (a 1×1 encode is cheap); only a definitive answer is
- * cached, and only `false` may produce `format_unsupported`. `undefined` means
- * the probe was indeterminate (wedged `toBlob`, or a throwing canvas under
- * memory pressure): callers must proceed and let the encode-time `blob.type`
- * check decide, and the next call re-probes once the cooldown has passed.
+ * Safari), and per spec `toBlob` silently falls back to PNG — trusting the
+ * requested type would emit a PNG under an AVIF label. Probed once. `false`
+ * is a definitive refusal (the only verdict that may produce
+ * `format_unsupported`); `undefined` is indeterminate (wedged `toBlob`,
+ * throwing canvas under memory pressure) — callers proceed and let the
+ * encode-time `blob.type` check decide.
  */
 type AvifSupport = boolean | undefined;
 
@@ -50,10 +46,9 @@ export const AVIF_PROBE_TIMEOUT_MS = 5000;
 
 /**
  * An indeterminate verdict is never cached as truth, but re-probing per call
- * makes a starved-toBlob host pay the full window each time. The latest
- * "don't know" is honoured for this cooldown; consumers deny only on
- * `=== false`, matching an in-flight indeterminate probe.
- * Exported (internally) so tests advance past the cooldown, not around it.
+ * would make a starved host pay the full timeout each time. The latest "don't
+ * know" is honoured for this cooldown. Exported so tests advance past it, not
+ * around it.
  */
 export const AVIF_INDETERMINATE_COOLDOWN_MS = 10000;
 let indeterminateUntil = 0;
@@ -68,9 +63,9 @@ async function runAvifProbe(): Promise<AvifSupport> {
     return undefined;
   }
   const pending = canvasToBlob(probe, 'image/avif');
-  // toBlob callbacks can be starved (backgrounded tabs, memory pressure):
-  // race against a deadline so a wedged probe can neither hang every later
-  // AVIF conversion nor poison the cache with a false negative.
+  // toBlob callbacks can be starved (backgrounded tabs): race against a
+  // deadline so a wedged probe can neither hang later conversions nor poison
+  // the cache with a false negative.
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<'timeout'>((resolve) => {
     timer = setTimeout(() => resolve('timeout'), AVIF_PROBE_TIMEOUT_MS);
@@ -78,8 +73,7 @@ async function runAvifProbe(): Promise<AvifSupport> {
   try {
     const result = await Promise.race([pending, deadline]);
     // `undefined` = indeterminate: a starved 1×1 toBlob says nothing about
-    // support, and every awaiter of this single-flight probe would otherwise
-    // reject `format_unsupported` on a browser that can encode AVIF fine.
+    // support; awaiters must not reject format_unsupported on it.
     return result === 'timeout' ? undefined : result.type === 'image/avif' && result.size > 0;
   } finally {
     /* v8 ignore else -- the deadline executor assigns timer synchronously */
@@ -111,10 +105,8 @@ export function canEncodeAvif(): Promise<AvifSupport> {
 
 /**
  * Up-front capability gate for the chosen output format, safe to call before
- * an expensive decode. Only a definitive `false` rejects here — an
- * indeterminate probe defers to the encode-time `blob.type` check.
- * `renderAndEncode` keeps that defensive re-check (worker realms and engines
- * that ignore unknown types).
+ * an expensive decode. Only a definitive `false` rejects here; indeterminate
+ * defers to the encode-time `blob.type` re-check in `renderAndEncode`.
  */
 export async function assertEncodeCapability(format: ImageFormat): Promise<void> {
   validateFormat(format);
@@ -398,10 +390,10 @@ async function withExif(
   if (!preserveExif || !rawExif || rawExif.length === 0) {
     return blob;
   }
-  // Opt-in (metadata can carry GPS), so the injectors are a lazy chunk. Failing
-  // to fetch it is part of the fail-safe contract: convert without EXIF. Say so
-  // once — a missing or mis-MIME'd dist/exif-*.mjs must not be indistinguishable
-  // from a source file that simply had no Exif item.
+  // Opt-in (metadata can carry GPS), so the injectors are a lazy chunk. A
+  // failed fetch is part of the fail-safe contract: convert without EXIF, but
+  // say so once — a missing dist/exif-*.mjs must not look like a file with no
+  // Exif item.
   const exifModule = await import('./exif').catch(() => null);
   if (!exifModule) {
     if (!exifChunkWarned) {
@@ -414,11 +406,10 @@ async function withExif(
     return blob;
   }
   const { injectExifIntoJpeg, injectExifIntoPng, normalizeOrientationTag } = exifModule;
-  // The rendered raster is already upright whenever the pending rotation was
-  // applied (or none was pending): the orientation tag must then say "normal"
-  // or consumers would rotate the image a second time. With
-  // `applyOrientation: false` the stored geometry is preserved and the tag
-  // legitimately describes it — keep it verbatim.
+  // The rendered raster is upright whenever the pending rotation was applied
+  // (or none was): the tag must say "normal" or consumers rotate a second
+  // time. With `applyOrientation: false` the tag legitimately describes the
+  // stored geometry — keep it verbatim.
   const exif = normalizeOrientation ? normalizeOrientationTag(rawExif) : rawExif;
   const bytes = new Uint8Array(await blob.arrayBuffer());
   const injected =
@@ -449,9 +440,8 @@ export async function renderAndEncode(
 
   const normalizedFormat = format.toLowerCase();
   // AVIF cannot be encoded by every canvas implementation and a failed
-  // toBlob() would otherwise silently emit a PNG — probe before pixel work.
-  // Only a definitive `false` rejects; an indeterminate probe defers to the
-  // blob.type check below, which sees what the real encode produced.
+  // toBlob() would silently emit a PNG. Only a definitive `false` rejects;
+  // indeterminate defers to the blob.type check below.
   if (normalizedFormat === 'avif' && (await canEncodeAvif()) === false) {
     throw new HeicConverterError('format_unsupported', Messages.FormatUnsupported('avif'));
   }
@@ -474,10 +464,9 @@ export async function renderAndEncode(
   }
 
   const orientation = effectiveOrientation(decoded.orientation, applyOrientation);
-  // Whether the injected EXIF may keep its orientation tag verbatim: only
-  // when a pending rotation was NOT applied (applyOrientation:false keeps the
-  // stored geometry, which the tag describes). In every other case the
-  // output raster is upright and tag 274 must be normalized to 1.
+  // The injected EXIF may keep its orientation tag verbatim only when a
+  // pending rotation was NOT applied (applyOrientation:false keeps the stored
+  // geometry); upright output needs tag 274 normalized to 1.
   const pendingRotation =
     decoded.orientation !== undefined && decoded.orientation >= 2 && decoded.orientation <= 8;
   const normalizeExifOrientation = !pendingRotation || applyOrientation;

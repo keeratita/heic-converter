@@ -313,12 +313,10 @@ function createProgressReporter(
 }
 
 /**
- * The `nativeDecode` selection policy — single source of truth: `convertHeic`
- * consults it before picking a Strategy and `convertMany` consults it before
- * leasing from the DecoderPool, so they can never drift (a drift would let
- * the pool lease libheif into a native batch, or silently drop the opt-in).
- * The native Strategy yields no Exif item and cannot report stored geometry,
- * so those options pin the libheif path.
+ * The `nativeDecode` selection policy — the single source consulted by both
+ * `convertHeic`'s Strategy pick and `convertMany`'s pool gate, so they can
+ * never drift. The native Strategy yields no Exif item and cannot report
+ * stored geometry, so those options pin the libheif path.
  */
 function nativeDecodeEligible(
   options: Pick<ConvertOptions, 'nativeDecode' | 'preserveExif' | 'applyOrientation'> | undefined
@@ -333,9 +331,8 @@ function nativeDecodeEligible(
 let nativeChunkWarned = false;
 
 /**
- * A failed fetch of the native chunk is a deployment problem (partial
- * upload, wrong MIME), not a platform verdict: warn once — like the EXIF
- * chunk degradation — and keep using libheif without caching a refusal.
+ * A failed fetch of the native chunk is a deployment problem, not a platform
+ * verdict: warn once and keep using libheif without caching a refusal.
  */
 function warnNativeChunkLoad(reason: string): void {
   if (nativeChunkWarned) {
@@ -390,9 +387,8 @@ export async function convertHeic<S extends OutputShape = 'blob'>(
   throwIfAborted(signal);
 
   // 3. Select the decode strategy: an injected instance (incl. the pooled
-  // lease) wins; opted-in nativeDecode uses the platform decoder when policy
-  // allows — EXIF and stored-geometry contracts are libheif-only, so those
-  // options pin the WASM path. Owned instances stay exclusive here.
+  // lease) wins; else nativeDecode when the policy below allows. Owned
+  // instances stay exclusive here.
   let decoder: IHeicDecoder;
   let ownsDecoder: boolean;
   let usingNative = false;
@@ -438,8 +434,7 @@ export async function convertHeic<S extends OutputShape = 'blob'>(
 
   try {
     // 4. Initialize and decode. A failed native attempt degrades
-    // transparently: mark the realm unsupported and retry once with
-    // libheif, the reference decoder.
+    // transparently: retry once with libheif, the reference decoder.
     const progress = createProgressReporter(options?.onProgress);
     const initAndDecode = async (strategy: IHeicDecoder): Promise<DecodedImage> => {
       try {
@@ -467,11 +462,9 @@ export async function convertHeic<S extends OutputShape = 'blob'>(
         throw error;
       }
       if (error instanceof HeicConverterError && error.code === 'decoder_init_failed') {
-        // Environment-class failure (missing platform API): stable for the
-        // realm, so cache it and skip later attempts. Decode-class failures
-        // are input properties (corrupt file, absurd declared size, transient
-        // 2D pressure) — marking those would let one bad upload cost native
-        // speed for the whole page.
+        // Environment-class failure (missing platform API) is stable for the
+        // realm, so cache it. Decode-class failures are input properties —
+        // one bad upload must not cost the whole page native speed.
         nativeModule!.markNativeHeicRefused();
       }
       throwIfAborted(signal); // do not pay for a WASM load on a cancelled conversion
@@ -681,10 +674,9 @@ export async function convertMany<S extends OutputShape = 'blob'>(
     ...itemOptions
   } = options ?? {};
 
-  // The pool leases LibheifDecoder instances; leasing one into a batch that
-  // is actually taking the native path would silently defeat nativeDecode,
-  // so it bypasses the pool. Batches whose opt-in is policy-pinned to
-  // libheif (preserveExif etc.) still pool — see nativeDecodeEligible.
+  // The pool leases LibheifDecoder instances — leasing one into a batch that is
+  // actually taking the native path would silently defeat nativeDecode. Batches
+  // whose opt-in is policy-pinned to libheif still pool (see nativeDecodeEligible).
   const usePool = reuseDecoders === true && options?.decoder === undefined && !nativeDecodeEligible(options);
   const pool = usePool ? new DecoderPool(runnerCountFor(concurrency, inputs.length)) : null;
 
