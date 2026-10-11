@@ -103,37 +103,73 @@ function defaultMaxWorkers(): number {
 }
 
 /**
- * Per-workerUrl concurrency bookkeeping: calls beyond the cap queue until an
- * earlier call settles, so a batch cannot spawn unbounded workers.
+ * Per-workerUrl concurrency + reuse: calls beyond the cap queue, so a batch
+ * cannot spawn unbounded workers. Workers answering a clean `ok: true` are
+ * parked (listeners detached) and adopted by the next grant instead of
+ * paying boot again; anything less clean is terminated, so a faulted module
+ * never serves the next item. An idle slot keeps parked workers warm for
+ * WORKER_POOL_IDLE_MS, then terminates them and drops the entry.
  */
-const workerSlots = new Map<string, { active: number; waiters: Array<() => void> }>();
+const workerSlots = new Map<
+  string,
+  { active: number; waiters: Array<() => void>; parked: Worker[]; idleTimer?: ReturnType<typeof setTimeout> }
+>();
 
-function reserveWorkerSlot(key: string, max: number, start: (release: () => void) => void): () => void {
+/** How long an idle slot may keep parked workers alive before terminating them. */
+const WORKER_POOL_IDLE_MS = 5000;
+
+/** Hands the lease back; a `recycle` worker is parked for the next grant. */
+type WorkerReleaser = (recycle?: Worker) => void;
+
+function reserveWorkerSlot(
+  key: string,
+  max: number,
+  start: (release: WorkerReleaser, recycled: Worker | undefined) => void
+): WorkerReleaser {
   let slot = workerSlots.get(key);
   if (!slot) {
-    slot = { active: 0, waiters: [] };
+    slot = { active: 0, waiters: [], parked: [] };
     workerSlots.set(key, slot);
   }
   const state = { granted: false, released: false };
 
-  const drainOrPrune = (): void => {
-    const next = slot!.waiters.shift();
-    if (next) {
-      next();
-    } else if (slot!.active === 0 && slot!.waiters.length === 0) {
-      workerSlots.delete(key);
+  const collectIfIdle = (): void => {
+    if (slot!.active !== 0 || slot!.waiters.length !== 0) {
+      return;
     }
+    if (slot!.parked.length === 0) {
+      workerSlots.delete(key);
+      return;
+    }
+    // Keep the pool warm: the next sequential-batch call arrives within a
+    // microtask. Only grant() makes the slot busy again and it cancels this
+    // timer, so firing means "still idle".
+    slot!.idleTimer = setTimeout(() => {
+      slot!.idleTimer = undefined;
+      for (const parked of slot!.parked.splice(0)) {
+        parked.terminate();
+      }
+      workerSlots.delete(key);
+    }, WORKER_POOL_IDLE_MS);
   };
 
-  const release = (): void => {
+  const release = (recycle?: Worker): void => {
     if (state.released) {
       return;
     }
     state.released = true;
+    if (recycle) {
+      slot!.parked.push(recycle);
+    }
     if (state.granted) {
       state.granted = false;
       slot!.active -= 1;
-      drainOrPrune();
+      const next = slot!.waiters.shift();
+      if (next) {
+        next();
+      } else {
+        collectIfIdle();
+      }
     } else {
       // Cancelled while still queued: drop our place in line. No active slot
       // was ever held, so we must NOT hand a grant to the next waiter — that
@@ -142,9 +178,7 @@ function reserveWorkerSlot(key: string, max: number, start: (release: () => void
       if (idx !== -1) {
         slot!.waiters.splice(idx, 1);
       }
-      if (slot!.active === 0 && slot!.waiters.length === 0) {
-        workerSlots.delete(key);
-      }
+      collectIfIdle();
     }
   };
 
@@ -152,12 +186,18 @@ function reserveWorkerSlot(key: string, max: number, start: (release: () => void
     if (state.released) {
       return;
     }
+    // The pool is busy again: cancel any pending idle prune.
+    if (slot!.idleTimer !== undefined) {
+      clearTimeout(slot!.idleTimer);
+      slot!.idleTimer = undefined;
+    }
     state.granted = true;
     slot!.active += 1;
     // The release callback is handed to start() directly: start may fail
     // (worker construction throw) synchronously, before the caller has had
-    // a chance to store the returned release function.
-    start(release);
+    // a chance to store the returned release function. A parked worker is
+    // adopted; start() attaches listeners and posts either way.
+    start(release, slot!.parked.pop());
   };
 
   if (slot.active < max) {
@@ -183,7 +223,26 @@ export const __semaphoreTestHooks = {
   reserveWorkerSlot,
   workerSlots,
   defaultMaxWorkers,
+  WORKER_POOL_IDLE_MS,
 };
+
+/**
+ * @internal Terminate parked workers, cancel idle prunes and drop slot
+ * entries, so a parked worker is never adopted across tests. Tree-shaken
+ * out of the shipped chunk.
+ */
+export function __resetWorkerPool(): void {
+  for (const slot of workerSlots.values()) {
+    if (slot.idleTimer !== undefined) {
+      clearTimeout(slot.idleTimer);
+      slot.idleTimer = undefined;
+    }
+    for (const parked of slot.parked.splice(0)) {
+      parked.terminate();
+    }
+  }
+  workerSlots.clear();
+}
 
 /**
  * Implementation behind the public `convertHeicInWorker` wrapper in
@@ -226,9 +285,9 @@ export function convertHeicInWorker<S extends OutputShape = 'blob'>(
     let worker: Worker | undefined;
     let settled = false;
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
-    let releaseSlot: (() => void) | undefined;
+    let releaseSlot: WorkerReleaser | undefined;
 
-    const cleanup = (): void => {
+    const cleanup = (recycle = false): void => {
       /* v8 ignore if -- each settle path calls cleanup once and removes listeners inline; double-settle is impossible single-threaded */
       if (settled) {
         return;
@@ -242,9 +301,16 @@ export function convertHeicInWorker<S extends OutputShape = 'blob'>(
         worker.removeEventListener('message', onMessage);
         worker.removeEventListener('messageerror', onMessageError);
         worker.removeEventListener('error', onError);
-        worker.terminate();
       }
-      releaseSlot?.();
+      if (recycle && worker) {
+        // Idle and listener-detached: park it for the next grant. Every
+        // other settle path terminates, so a faulted module cannot leak into
+        // the next item.
+        releaseSlot?.(worker);
+      } else {
+        worker?.terminate();
+        releaseSlot?.();
+      }
     };
 
     const onAbort = (): void => {
@@ -302,7 +368,9 @@ export function convertHeicInWorker<S extends OutputShape = 'blob'>(
         }
         return;
       }
-      cleanup();
+      // Only a clean ok:true result recycles; an error result may well be a
+      // faulted module inside the worker, so that path terminates.
+      cleanup(message.ok === true && message.blob !== undefined);
       if (message.ok && message.blob !== undefined) {
         try {
           options.onProgress?.(100);
@@ -359,7 +427,7 @@ export function convertHeicInWorker<S extends OutputShape = 'blob'>(
       ...convertOptions
     } = options;
 
-    const start = (release: () => void): void => {
+    const start = (release: WorkerReleaser, recycled: Worker | undefined): void => {
       // Store the slot releaser first: every failure path below runs cleanup(),
       // which must be able to hand the slot back even if the worker never
       // got constructed.
@@ -368,13 +436,16 @@ export function convertHeicInWorker<S extends OutputShape = 'blob'>(
       // worker for a settled promise.
       /* v8 ignore if -- release() prunes cancelled queue entries, so grant() never reaches a settled call */
       if (settled) {
+        recycled?.terminate();
         return;
       }
       // Slot granted: distinguishes "timed out inside the worker" from "timed
       // out waiting for a worker" in the timeout diagnostic.
       startedAt = Date.now();
       try {
-        worker = new Worker(workerUrl, options.workerType === 'module' ? { type: 'module' } : undefined);
+        worker =
+          recycled ??
+          new Worker(workerUrl, options.workerType === 'module' ? { type: 'module' } : undefined);
       } catch (error) {
         cleanup();
         reject(

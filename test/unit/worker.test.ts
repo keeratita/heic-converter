@@ -4,6 +4,7 @@ import {
   convertHeicInWorker,
   convertManyInWorker,
   __semaphoreTestHooks,
+  __resetWorkerPool,
 } from '../../src/worker';
 
 class MockWorker {
@@ -60,6 +61,8 @@ describe('convertHeicInWorker', () => {
     MockWorker.instances.length = 0;
     MockWorker.constructionError = null;
     MockWorker.postError = null;
+    // A worker parked by a previous case would be adopted here (same URL).
+    __resetWorkerPool();
     globalThis.Worker = MockWorker as unknown as typeof Worker;
   });
 
@@ -75,7 +78,25 @@ describe('convertHeicInWorker', () => {
     worker.emit('message', { data: { type: 'result', ok: true, blob } });
 
     await expect(promise).resolves.toBe(blob);
-    expect(worker.terminated).toBe(true);
+    // Recycled, not terminated: idle with per-request listeners detached.
+    expect(worker.terminated).toBe(false);
+    expect(worker.listeners.message).toEqual([]);
+    expect(worker.listeners.messageerror).toEqual([]);
+    expect(worker.listeners.error).toEqual([]);
+  });
+
+  it('should recycle across sequential awaited conversions on the same URL', async () => {
+    const blob = new Blob(['x'], { type: 'image/jpeg' });
+    const first = convertHeicInWorker(new Uint8Array([1]), { workerUrl: '/worker.js' });
+    MockWorker.instances[0].emit('message', { data: { type: 'result', ok: true, blob } });
+    await expect(first).resolves.toBe(blob);
+
+    // The pool keeps the worker warm between calls; the next adopts it.
+    const second = convertHeicInWorker(new Uint8Array([2]), { workerUrl: '/worker.js' });
+    expect(MockWorker.instances).toHaveLength(1);
+    expect(MockWorker.instances[0].posted).toHaveLength(2);
+    MockWorker.instances[0].emit('message', { data: { type: 'result', ok: true, blob } });
+    await expect(second).resolves.toBe(blob);
   });
 
   it('should reject when the worker reports an error', async () => {
@@ -167,7 +188,8 @@ describe('convertHeicInWorker', () => {
     await promise;
     expect(onProgress).toHaveBeenCalledWith(42);
     expect(onProgress).toHaveBeenCalledWith(100);
-    expect(worker.terminated).toBe(true);
+    // Clean exchange → recycled (parked), not terminated.
+    expect(worker.terminated).toBe(false);
   });
 
   it('should not terminate the worker on progress messages', async () => {
@@ -266,7 +288,8 @@ describe('convertHeicInWorker', () => {
     worker.emit('message', { data: { type: 'result', ok: true, blob } });
 
     await expect(promise).resolves.toBe(blob);
-    expect(worker.terminated).toBe(true);
+    // Clean exchange → recycled (parked), not terminated.
+    expect(worker.terminated).toBe(false);
   });
 
   it('should reject when the worker emits a messageerror event', async () => {
@@ -603,7 +626,7 @@ describe('convertHeicInWorker', () => {
   });
 
   describe('Bounded worker concurrency', () => {
-    it('should queue calls beyond maxConcurrentWorkers and reuse free slots', async () => {
+    it('should queue calls beyond maxConcurrentWorkers and adopt the parked worker', async () => {
       const firstBlob = new Blob(['a']);
       const secondBlob = new Blob(['b']);
 
@@ -622,9 +645,10 @@ describe('convertHeicInWorker', () => {
       MockWorker.instances[0].emit('message', { data: { type: 'result', ok: true, blob: firstBlob } });
       await expect(p1).resolves.toBe(firstBlob);
 
-      // Slot freed: the queued call now constructs its worker.
-      await vi.waitFor(() => expect(MockWorker.instances).toHaveLength(2));
-      MockWorker.instances[1].emit('message', {
+      // Slot freed: the queued call adopts the parked worker — no second boot.
+      expect(MockWorker.instances).toHaveLength(1);
+      expect(MockWorker.instances[0].posted).toHaveLength(2);
+      MockWorker.instances[0].emit('message', {
         data: { type: 'result', ok: true, blob: secondBlob },
       });
       await expect(p2).resolves.toBe(secondBlob);
@@ -656,9 +680,11 @@ describe('convertHeicInWorker', () => {
       MockWorker.instances[0].emit('message', { data: { type: 'result', ok: true, blob: new Blob(['y']) } });
       await expect(p1).resolves.toBeInstanceOf(Blob);
 
-      await vi.waitFor(() => expect(MockWorker.instances).toHaveLength(2));
-      MockWorker.instances[1].emit('message', { data: { type: 'result', ok: true, blob: new Blob(['x']) } });
+      // p3 adopts the worker p1 parked (timed-out workers are terminated).
+      await vi.waitFor(() => expect(MockWorker.instances[0].posted).toHaveLength(2));
+      MockWorker.instances[0].emit('message', { data: { type: 'result', ok: true, blob: new Blob(['x']) } });
       await expect(p3).resolves.toBeInstanceOf(Blob);
+      expect(MockWorker.instances).toHaveLength(1);
     });
   });
 
@@ -699,7 +725,7 @@ describe('worker slot semaphore (internal hooks)', () => {
   const KEY = 'semaphore-test-key';
 
   afterEach(() => {
-    workerSlots.clear();
+    __resetWorkerPool();
   });
 
   it('grants immediately when below the cap and prunes the entry when idle', () => {
@@ -782,6 +808,93 @@ describe('worker slot semaphore (internal hooks)', () => {
     queuedGrant(); // must be ignored
     expect(started).toBe(false);
   });
+
+  it('parks a recycled worker and hands it to the next grant', () => {
+    const recycledWorkers: Array<Worker | undefined> = [];
+    const releases: Array<(recycle?: Worker) => void> = [];
+    reserveWorkerSlot(KEY, 1, (_release, recycled) => {
+      recycledWorkers.push(recycled);
+      releases.push(_release);
+    });
+    expect(recycledWorkers).toEqual([undefined]); // first call constructs
+
+    const idle = { terminate: vi.fn() } as unknown as Worker;
+    releases[0](idle); // clean exchange → parked, entry kept warm
+    expect(workerSlots.get(KEY)?.parked).toEqual([idle]);
+
+    reserveWorkerSlot(KEY, 1, (_release, recycled) => {
+      recycledWorkers.push(recycled);
+      releases.push(_release);
+    });
+    expect(recycledWorkers[1]).toBe(idle); // adopted, not re-constructed
+    expect(idle.terminate).not.toHaveBeenCalled();
+  });
+
+  it('terminates parked workers once the idle window lapses', () => {
+    vi.useFakeTimers();
+    try {
+      const releases: Array<(recycle?: Worker) => void> = [];
+      reserveWorkerSlot(KEY, 1, (_release) => {
+        releases.push(_release);
+      });
+      const idle = { terminate: vi.fn() } as unknown as Worker;
+      releases[0](idle);
+      expect(workerSlots.has(KEY)).toBe(true);
+
+      vi.advanceTimersByTime(__semaphoreTestHooks.WORKER_POOL_IDLE_MS);
+      expect(idle.terminate).toHaveBeenCalledOnce();
+      expect(workerSlots.has(KEY)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancels the idle prune when a new call adopts the parked worker', () => {
+    vi.useFakeTimers();
+    try {
+      const releases: Array<(recycle?: Worker) => void> = [];
+      reserveWorkerSlot(KEY, 1, (_release) => {
+        releases.push(_release);
+      });
+      const idle = { terminate: vi.fn() } as unknown as Worker;
+      releases[0](idle);
+
+      // Re-engage just before the prune would fire.
+      vi.advanceTimersByTime(__semaphoreTestHooks.WORKER_POOL_IDLE_MS - 1);
+      reserveWorkerSlot(KEY, 1, (_release, recycled) => {
+        expect(recycled).toBe(idle);
+        releases.push(_release);
+      });
+      vi.advanceTimersByTime(__semaphoreTestHooks.WORKER_POOL_IDLE_MS * 2);
+      expect(idle.terminate).not.toHaveBeenCalled(); // lease still active
+
+      releases[1](idle); // released again → armed again → pruned
+      vi.advanceTimersByTime(__semaphoreTestHooks.WORKER_POOL_IDLE_MS);
+      expect(idle.terminate).toHaveBeenCalledOnce();
+      expect(workerSlots.has(KEY)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a released worker handed to a queued waiter is adopted, not duplicated', () => {
+    const adopted: Array<Worker | undefined> = [];
+    const releases: Array<(recycle?: Worker) => void> = [];
+    reserveWorkerSlot(KEY, 1, (_release, recycled) => {
+      adopted.push(recycled);
+      releases.push(_release);
+    });
+    reserveWorkerSlot(KEY, 1, (_release, recycled) => {
+      adopted.push(recycled);
+      releases.push(_release);
+    });
+    expect(adopted).toEqual([undefined]); // second call queued
+
+    const idle = { terminate: vi.fn() } as unknown as Worker;
+    releases[0](idle); // frees the slot and parks the worker in one step
+    expect(adopted[1]).toBe(idle); // the hand-off went straight to the waiter
+    expect(workerSlots.get(KEY)?.active).toBe(1);
+  });
 });
 
 describe('defaultMaxWorkers', () => {
@@ -834,6 +947,7 @@ describe('convertHeicInWorker - cancellation and output shapes', () => {
     MockWorker.instances.length = 0;
     MockWorker.constructionError = null;
     MockWorker.postError = null;
+    __resetWorkerPool();
     globalThis.Worker = MockWorker as unknown as typeof Worker;
   });
 
@@ -938,6 +1052,8 @@ describe('convertManyInWorker', () => {
     MockWorker.instances.length = 0;
     MockWorker.constructionError = null;
     MockWorker.postError = null;
+    // Drop slot entries (and their idle-prune timers) left by earlier cases.
+    __resetWorkerPool();
     globalThis.Worker = MockWorker as unknown as typeof Worker;
   });
 
@@ -957,11 +1073,14 @@ describe('convertManyInWorker', () => {
 
     emitResult(MockWorker.instances[0], blob);
     // The runner claims the queued item after the awaited promise settles
-    // (microtask hops), so flush before observing the third worker.
+    // (microtask hops), so flush before observing the third item start.
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(MockWorker.instances).toHaveLength(3);
+    // The third item adopts the worker the first one parked: still two live
+    // workers for three requests — no third boot.
+    expect(MockWorker.instances).toHaveLength(2);
+    expect(MockWorker.instances[0].posted).toHaveLength(2);
     emitResult(MockWorker.instances[1], blob);
-    emitResult(MockWorker.instances[2], blob);
+    emitResult(MockWorker.instances[0], blob);
 
     const results = await promise;
     expect(results).toHaveLength(3);
@@ -1183,7 +1302,7 @@ describe('worker entry-point validation (main thread)', () => {
 
 describe('reserveWorkerSlot (semaphore)', () => {
   afterEach(() => {
-    __semaphoreTestHooks.workerSlots.clear();
+    __resetWorkerPool();
   });
 
   it('cancelling a queued waiter never grants past max', () => {
