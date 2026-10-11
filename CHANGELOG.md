@@ -7,9 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Release as **0.6.0**: the worker message protocol gains a required `id` echo (below), which breaks worker scripts written against the 0.5.x docs, and worker reuse changes what a live worker means for existing callers. Both are deliberate, documented contract changes.
+
+### Added
+
+- **Opt-in platform-native HEIC decoding** (`nativeDecode: true`): on HEIC-capable hosts the platform's own `createImageBitmap` stack decodes and the ~290 KB gzipped libheif payload is never fetched. The Strategy lives in its own lazy chunk, fails over to libheif transparently, and never surfaces a native error to a caller. See API.md _Decode strategy_.
+- **Worker reuse**: `convertHeicInWorker`/`convertManyInWorker` keep live workers across a batch — a worker that answered a clean `ok: true` is parked and adopted by the next request instead of paying boot again; anything unclean (timeout, abort, transport error, `ok: false`) is still terminated, so a faulted module never serves the next item. At most 2 workers per URL are kept warm, so idle pools cannot hoard grown WASM heaps.
+- **Shared compiled module recipe** (API.md): `moduleOverrides.instantiateWasm` now has a documented, test-verified recipe for compiling `heic-decoder.wasm` once and instantiating it per decoder.
+
+### Changed
+
+- **The worker protocol now correlates requests** — breaking. Each request carries a per-request `id`; every `progress`/`result` reply must echo it, and replies with a missing or stale `id` are ignored (they can no longer settle the pooled worker's *next* lease). Worker scripts written against the 0.5.x docs must destructure `id` from `event.data` and post it back on every message — see the reference script in README §13 / `docs/worker.js`. Without the echo, pooling let a duplicate or late reply from item N settle item N+1 with item N's blob. `worker_timeout` diagnostics gained the count of ignored replies and a note when the lease was adopted from the pool (a script that calls `self.close()` after replying stalls adopted leases — the hint now says so).
+- **A worker script that calls `self.close()` after replying is a contract violation**, not a working configuration: adopted leases then wait out `timeoutMs`. 0.5.1 terminated every worker after its result, which made such scripts work by accident; the documented contract (persistent `onmessage`) is now the contract the transport actually implements. Worker scripts that keep the handler installed — the documented pattern — are unaffected and now boot once per worker instead of once per item.
+- **`nativeDecode` fallback no longer poisons the realm on input failures**: only an environment-class failure (missing `createImageBitmap`/`OffscreenCanvas` at initialize) marks the realm native-ineligible, and it logs a one-time breadcrumb. A corrupt file, an absurd declared size, a transient 2D-context failure, or a cancelled conversion retries with libheif *without* caching — previously any native throw, including `aborted`, disabled the opt-in for the whole page.
+- **The native Strategy caps decoded dimensions at the same 16,384 px per side the canvas and WASM paths enforce** before allocating its `OffscreenCanvas` + `ImageData` pair; oversized files fall back to libheif instead of risking an uncatchable out-of-memory tab crash from a container-declared size.
+- **A missing native chunk degrades like the EXIF chunk**: a failed fetch of `dist/native-*.mjs` converts with libheif and warns once instead of rejecting with a raw module-load `TypeError`.
+- **`convertMany({ reuseDecoders })` pools for batches whose `nativeDecode` opt-in is policy-pinned to libheif** (e.g. `preserveExif: true`): the pool now stands down only when the native path is actually eligible, sharing one selection policy between selection and leasing.
+
 ### Fixed
 
 - **`npm run verify:provenance` no longer fails a good publish on registry read lag.** The version endpoint can 404 for about a minute after `npm publish` returns; the gate's 5 attempts / 36 s window expired inside that window on the 0.5.1 release, and the failure is unrecoverable — npm refuses a re-publish of the same version, so the job cannot simply be retried. The window is now 10 attempts with waits capped at 20 s (~2.7 minutes), and every problem gets the full window rather than only the fetch-level ones: a slow red is acceptable, a wrong one is not.
+
+## [0.5.2] - 2026-10-11
+
+### Changed
+
+- **Dependency security bump**: `source-map-js` moved to 1.2.2 (GHSA-68fv-2mgg-jv7q) via `terser`'s dependency tree; the published package still has zero runtime dependencies. Dev and CI runtime pinned to Node 26.8.1 via `.nvmrc`.
 
 ## [0.5.1] - 2026-10-04
 

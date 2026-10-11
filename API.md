@@ -268,7 +268,7 @@ These fields are shared by [`convertHeic`](#convertheicinput-options) and [`conv
 | --- | --- | --- | --- | --- |
 | `concurrency` | `number` | `4` | Maximum concurrent conversions; must be a positive integer | `invalid_concurrency` |
 | `continueOnError` | `boolean` | `false` | Resolve with per-item results instead of rejecting on the first failure | `invalid_input` |
-| `reuseDecoders` | `boolean` | `false` | Hand each batch runner one pooled library-owned `LibheifDecoder`, reused across items — amortizes the WASM module load for batches much larger than the concurrency. Ignored when `decoder` is injected or `nativeDecode: true` (the pool leases libheif instances) | `invalid_input` |
+| `reuseDecoders` | `boolean` | `false` | Hand each batch runner one pooled library-owned `LibheifDecoder`, reused across items — amortizes the WASM module load for batches much larger than the concurrency. Ignored when `decoder` is injected or when `nativeDecode` actually selects the native path (the pool leases libheif instances) | `invalid_input` |
 
 ### Resize, crop, and orientation compose in one pass
 
@@ -288,7 +288,7 @@ Both injectors are **fail-safe**: unparsable encoder output, a malformed block, 
 
 HEIC is a system format on Apple platforms and Windows; `nativeDecode: true` lets those hosts decode with the platform's own stack via `createImageBitmap` + `OffscreenCanvas` — hardware decode, and the ~300 KB gzipped libheif payload is never fetched. It is **opt-in** (default `false`): the libheif path stays the byte-for-byte reference everywhere.
 
-There is no HEIC-support API, so support is discovered by trying: the first opted-in conversion doubles as the probe. If the platform refuses — missing APIs, no HEIC codec, a file it chokes on — the library marks the realm native-ineligible, retries the conversion with libheif, and skips the attempt for later calls. The caller sees the same successful result either way.
+There is no HEIC-support API, so support is discovered by trying: the first opted-in conversion doubles as the probe. If the platform lacks the APIs (`createImageBitmap` / `OffscreenCanvas`), the library marks the realm native-ineligible, skips the attempt for later calls, and logs a one-time `console.warn` breadcrumb. A refusal of an individual file — corrupt data, a declared size beyond the canvas cap (16384 px per side, the same bound the WASM path enforces), a transient 2D-context failure — is treated as a property of the input, not the realm: that conversion retries with libheif and later files still try natively. Cancellation via `signal` is never a verdict. The caller sees the same successful result either way; native errors never surface.
 
 Constraints by design:
 
@@ -486,7 +486,7 @@ await pipeline.toFormat('jpeg').toFile('out.jpg');
 // per LibheifDecoder; pages that create many (or re-instantiate after
 // free()) can compile once and hand WebAssembly.instantiate the cached
 // Module to every instance. Verified by test/unit/integration.test.ts.
-const compiled = WebAssembly.compile(
+const compiled = await WebAssembly.compile(
   await (await fetch(wasmUrl)).arrayBuffer()
 );
 const decoder = new LibheifDecoder({
@@ -507,23 +507,26 @@ await decoder.initialize(); // no fetch, no compile — instantiate only
 
 `convertHeicInWorker` / `convertManyInWorker` post one message to your script and wait for one terminal reply.
 
-**Worker reuse:** the transport keeps live workers across a batch — a worker that answered `ok: true` keeps its listeners and receives the next queued request, so boot and glue evaluation are paid once per worker, not per item. Workers that timed out, were aborted, or hit a transport error are terminated immediately and never reused. Worker scripts must therefore be request-oriented: keep the `onmessage` handler installed and **do not call `self.close()`** after posting a result, or the next queued conversion waits out its `timeoutMs`.
+**Worker reuse:** the transport keeps live workers across a batch — a worker that answered a clean `ok: true` is parked (listeners detached) and adopted by the next request instead of paying boot again, so glue evaluation is paid once per worker, not per item. Workers that timed out, were aborted, or hit a transport error are terminated immediately and never reused. Worker scripts must therefore be request-oriented: keep the `onmessage` handler installed and **do not call `self.close()`** after posting a result — an adopted dead worker answers nothing, and the next queued conversion waits out its `timeoutMs` (the timeout diagnostic says when the lease was adopted).
 
 **Request** (main thread → worker):
 
 ```js
-worker.postMessage({ input, options });
+worker.postMessage({ id, input, options });
+// id      — a per-request correlation token; every reply must echo it
 // input   — the HeicInput, structured-cloned
 // options — the caller's options minus workerUrl, workerType, timeoutMs,
 //           maxConcurrentWorkers, signal, onProgress, and decoder
 ```
 
-**Replies** (worker → main thread) — only the two types below are understood; anything else is ignored, though the first unrecognised `type` is reported in the `worker_timeout` diagnostic:
+**Replies** (worker → main thread) — only the two types below are understood; anything else is ignored, though the first unrecognised `type` is reported in the `worker_timeout` diagnostic. A reply that does not echo the current request's `id` is **ignored** — it cannot settle (or poison) a lease. A script that stays silent for that reason simply times out, and the diagnostic counts the ignored results.
 
 ### `WorkerProgressMessage`
 
 ```ts
 interface WorkerProgressMessage {
+  /** Echoed back from the request this progress belongs to. */
+  id: number;
   type: 'progress';
   percent: number;
 }
@@ -535,6 +538,8 @@ Emitted any number of times before the result. `percent` is clamped to `0`–`10
 
 ```ts
 interface WorkerResultMessage {
+  /** Echoed back from the request this result answers. */
+  id: number;
   type: 'result';
   ok: boolean;
   /** Exactly what convertHeic returned inside the worker for the chosen `output`. */
@@ -544,7 +549,7 @@ interface WorkerResultMessage {
 }
 ```
 
-Must be posted at most once per request: the first `result` settles the promise and the worker is terminated. The `blob` field name is kept for protocol compatibility even though it carries a string for `output: 'dataUrl'` and an `ArrayBuffer` for `output: 'arrayBuffer'`; a `result` with `ok: true` but no payload settles as a failure (`worker_failed`).
+Post exactly one per request. The first `result` echoing the request's `id` settles the promise: a clean `ok: true` with a payload parks the worker for reuse, any other result terminates it. A duplicate or late reply (wrong or missing `id`) is ignored, so it can never settle the pooled worker's next lease. The `blob` field name is kept for protocol compatibility even though it carries a string for `output: 'dataUrl'` and an `ArrayBuffer` for `output: 'arrayBuffer'`; a `result` with `ok: true` but no payload settles as a failure (`worker_failed`) and terminates the worker.
 
 Reference implementation (mirrors `docs/worker.js`, which imports the built ESM entry directly):
 
@@ -553,16 +558,16 @@ Reference implementation (mirrors `docs/worker.js`, which imports the built ESM 
 import { convertHeic } from '@keeratita/heic-converter';
 
 self.onmessage = async (event) => {
-  const { input, options } = event.data;
+  const { id, input, options } = event.data;
   try {
     const blob = await convertHeic(input, {
       ...options,
-      onProgress: (percent) => self.postMessage({ type: 'progress', percent }),
+      onProgress: (percent) => self.postMessage({ id, type: 'progress', percent }),
     });
     // With output: 'arrayBuffer' the payload is zero-copy via a transfer list.
-    self.postMessage({ type: 'result', ok: true, blob }, blob instanceof ArrayBuffer ? [blob] : []);
+    self.postMessage({ id, type: 'result', ok: true, blob }, blob instanceof ArrayBuffer ? [blob] : []);
   } catch (error) {
-    self.postMessage({ type: 'result', ok: false, error: error?.stack ?? error?.message ?? String(error) });
+    self.postMessage({ id, type: 'result', ok: false, error: error?.stack ?? error?.message ?? String(error) });
   }
 };
 ```
