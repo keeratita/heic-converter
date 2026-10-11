@@ -66,6 +66,39 @@ describe.skipIf((!hasWasm || !hasFixture) && !isCI)('Integration Tests - Real WA
     expect(decoded.data.length).toBe(decoded.width * decoded.height * 4);
   });
 
+  it('should instantiate from a shared compiled module via moduleOverrides.instantiateWasm', async () => {
+    // Backs the API.md recipe: compile once, instantiate per decoder. If the
+    // glue ignored the override it would fetch/compile itself, so the spy
+    // proves the override is honoured.
+    const compileSpy = vi.spyOn(WebAssembly, 'compile');
+    const compiled = await WebAssembly.compile(wasmBinary);
+    compileSpy.mockClear();
+    let instantiateCalls = 0;
+
+    const decoder = new LibheifDecoder({
+      moduleOverrides: {
+        instantiateWasm: (
+          imports: WebAssembly.Imports,
+          receiveInstance: (instance: WebAssembly.Instance) => void
+        ) => {
+          instantiateCalls += 1;
+          // Synchronous, and must RETURN the exports: `wasmExports` is
+          // assigned from createWasm()'s return value, and returning
+          // undefined clobbers what receiveInstance just stored.
+          return receiveInstance(new WebAssembly.Instance(compiled, imports));
+        },
+      },
+    });
+    await decoder.initialize();
+    const decoded = await decoder.decode(heicBytes);
+
+    expect(decoded.width).toBeGreaterThan(0);
+    expect(instantiateCalls).toBe(1);
+    expect(compileSpy).not.toHaveBeenCalled(); // the glue compiled nothing itself
+    decoder.free();
+    compileSpy.mockRestore();
+  });
+
   it('should return pixel data that outlives the decoder (owned copy, not a WASM view)', async () => {
     const decoder = new LibheifDecoder({ wasmBinary });
     await decoder.initialize();
