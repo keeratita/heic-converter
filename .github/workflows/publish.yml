@@ -29,7 +29,7 @@ jobs:
     - name: Setup Node.js
       uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
       with:
-        node-version: '22'
+        node-version-file: '.nvmrc' # single source of truth for the dev/CI runtime
         cache: 'npm'
 
     - name: Install Dependencies
@@ -97,7 +97,7 @@ jobs:
     - name: Setup Node.js
       uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
       with:
-        node-version: '24' # npm >= 11.5.1 is required for trusted publishing
+        node-version-file: '.nvmrc' # trusted publishing requires npm >= 11.5.1; the pinned release ships a newer npm
         registry-url: 'https://registry.npmjs.org'
 
     - name: Download verified dist
