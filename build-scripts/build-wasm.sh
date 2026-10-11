@@ -3,7 +3,7 @@ set -e
 
 # Configuration
 LIBDE265_VERSION="1.1.3"
-LIBHEIF_VERSION="1.23.5"
+LIBHEIF_VERSION="1.23.6"
 EMSDK_VERSION="3.1.56"
 BUILD_DIR="$(pwd)/build-wasm"
 OUT_DIR="$(pwd)/src/wasm/public"

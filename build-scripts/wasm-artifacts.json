@@ -1,4 +1,4 @@
 {
-  "src/wasm/public/heic-decoder.wasm": "c0356778f5c4d04dc9ca5ccca06af93c186c76ce02e99b163c3c93b8aa05543c",
+  "src/wasm/public/heic-decoder.wasm": "0570fb88fdd9996b1198179e3382bc94216285549119c8137c78766f7e14a085",
   "src/wasm/wrapper/heic-decoder.js": "6782e824803186fa1f9333a6bf82d92ae31e89015d1bd78a9b62210503427d96"
 }
