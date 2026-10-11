@@ -320,6 +320,9 @@ async function runApiTests(page) {
   if (!results.pooledBatch) {
     fail('pooled batch: reuseDecoders checks failed');
   }
+  if (results.workerReuse !== 1) {
+    fail(`worker reuse: expected 1 boot for 3 sequential pooled items, got ${JSON.stringify(results.workerReuse)}`);
+  }
 
   console.log(
     `✅ API tests OK: resize ${results.resize.width}x${results.resize.height}, batch ${results.batch}, ` +

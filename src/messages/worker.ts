@@ -26,6 +26,10 @@ export const WorkerMessages = {
       progressMessages: number;
       lastPercent?: number;
       unknownType?: string;
+      /** Results ignored for not echoing the request id — a reply left over from this pooled worker's previous lease, or a script that replies twice. */
+      staleResults?: number;
+      /** The lease came from the pool rather than a fresh boot. */
+      adopted?: boolean;
       workerUrl?: string | URL;
       /** Required, not optional: the caller knows whether a slot was granted, and
        *  guessing from an omitted field would decide the diagnosis for it. */
@@ -52,13 +56,21 @@ export const WorkerMessages = {
     if (stats.unknownType !== undefined) {
       details.push(`last unknown message type '${stats.unknownType}' (worker may not implement the progress/result protocol)`);
     }
+    if (stats.staleResults !== undefined) {
+      details.push(`${stats.staleResults} result(s) ignored for not echoing the request id (duplicate or stale replies must not be posted)`);
+    }
+    if (stats.adopted) {
+      details.push(
+        'lease adopted from the pool — a script that calls self.close() after replying stalls adopted leases'
+      );
+    }
     if (stats.workerUrl !== undefined) {
       details.push(`worker ${String(stats.workerUrl)}`);
     }
     return (
       `Web Worker conversion timed out after ${timeoutMs}ms (${details.join('; ')}). ` +
       'Increase timeoutMs for large images, set timeoutMs to 0 to disable the timeout, and ' +
-      'verify the worker script implements the { type: "progress" | "result" } protocol.'
+      'verify the worker script implements the { id, type: "progress" | "result" } protocol.'
     );
   },
   MaxConcurrentWorkersInvalid: (value: unknown): string =>

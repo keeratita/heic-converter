@@ -136,6 +136,20 @@ describe('Messages', () => {
       expect(message).toContain('last percent 40');
       expect(message).toContain("last unknown message type 'log'");
       expect(message).toContain('worker /slow.js');
+      expect(message).not.toContain('ignored for not echoing');
+      expect(message).not.toContain('adopted');
+    });
+
+    it('names ignored stale results and pool adoption in the timeout diagnostic', () => {
+      const message = WorkerMessages.WorkerTimeout(1000, {
+        progressMessages: 0,
+        staleResults: 2,
+        adopted: true,
+        startedAt: 1,
+      });
+      expect(message).toContain('2 result(s) ignored for not echoing the request id');
+      expect(message).toContain('lease adopted from the pool');
+      expect(message).toContain('self.close()');
     });
 
     it('includes the create/post failure causes verbatim', () => {

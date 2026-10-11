@@ -66,14 +66,24 @@ export interface WorkerConvertOptions extends Omit<ConvertOptions, 'decoder'> {
   maxConcurrentWorkers?: number;
 }
 
+/**
+ * Correlation token. Each request carries a fresh `id`; every reply must
+ * echo the `id` of the request it answers. Workers are pooled, so a script
+ * that posts a duplicate or late reply would otherwise settle the *next*
+ * lease with the previous item's result.
+ */
+interface CorrelatedMessage {
+  id: number;
+}
+
 /** Progress message a worker script posts to report decode progress. */
-export interface WorkerProgressMessage {
+export interface WorkerProgressMessage extends CorrelatedMessage {
   type: 'progress';
   percent: number;
 }
 
 /** Result message a worker script posts to settle a conversion. */
-export interface WorkerResultMessage {
+export interface WorkerResultMessage extends CorrelatedMessage {
   type: 'result';
   ok: boolean;
   /**
@@ -92,6 +102,8 @@ interface ReceivedStats {
   progressMessages: number;
   lastPercent?: number;
   unknownType?: string;
+  /** Replies ignored for not echoing the current request id (see `CorrelatedMessage`). */
+  staleResults?: number;
 }
 
 function defaultMaxWorkers(): number {
@@ -117,6 +129,20 @@ const workerSlots = new Map<
 
 /** How long an idle slot may keep parked workers alive before terminating them. */
 const WORKER_POOL_IDLE_MS = 5000;
+
+/**
+ * Parked workers per URL cap: each keeps a grown WASM heap alive for
+ * WORKER_POOL_IDLE_MS, so beyond a couple the memory cost outweighs the
+ * boot saved. The oldest is evicted (least likely to be adopted again).
+ */
+const MAX_PARKED_WORKERS = 2;
+
+/**
+ * Monotonic per-page request id. Every reply must echo it: a parked worker
+ * can still have queued messages from its previous lease, which must never
+ * settle the next caller.
+ */
+let nextRequestId = 1;
 
 /** Hands the lease back; a `recycle` worker is parked for the next grant. */
 type WorkerReleaser = (recycle?: Worker) => void;
@@ -159,6 +185,9 @@ function reserveWorkerSlot(
     }
     state.released = true;
     if (recycle) {
+      if (slot!.parked.length >= MAX_PARKED_WORKERS) {
+        slot!.parked.shift()!.terminate();
+      }
       slot!.parked.push(recycle);
     }
     if (state.granted) {
@@ -224,12 +253,14 @@ export const __semaphoreTestHooks = {
   workerSlots,
   defaultMaxWorkers,
   WORKER_POOL_IDLE_MS,
+  MAX_PARKED_WORKERS,
 };
 
 /**
  * @internal Terminate parked workers, cancel idle prunes and drop slot
- * entries, so a parked worker is never adopted across tests. Tree-shaken
- * out of the shipped chunk.
+ * entries, so a parked worker is never adopted across tests. Like the other
+ * hooks this ships inside the lazy worker chunk (a few dozen dead bytes
+ * outside tests, inert); the chunk is only fetched by the worker APIs.
  */
 export function __resetWorkerPool(): void {
   for (const slot of workerSlots.values()) {
@@ -282,10 +313,12 @@ export function convertHeicInWorker<S extends OutputShape = 'blob'>(
     }
 
     const stats: ReceivedStats = { progressMessages: 0 };
+    const requestId = nextRequestId++;
     let worker: Worker | undefined;
     let settled = false;
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
     let releaseSlot: WorkerReleaser | undefined;
+    let adoptedLease = false;
 
     const cleanup = (recycle = false): void => {
       /* v8 ignore if -- each settle path calls cleanup once and removes listeners inline; double-settle is impossible single-threaded */
@@ -334,6 +367,8 @@ export function convertHeicInWorker<S extends OutputShape = 'blob'>(
               progressMessages: stats.progressMessages,
               lastPercent: stats.lastPercent,
               unknownType: stats.unknownType,
+              staleResults: stats.staleResults,
+              adopted: adoptedLease,
               workerUrl: options.workerUrl,
               startedAt,
               queueWaitMs: startedAt === undefined ? undefined : startedAt - queuedAt,
@@ -346,6 +381,9 @@ export function convertHeicInWorker<S extends OutputShape = 'blob'>(
     const onMessage = (event: MessageEvent): void => {
       const message = event.data as Partial<WorkerMessage> | undefined;
       if (message?.type === 'progress') {
+        if (message.id !== requestId) {
+          return; // stale progress from a previous lease on an adopted worker
+        }
         stats.progressMessages += 1;
         const normalized = clampPercent(message.percent);
         stats.lastPercent = normalized;
@@ -368,10 +406,18 @@ export function convertHeicInWorker<S extends OutputShape = 'blob'>(
         }
         return;
       }
+      if (message.id !== requestId) {
+        // A duplicate or late reply from the previous lease of this pooled
+        // worker — exactly the message that would otherwise settle the wrong
+        // item. Never terminal; counted so a timeout diagnostic can say so.
+        stats.staleResults = (stats.staleResults ?? 0) + 1;
+        return;
+      }
       // Only a clean ok:true result recycles; an error result may well be a
       // faulted module inside the worker, so that path terminates.
-      cleanup(message.ok === true && message.blob !== undefined);
-      if (message.ok && message.blob !== undefined) {
+      const clean = message.ok === true && message.blob !== undefined;
+      cleanup(clean);
+      if (clean) {
         try {
           options.onProgress?.(100);
         } catch (error) {
@@ -442,6 +488,7 @@ export function convertHeicInWorker<S extends OutputShape = 'blob'>(
       // Slot granted: distinguishes "timed out inside the worker" from "timed
       // out waiting for a worker" in the timeout diagnostic.
       startedAt = Date.now();
+      adoptedLease = recycled !== undefined;
       try {
         worker =
           recycled ??
@@ -463,7 +510,7 @@ export function convertHeicInWorker<S extends OutputShape = 'blob'>(
       worker.addEventListener('error', onError);
 
       try {
-        worker.postMessage({ input, options: convertOptions });
+        worker.postMessage({ id: requestId, input, options: convertOptions });
       } catch (error) {
         // A failed post (e.g. data clone error) must not leak the worker.
         cleanup();

@@ -47,9 +47,22 @@ class MockWorker {
   }
 
   emit(type: string, event: any): void {
+    // Simulate a protocol-compliant script: hand-written result/progress
+    // payloads without an explicit `id` get the id of the last posted
+    // request echoed back. Stale/duplicate tests pass `id` explicitly.
+    const data = event?.data as { type?: string; id?: number } | undefined;
+    if (type === 'message' && data && (data.type === 'result' || data.type === 'progress') && data.id === undefined) {
+      const last = this.posted[this.posted.length - 1] as { id?: number } | undefined;
+      event = { ...event, data: { ...data, id: last?.id } };
+    }
     for (const listener of this.listeners[type] ?? []) {
       listener(event);
     }
+  }
+
+  /** The request id of the nth (0-based) posted request. */
+  requestId(at: number): number | undefined {
+    return (this.posted[at] as { id?: number } | undefined)?.id;
   }
 }
 
@@ -685,6 +698,123 @@ describe('convertHeicInWorker', () => {
       MockWorker.instances[0].emit('message', { data: { type: 'result', ok: true, blob: new Blob(['x']) } });
       await expect(p3).resolves.toBeInstanceOf(Blob);
       expect(MockWorker.instances).toHaveLength(1);
+    });
+  });
+
+  describe('Request correlation and pooling regressions', () => {
+    it('does not let a stale duplicate result from a previous lease settle the adopted item', async () => {
+      const firstBlob = new Blob(['first']);
+      const secondBlob = new Blob(['second']);
+
+      const first = convertHeicInWorker(new Uint8Array([1]), { workerUrl: '/worker.js' });
+      const worker = MockWorker.instances[0];
+      const firstId = worker.requestId(0);
+      worker.emit('message', { data: { type: 'result', ok: true, blob: firstBlob } });
+      await expect(first).resolves.toBe(firstBlob);
+
+      // A buggy script posts a second result for the finished request after
+      // the worker was parked and adopted: it must not settle the new item.
+      const second = convertHeicInWorker(new Uint8Array([2]), { workerUrl: '/worker.js' });
+      expect(MockWorker.instances).toHaveLength(1); // adopted, not re-booted
+      worker.emit('message', { data: { id: firstId, type: 'result', ok: true, blob: firstBlob } });
+      worker.emit('message', { data: { type: 'result', ok: true, blob: secondBlob } });
+
+      await expect(second).resolves.toBe(secondBlob);
+    });
+
+    it('ignores stale progress and reports ignored results in the timeout diagnostic', async () => {
+      const onProgressA = vi.fn();
+      const first = convertHeicInWorker(new Uint8Array([1]), { workerUrl: '/worker.js', onProgress: onProgressA });
+      const worker = MockWorker.instances[0];
+      const firstId = worker.requestId(0);
+      worker.emit('message', { data: { type: 'result', ok: true, blob: new Blob(['a']) } });
+      await expect(first).resolves.toBeInstanceOf(Blob);
+
+      const onProgressB = vi.fn();
+      const second = convertHeicInWorker(new Uint8Array([2]), {
+        workerUrl: '/worker.js',
+        onProgress: onProgressB,
+        timeoutMs: 5,
+      });
+      // Leftovers addressed to the finished request: neither may reach item B.
+      worker.emit('message', { data: { id: firstId, type: 'progress', percent: 50 } });
+      worker.emit('message', { data: { id: firstId, type: 'result', ok: true, blob: new Blob(['ghost']) } });
+
+      const error = await second.catch((e) => e);
+      expect(error.code).toBe('worker_timeout');
+      expect(error.message).toContain('1 result(s) ignored for not echoing the request id');
+      expect(onProgressB).not.toHaveBeenCalled();
+    });
+
+    it('treats an ok:true result without a payload as failure and terminates the worker', async () => {
+      const promise = convertHeicInWorker(new Uint8Array([1]), { workerUrl: '/worker.js' });
+      const worker = MockWorker.instances[0];
+      worker.emit('message', { data: { type: 'result', ok: true } }); // no blob
+
+      await expect(promise).rejects.toThrow('Worker conversion failed');
+      // Not a clean exchange, so it must not be parked for the next caller.
+      expect(worker.terminated).toBe(true);
+
+      const next = convertHeicInWorker(new Uint8Array([2]), { workerUrl: '/worker.js' });
+      expect(MockWorker.instances).toHaveLength(2); // nothing was parked to adopt
+      MockWorker.instances[1].emit('message', { data: { type: 'result', ok: true, blob: new Blob(['x']) } });
+      await expect(next).resolves.toBeInstanceOf(Blob);
+    });
+
+    it('terminates an adopted lease when aborted and boots fresh for the next call', async () => {
+      const first = convertHeicInWorker(new Uint8Array([1]), { workerUrl: '/worker.js' });
+      const worker = MockWorker.instances[0];
+      worker.emit('message', { data: { type: 'result', ok: true, blob: new Blob(['a']) } });
+      await first;
+
+      const controller = new AbortController();
+      const second = convertHeicInWorker(new Uint8Array([2]), {
+        workerUrl: '/worker.js',
+        signal: controller.signal,
+      });
+      expect(MockWorker.instances).toHaveLength(1); // adopted the parked worker
+      controller.abort();
+
+      const error = await second.catch((e) => e);
+      expect(error.code).toBe('aborted');
+      expect(worker.terminated).toBe(true); // aborted workers never go back to the pool
+
+      const third = convertHeicInWorker(new Uint8Array([3]), { workerUrl: '/worker.js' });
+      expect(MockWorker.instances).toHaveLength(2); // fresh boot
+      MockWorker.instances[1].emit('message', { data: { type: 'result', ok: true, blob: new Blob(['c']) } });
+      await expect(third).resolves.toBeInstanceOf(Blob);
+    });
+
+    it('caps parked workers per URL and terminates the evicted oldest', async () => {
+      const promises = [1, 2, 3].map((n) =>
+        convertHeicInWorker(new Uint8Array([n]), { workerUrl: '/worker.js', maxConcurrentWorkers: 3 })
+      );
+      expect(MockWorker.instances).toHaveLength(3);
+      for (const w of MockWorker.instances) {
+        w.emit('message', { data: { type: 'result', ok: true, blob: new Blob(['x']) } });
+      }
+      await Promise.all(promises);
+
+      const parked = __semaphoreTestHooks.workerSlots.get('/worker.js|classic')?.parked ?? [];
+      expect(parked).toHaveLength(__semaphoreTestHooks.MAX_PARKED_WORKERS);
+      expect(MockWorker.instances[0].terminated).toBe(true); // oldest evicted
+      expect(MockWorker.instances[1].terminated).toBe(false);
+      expect(MockWorker.instances[2].terminated).toBe(false);
+    });
+
+    it('names the pool adoption and the self.close() trap in the adopted-lease timeout diagnostic', async () => {
+      const first = convertHeicInWorker(new Uint8Array([1]), { workerUrl: '/worker.js' });
+      const worker = MockWorker.instances[0];
+      worker.emit('message', { data: { type: 'result', ok: true, blob: new Blob(['a']) } });
+      await first;
+
+      // A script that self.close()s after its first reply never answers the
+      // adopted lease; the timeout must say so instead of blaming the image.
+      const second = convertHeicInWorker(new Uint8Array([2]), { workerUrl: '/worker.js', timeoutMs: 5 });
+      const error = await second.catch((e) => e);
+      expect(error.code).toBe('worker_timeout');
+      expect(error.message).toContain('lease adopted from the pool');
+      expect(error.message).toContain('self.close()');
     });
   });
 

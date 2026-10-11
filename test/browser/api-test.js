@@ -194,6 +194,37 @@ async function runWorkerBatchTest() {
   results.workerBatch = true;
 }
 
+async function runWorkerReuseTest() {
+  // Sequential items behind one slot must adopt the live worker rather than
+  // boot one per item — and the request-id protocol must survive real
+  // park/adopt cycles (a stale reply from the previous lease may not settle
+  // the next item). Unique workerUrl so earlier cases cannot share the pool.
+  const blob = await fetchFixture('colors-with-alpha.heic');
+  const RealWorker = Worker;
+  let booted = 0;
+  window.Worker = function PooledWorkerCounter(url, options) {
+    booted += 1;
+    return new RealWorker(url, options);
+  };
+  try {
+    const outs = await convertManyInWorker([blob, blob, blob], {
+      workerUrl: new URL('./worker.js?reuse=1', import.meta.url),
+      workerType: 'module',
+      to: 'jpeg',
+      maxConcurrentWorkers: 1,
+    });
+    if (outs.length !== 3 || !outs.every((b) => b.size > 0)) {
+      throw new Error('worker reuse: missing outputs');
+    }
+  } finally {
+    window.Worker = RealWorker;
+  }
+  if (booted !== 1) {
+    throw new Error(`worker reuse: expected 1 worker boot for 3 sequential items, got ${booted}`);
+  }
+  results.workerReuse = booted;
+}
+
 async function runPooledBatchTest() {
   const blob = await fetchFixture('colors-with-alpha.heic');
   const outs = await convertMany([blob, blob, blob], {
@@ -220,6 +251,9 @@ Promise.all([
   runWorkerBatchTest(),
   runPooledBatchTest(),
 ])
+  // After every other case: runWorkerReuseTest patches window.Worker, so no
+  // other conversion may be in flight while it counts boots.
+  .then(() => runWorkerReuseTest())
   .then(() => {
     document.getElementById('results').textContent = JSON.stringify(results);
   })
