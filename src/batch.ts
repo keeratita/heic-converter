@@ -2,13 +2,8 @@ import { HeicConverterError } from './errors';
 import { Messages } from './messages/core';
 import type { ConvertItemResult } from './types';
 
-/**
- * How many runners a batch spawns — and, by necessity, the bound of the
- * `convertMany({ reuseDecoders: true })` decoder pool. Both sides must derive
- * from this one expression: if the pool were ever smaller than the runner count,
- * a runner would park forever waiting for a lease another runner holds.
- */
-export function runnerCountFor(concurrency: number, total: number): number {
+/** How many runners a batch spawns (bounded by item count so an empty-ish batch never boots idle runners). */
+function runnerCountFor(concurrency: number, total: number): number {
   return Math.min(concurrency, total);
 }
 
@@ -132,6 +127,13 @@ export async function runBoundedBatch<T>(
     // and release their own resources.
     await Promise.race([Promise.all(runners), settleEarly]);
 
+    // Completion shortcut: every runner recorded an ok result, so the batch
+    // fulfilled regardless of what else raced it. An abort racing the final
+    // item can never be observed alongside completedCount === inputs.length
+    // through the public API (abort() settles the race synchronously, before
+    // any pending runner records), so this branch's abort-interaction is not
+    // deterministically testable — it is intentionally not pinned with a
+    // timing-dependent test.
     if (completedCount === inputs.length) {
       return results.map((entry) => {
         /* v8 ignore if -- completedCount bookkeeping records every entry ok; dead by construction */
@@ -139,7 +141,7 @@ export async function runBoundedBatch<T>(
           // Unreachable: any failure throws below; any success is recorded.
           throw new HeicConverterError(
             'batch_item_failed',
-            Messages.BatchItemProducedNoResult(entry?.index)
+            Messages.BatchItemProducedNoResult((entry?.index ?? 0) + 1, inputs.length)
           );
         }
         return entry.result;
@@ -169,8 +171,11 @@ export async function runBoundedBatch<T>(
       });
     }
     // Unreachable: the race only settles via completion, failure, or abort.
-    /* v8 ignore next 1 -- dead tail; see the branch comments above */
-    throw new HeicConverterError('batch_item_failed', Messages.BatchEndedWithoutResult);
+    /* v8 ignore next 2 -- dead tail; see the branch comments above */
+    throw new HeicConverterError(
+      'batch_item_failed',
+      Messages.BatchEndedWithoutSettling(inputs.length)
+    );
   } finally {
     signal?.removeEventListener('abort', onAbort);
   }

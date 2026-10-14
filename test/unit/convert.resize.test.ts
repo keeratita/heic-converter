@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { mockState, resetConvertMocks } from './helpers/convert-mocks';
+import { mockState, resetConvertMocks, expectNoEffectiveResize } from './helpers/convert-mocks';
 
 vi.mock('../../src/render/canvas', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/render/canvas')>();
@@ -106,10 +106,12 @@ describe('convertHeic - Resize options', () => {
       expect.any(Object),
       'jpeg',
       0.92,
-      undefined,
+      expect.any(Object), // the caller's options object is the resize carrier (arg 4)
       true,
       undefined,
     false);
+    // Explicitly-undefined knobs are not an effective resize.
+    expectNoEffectiveResize(mockState.renderAndEncodeMock.mock.calls[0][3]);
   });
 
   it('should throw when scale is zero', async () => {

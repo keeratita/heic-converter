@@ -37,13 +37,11 @@ describe('renderAndEncode - Resize', () => {
   let originalDocument: typeof document;
   let originalOffscreenCanvas: typeof OffscreenCanvas;
   let originalImageData: typeof ImageData;
-  let originalFileReader: typeof FileReader;
 
   beforeEach(() => {
     originalDocument = global.document;
     originalOffscreenCanvas = global.OffscreenCanvas;
     originalImageData = global.ImageData;
-    originalFileReader = global.FileReader;
 
     mockCtx = {
       putImageData: vi.fn(),
@@ -94,7 +92,6 @@ describe('renderAndEncode - Resize', () => {
     global.document = originalDocument;
     global.OffscreenCanvas = originalOffscreenCanvas;
     global.ImageData = originalImageData;
-    global.FileReader = originalFileReader;
   });
 
   /** Canvas the encoded blob comes from: created first. */
@@ -212,24 +209,9 @@ describe('renderAndEncode - Resize', () => {
 
   it('should use the resized dimensions in the SVG output', async () => {
     const decoded = createMockDecodedImage(200, 100);
+    // The SVG embed path reads arrayBuffer() + btoa, so a real Blob works.
     const mockPngBlob = new Blob(['png-data'], { type: 'image/png' });
     toBlobImpl = (callback) => callback(mockPngBlob);
-
-    class MockFileReader {
-      result: string | null = 'data:image/png;base64,cG5nLWRhdGE=';
-      onloadend: (() => void) | null = null;
-      onerror: (() => void) | null = null;
-
-      readAsDataURL(): void {
-        setTimeout(() => {
-          if (this.onloadend) {
-            this.onloadend();
-          }
-        }, 0);
-      }
-    }
-
-    global.FileReader = MockFileReader as unknown as typeof FileReader;
 
     const result = await renderAndEncode(decoded, 'svg', 1, { scale: 0.5 });
 

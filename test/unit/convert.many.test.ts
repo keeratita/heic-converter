@@ -131,13 +131,27 @@ describe('convertMany', () => {
     expect(await results[0].text()).toBe('42');
   });
 
+  it('treats a truthy non-function onProgress as absent', async () => {
+    // One "non-function is absent" policy for all four entry points
+    // (progressCallbackFor): a malformed callback must neither be invoked
+    // nor surface progress_callback_failed — previously the per-item wrapper
+    // called it and the TypeError surfaced as a contract error.
+    const results = await convertMany([new Uint8Array([1]), new Uint8Array([2])], {
+      onProgress: 42 as unknown as (index: number, percent: number) => void,
+    });
+
+    expect(results).toHaveLength(2);
+  });
+
   it('should not leak batch-only options into per-item conversion options', async () => {
     // `concurrency` is a batch knob and must not disturb per-item option
     // forwarding: item options still reach the encoder untouched.
     await convertMany([new Uint8Array([1])], { concurrency: 3, to: 'png', quality: 0.4 });
 
     expect(mockState.renderAndEncodeMock).toHaveBeenCalledWith(expect.any(Object), 'png', 0.4,
-        undefined,
+        // The caller's options object is the resize carrier (arg 4); the batch
+        // knobs were stripped upstream by convertMany's destructuring.
+        expect.not.objectContaining({ concurrency: expect.anything() }),
         true,
         undefined,
       false);
@@ -176,9 +190,9 @@ describe('convertMany', () => {
       expect.any(Object),
       'png',
       0.5,
-        undefined,
-        true,
-        undefined,
+      expect.any(Object), // the caller's options object is the resize carrier (arg 4, no resize knobs set)
+      true,
+      undefined,
       false);
   });
 
@@ -360,34 +374,34 @@ describe('convertMany', () => {
 
   it('should throw when concurrency is zero', async () => {
     await expect(convertMany([new Uint8Array([1])], { concurrency: 0 })).rejects.toThrow(
-      'Concurrency must be a positive integer'
+      'Concurrency must be an integer between 1 and 64'
     );
   });
 
   it('should throw when concurrency is negative', async () => {
     await expect(convertMany([new Uint8Array([1])], { concurrency: -1 })).rejects.toThrow(
-      'Concurrency must be a positive integer'
+      'Concurrency must be an integer between 1 and 64'
     );
   });
 
   it('should throw when concurrency is not an integer', async () => {
     await expect(convertMany([new Uint8Array([1])], { concurrency: 1.5 })).rejects.toThrow(
-      'Concurrency must be a positive integer'
+      'Concurrency must be an integer between 1 and 64'
     );
   });
 
   it('should throw when concurrency is not a number', async () => {
     await expect(convertMany([new Uint8Array([1])], { concurrency: '2' as any })).rejects.toThrow(
-      'Concurrency must be a positive integer'
+      'Concurrency must be an integer between 1 and 64'
     );
   });
 
   it('should throw when concurrency is Infinity or NaN', async () => {
     await expect(convertMany([new Uint8Array([1])], { concurrency: Infinity })).rejects.toThrow(
-      'Concurrency must be a positive integer'
+      'Concurrency must be an integer between 1 and 64'
     );
     await expect(convertMany([new Uint8Array([1])], { concurrency: NaN })).rejects.toThrow(
-      'Concurrency must be a positive integer'
+      'Concurrency must be an integer between 1 and 64'
     );
   });
 });
@@ -438,16 +452,38 @@ describe('convertMany - continueOnError', () => {
     expect(await (blobs[1] as Blob).text()).toBe('2');
   });
 
-  it('reports progress only for successful items, as (index, percent)', async () => {
+  it('forwards partial progress for failed items but withholds their 100%', async () => {
+    // The documented contract (API.md): percentages below 100 are live and
+    // may arrive for items that ultimately fail; the 100% event fires only
+    // for items that succeed. The previous version of this test was vacuous
+    // for the partial-progress half because the failing mock never emitted.
+    resetConvertMocks({
+      renderAndEncode: renderFromPixel,
+      decodeImpl: async (data, onProgress) => {
+        if (data[0] === 5) {
+          onProgress?.(30);
+          throw new Error('decode failed for input 5');
+        }
+        onProgress?.(40);
+        onProgress?.(100);
+        return { width: 1, height: 1, data: new Uint8ClampedArray([data[0], 0, 0, 255]) };
+      },
+    });
+
     const onProgress = vi.fn();
-    await convertMany([new Uint8Array([5]), new Uint8Array([2])], {
+    const results = await convertMany([new Uint8Array([5]), new Uint8Array([2])], {
       continueOnError: true,
       concurrency: 2,
       onProgress,
     });
 
+    expect(results.map((entry) => entry.ok)).toEqual([false, true]);
+    // The failed item's 30% reaches the host…
+    expect(onProgress).toHaveBeenCalledWith(0, 30);
+    // …the successful item's events arrive too, and it is the only 100%.
+    expect(onProgress).toHaveBeenCalledWith(1, 40);
     expect(onProgress).toHaveBeenCalledWith(1, 100);
-    expect(onProgress.mock.calls.length).toBe(1);
+    expect(onProgress.mock.calls.filter(([, percent]) => percent === 100)).toEqual([[1, 100]]);
   });
 
   it('still rejects up-front validation failures', async () => {
@@ -682,18 +718,28 @@ describe('convertMany - reuseDecoders: disposal', () => {
 });
 
 describe('convertMany - concurrency clamping', () => {
-  it('clamps absurd concurrency to the item count instead of spawning runaway runners', async () => {
+  it('clamps absurd-but-legal concurrency to the item count instead of spawning runaway runners', async () => {
     // runnerCountFor() caps the runner pool at inputs.length; without the
-    // cap, MAX_SAFE_INTEGER would materialize that many runner closures.
+    // cap, the ceiling value 64 with 3 items would materialize 64 runners.
     resetConvertMocks({ decodeImpl: batchDecodeImpl });
     active.count = 0;
     active.max = 0;
 
     const inputs = [new Uint8Array([10]), new Uint8Array([11]), new Uint8Array([12])];
-    const results = await convertMany(inputs, { concurrency: Number.MAX_SAFE_INTEGER });
+    const results = await convertMany(inputs, { concurrency: 64 });
 
     expect(results.every((blob) => blob instanceof Blob)).toBe(true);
     expect(active.max).toBeLessThanOrEqual(inputs.length);
+  });
+
+  it('rejects concurrency above the ceiling instead of booting that many decoders', async () => {
+    // Each runner is a full WASM boot; a runaway config value must be refused,
+    // not clamped into existence.
+    resetConvertMocks({ decodeImpl: batchDecodeImpl });
+    await expect(
+      convertMany([new Uint8Array([1])], { concurrency: 65 })
+    ).rejects.toMatchObject({ code: 'invalid_concurrency' });
+    expect(mockState.decoderInstances).toHaveLength(0);
   });
 });
 

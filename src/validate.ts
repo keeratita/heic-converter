@@ -12,6 +12,15 @@ import type { CropOptions, ImageFormat, ResizeOptions } from './types';
  * internal re-checks, so validation lives in exactly one place.
  */
 
+/**
+ * Upper bound for `concurrency` / `maxConcurrentWorkers`. Every unit of
+ * concurrency is a full WASM boot (its own instantiated module and grown
+ * heap), so a runaway config value — a query param, a queue-size setting —
+ * would otherwise boot hundreds of decoders and take the page down. The
+ * default paths clamp to 8; explicit values may reach this ceiling.
+ */
+export const MAX_BATCH_CONCURRENCY = 64;
+
 /** Validates every per-conversion option shared by all four entry points. */
 export function validateConvertOptions(options?: {
   to?: ImageFormat;
@@ -30,55 +39,52 @@ export function validateConvertOptions(options?: {
   if (options?.quality !== undefined) {
     validateQuality(options.quality);
   }
-  validateApplyOrientation(options?.applyOrientation);
+  validateBooleanFlag('applyOrientation', options?.applyOrientation);
   validateOutputShape(options?.output);
   validateSignal(options?.signal);
   validateCrop(options?.crop);
-  validatePreserveExif(options?.preserveExif);
-  validateNativeDecode(options?.nativeDecode);
-  validateResize(
-    options?.maxWidth !== undefined || options?.maxHeight !== undefined || options?.scale !== undefined
-      ? options
-      : undefined
-  );
+  validateBooleanFlag('preserveExif', options?.preserveExif);
+  validateBooleanFlag('nativeDecode', options?.nativeDecode);
+  // validateResize inspects each knob and no-ops when none is set — no
+  // "does any knob exist" pre-check, which would just duplicate that
+  // knowledge at every call site.
+  validateResize(options);
 }
 
 /**
- * Validates the batch knobs shared by both batch entry points. The worker-only
- * knobs (`maxConcurrentWorkers`, `timeoutMs`) are validated in `src/worker.ts`,
- * so their message text stays in the lazy worker chunk.
+ * Validates the batch knobs shared by both batch entry points (convertMany
+ * and convertManyInWorker both call this). The worker-only knobs
+ * (`maxConcurrentWorkers`, `timeoutMs`) are validated in `src/worker.ts`, so
+ * their message text stays in the lazy worker chunk.
  */
 export function validateBatchOptions(options?: {
   continueOnError?: boolean;
   reuseDecoders?: boolean;
 }): void {
-  validateContinueOnError(options?.continueOnError);
-  validateReuseDecoders(options?.reuseDecoders);
+  validateBooleanFlag('continueOnError', options?.continueOnError);
+  validateBooleanFlag('reuseDecoders', options?.reuseDecoders);
 }
 
-/** @throws `invalid_concurrency` for a non-positive-integer `concurrency`. */
+/** @throws `invalid_concurrency` for a `concurrency` outside 1..MAX_BATCH_CONCURRENCY. */
 export function validateConcurrency(concurrency: number): void {
-  if (!Number.isInteger(concurrency) || concurrency < 1) {
-    throw new HeicConverterError('invalid_concurrency', Messages.ConcurrencyInvalid(concurrency));
+  if (
+    !Number.isInteger(concurrency) ||
+    concurrency < 1 ||
+    concurrency > MAX_BATCH_CONCURRENCY
+  ) {
+    throw new HeicConverterError('invalid_concurrency', Messages.ConcurrencyInvalid(concurrency, MAX_BATCH_CONCURRENCY));
   }
 }
 
 /** @throws `invalid_quality` if quality is not between 0.0 and 1.0. */
-export function validateQuality(quality: unknown): void {
+function validateQuality(quality: unknown): void {
   if (typeof quality !== 'number' || !Number.isFinite(quality) || quality < 0 || quality > 1) {
     throw new HeicConverterError('invalid_quality', Messages.QualityInvalid(quality));
   }
 }
 
-/** @throws `invalid_input` for a non-boolean applyOrientation. */
-export function validateApplyOrientation(applyOrientation: unknown): void {
-  if (applyOrientation !== undefined && typeof applyOrientation !== 'boolean') {
-    throw new HeicConverterError('invalid_input', Messages.ApplyOrientationInvalid(applyOrientation));
-  }
-}
-
 /** @throws `invalid_input` for an output shape outside the OutputShape union. */
-export function validateOutputShape(output: unknown): void {
+function validateOutputShape(output: unknown): void {
   if (
     output !== undefined &&
     output !== 'blob' &&
@@ -89,31 +95,16 @@ export function validateOutputShape(output: unknown): void {
   }
 }
 
-/** @throws `invalid_input` for a non-boolean reuseDecoders flag. */
-export function validateReuseDecoders(reuseDecoders: unknown): void {
-  if (reuseDecoders !== undefined && typeof reuseDecoders !== 'boolean') {
-    throw new HeicConverterError('invalid_input', Messages.ReuseDecodersInvalid(reuseDecoders));
-  }
-}
-
-/** @throws `invalid_input` for a non-boolean continueOnError flag. */
-export function validateContinueOnError(continueOnError: unknown): void {
-  if (continueOnError !== undefined && typeof continueOnError !== 'boolean') {
-    throw new HeicConverterError('invalid_input', Messages.ContinueOnErrorInvalid(continueOnError));
-  }
-}
-
-/** @throws `invalid_input` for a non-boolean preserveExif flag. */
-export function validatePreserveExif(preserveExif: unknown): void {
-  if (preserveExif !== undefined && typeof preserveExif !== 'boolean') {
-    throw new HeicConverterError('invalid_input', Messages.PreserveExifInvalid(preserveExif));
-  }
-}
-
-/** @throws `invalid_input` for a non-boolean nativeDecode flag. */
-export function validateNativeDecode(nativeDecode: unknown): void {
-  if (nativeDecode !== undefined && typeof nativeDecode !== 'boolean') {
-    throw new HeicConverterError('invalid_input', Messages.NativeDecodeInvalid(nativeDecode));
+/**
+ * The five boolean option knobs differ only in name, so they share one check
+ * and one message template. (Messages is a single object literal esbuild
+ * cannot tree-shake per property — five near-identical literal strings would
+ * each ship permanently, whereas parameterized text ships once.)
+ * @throws `invalid_input` for a non-boolean flag.
+ */
+function validateBooleanFlag(name: string, value: unknown): void {
+  if (value !== undefined && typeof value !== 'boolean') {
+    throw new HeicConverterError('invalid_input', Messages.BooleanOptionInvalid(name, value));
   }
 }
 
@@ -122,7 +113,7 @@ export function validateNativeDecode(nativeDecode: unknown): void {
  * fast with `invalid_input` instead of throwing TypeError deep in the
  * pipeline (or being silently ignored).
  */
-export function validateSignal(signal: unknown): void {
+function validateSignal(signal: unknown): void {
   if (
     signal !== undefined &&
     (typeof signal !== 'object' ||

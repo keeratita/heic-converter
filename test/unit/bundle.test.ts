@@ -27,7 +27,7 @@ const isCI = !!process.env.CI;
 const EAGER_BUDGET_BYTES = 23_500;
 /** A hoisted implementation leaves a re-export stub on the dynamic edge, so the import() check alone passes. */
 const DEFERRED_CHUNK_MIN_BYTES = 1_000;
-/** Prefix → floor. The native Strategy is ~970 B raw; a hoist stub is <200 B. */
+/** Prefix → floor. The native Strategy is ~1.6 KB raw; a hoist stub is <200 B. */
 const DEFERRED_MODULES: Array<{ prefix: string; min: number }> = [
   { prefix: 'worker', min: DEFERRED_CHUNK_MIN_BYTES },
   { prefix: 'exif', min: DEFERRED_CHUNK_MIN_BYTES },
@@ -161,6 +161,41 @@ describe.skipIf(!isBuilt && !isCI)('bundle boundaries (requires npm run build)',
         'and is not byte-reproducible across builds (±30 B), so this is usually the first to trip; prefer a ' +
         'dynamic import or a shorter message. If the growth is deliberate, raise the budget and say why.'
     ).toBeLessThan(EAGER_BUDGET_BYTES);
+  });
+
+  it('keeps the lazy chunks from statically sharing code outside the eager graph', () => {
+    // The four lazy payloads defer independently. A static edge from one to
+    // another (the worker chunk requiring the EXIF injectors, say) collapses
+    // two independent deferrals: the first worker call downloads EXIF too.
+    // esbuild usually honours such an edge by hoisting the imported code into
+    // a shared `chunk-*` file the importer requires — and that file is named
+    // by content hash, not the `exif-`/`worker-` prefix, so a prefix filter
+    // misses it (this was a real hole). The robust check: two lazy chunks may
+    // share a file ONLY when the eager entry graph also uses it statically
+    // (both legitimately reuse entry code). A file reachable from two distinct
+    // lazy chunks but NOT from the entry is lazy-to-lazy static coupling.
+    for (const [ext, depPattern] of [
+      ['.mjs', ESM_DEP],
+      ['.js', CJS_DEP],
+    ] as const) {
+      const eager = new Set(staticGraph(`index${ext}`, depPattern).keys());
+      const graphs = DEFERRED_MODULES.map(({ prefix }) => ({
+        prefix,
+        files: new Set(staticGraph(chunkFile(prefix, ext), new RegExp(depPattern.source, 'g')).keys()),
+      }));
+      for (let i = 0; i < graphs.length; i++) {
+        for (let j = i + 1; j < graphs.length; j++) {
+          // A chunk's own entry file appears in its own graph; it can only
+          // appear in ANOTHER lazy chunk's graph through the leak itself — so
+          // no exclusion is needed, and adding one would mask the direct edge.
+          const shared = [...graphs[i].files].filter((f) => graphs[j].files.has(f) && !eager.has(f));
+          expect(
+            shared,
+            `${graphs[i].prefix} and ${graphs[j].prefix} (${ext}) statically share code not in the eager graph: ${shared.join(', ')}`
+          ).toEqual([]);
+        }
+      }
+    }
   });
 
   it('publishes every chunk the built files reference', () => {

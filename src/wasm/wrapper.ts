@@ -1,8 +1,16 @@
 import type { IHeicDecoder, DecodedImage } from '../types';
 import { Messages } from '../messages/core';
-import { clampPercent } from '../progress';
+import { clampPercent, progressCallbackError } from '../progress';
 import { HeicConverterError } from '../errors';
 import { clearFaulted, markFaulted } from './fault';
+// Single source of truth for the glue surface — see the d.ts header. A local
+// duplicate of these interfaces drifted from main.cpp once already.
+import type {
+  HeicDecoderInstance,
+  HeicDecoderModule,
+  HeicDecoderModuleOptions,
+  HeicDecoderResult,
+} from './wrapper/heic-decoder.js';
 
 export interface LibheifDecoderOptions {
   /**
@@ -26,57 +34,6 @@ export interface LibheifDecoderOptions {
    * not collide with them.
    */
   moduleOverrides?: Record<string, unknown>;
-}
-
-/**
- * Shape of the decoded result returned by the WASM HeicDecoder.
- */
-interface HeicDecoderResult {
-  width: number;
-  height: number;
-  data: Uint8Array;
-  /** EXIF orientation 1-8 (1 when absent or already applied by libheif). */
-  orientation?: number;
-  /**
-   * Raw EXIF block normalized to the JPEG APP1 payload form
-   * ("Exif\0\0" + TIFF), present when the file carries an Exif item
-   * (regardless of irot/imir). JS-owned, same as `data`.
-   */
-  exif?: Uint8Array;
-}
-
-/**
- * Shape of the WASM HeicDecoder instance exposed by libheif.
- */
-interface HeicDecoderInstance {
-  decode(data: Uint8Array, onProgress: ((percent: number) => void) | null): HeicDecoderResult | string | null;
-  /**
-   * Fast path available on newer builds: reads input already placed in the
-   * WASM heap by the caller, avoiding embind's per-byte std::string
-   * marshalling of the input file.
-   */
-  decodeFromPointer?(
-    ptr: number,
-    len: number,
-    onProgress: ((percent: number) => void) | null
-  ): HeicDecoderResult | string | null;
-  delete(): void;
-}
-
-/**
- * Shape of the WASM module factory output.
- */
-interface HeicDecoderModule {
-  HeicDecoder: new () => HeicDecoderInstance;
-  /** Present on newer glue builds (EXPORTED_FUNCTIONS/RuntimeMethods). */
-  _malloc?: (size: number) => number;
-  _free?: (ptr: number) => void;
-  HEAPU8?: Uint8Array;
-}
-
-interface ModuleInitOptions extends Record<string, unknown> {
-  locateFile?: LibheifDecoderOptions['locateFile'];
-  wasmBinary?: ArrayBuffer | ArrayBufferView;
 }
 
 /**
@@ -123,7 +80,7 @@ export class LibheifDecoder implements IHeicDecoder {
   async initialize(): Promise<void> {
     if (!this.initPromise) {
       const generation = ++this.initGeneration;
-      const moduleArgs: ModuleInitOptions = {};
+      const moduleArgs: HeicDecoderModuleOptions = {};
       if (this.options?.moduleOverrides) {
         Object.assign(moduleArgs, this.options.moduleOverrides);
       }
@@ -145,6 +102,23 @@ export class LibheifDecoder implements IHeicDecoder {
             // free() ran during the load: drop it instead of resurrecting.
             instance.delete();
             return null;
+          }
+          // Verify the pointer API once, here instead of re-probing per call:
+          // the pinned build always exports it, so its absence means the
+          // glue/WASM pair does not come from this release (tampered, or a
+          // partial dist/ upload) — a load-stage verdict, not a decode one.
+          const missing = [
+            typeof instance.decodeFromPointer === 'function' ? null : 'decodeFromPointer',
+            typeof module._malloc === 'function' ? null : '_malloc',
+            typeof module._free === 'function' ? null : '_free',
+            module.HEAPU8 instanceof Uint8Array ? null : 'HEAPU8',
+          ].filter((name): name is string => name !== null);
+          if (missing.length > 0) {
+            instance.delete();
+            throw new HeicConverterError(
+              'decoder_init_failed',
+              Messages.GlueApiMissing(missing.join(', '))
+            );
           }
           this.module = module;
           this.decoderInstance = instance;
@@ -196,33 +170,28 @@ export class LibheifDecoder implements IHeicDecoder {
 
     const module = this.module;
     const instance = this.decoderInstance;
+    const heapBuffer = module.HEAPU8.buffer;
     let result: HeicDecoderResult | string | null;
 
     try {
-      // Fast path when the glue exports the pointer API: one HEAPU8.set instead
-      // of embind's per-byte marshalling; otherwise use the std::string path.
-      if (
-        typeof instance.decodeFromPointer === 'function' &&
-        typeof module._malloc === 'function' &&
-        typeof module._free === 'function' &&
-        module.HEAPU8 instanceof Uint8Array &&
-        data.buffer !== module.HEAPU8.buffer
-      ) {
-        const ptr = module._malloc(data.byteLength);
-        if (ptr === 0) {
-          throw new HeicConverterError(
-            'decode_failed',
-            Messages.DecodeInputAllocFailed(data.byteLength)
-          );
-        }
-        try {
-          module.HEAPU8.set(data, ptr);
-          result = instance.decodeFromPointer(ptr, data.byteLength, wrappedProgress);
-        } finally {
-          module._free(ptr);
-        }
-      } else {
-        result = instance.decode(data, wrappedProgress);
+      // Pointer fast path (verified present at initialize()): one HEAPU8.set
+      // instead of embind's per-byte std::string marshalling. Input already
+      // backed by the heap would overlap the _malloc slot HEAPU8.set writes
+      // into — copy it out first. (Caller-reachable via a leaked module ref;
+      // the pinned C++ wrapper guarantees JS-owned *outputs*.)
+      const input = data.buffer === heapBuffer ? new Uint8Array(data) : data;
+      const ptr = module._malloc(input.byteLength);
+      if (ptr === 0) {
+        throw new HeicConverterError(
+          'decode_failed',
+          Messages.DecodeInputAllocFailed(input.byteLength)
+        );
+      }
+      try {
+        module.HEAPU8.set(input, ptr);
+        result = instance.decodeFromPointer(ptr, input.byteLength, wrappedProgress);
+      } finally {
+        module._free(ptr);
       }
     } catch (error) {
       // A decoder fault (bad heap write, OOM, unreachable) traps inside the
@@ -250,13 +219,7 @@ export class LibheifDecoder implements IHeicDecoder {
 
     if (progressError !== undefined) {
       // Decode succeeded but the host callback threw — report it with cause.
-      throw new HeicConverterError(
-        'progress_callback_failed',
-        Messages.ProgressCallbackThrew(
-          progressError instanceof Error ? progressError.message : String(progressError)
-        ),
-        { cause: progressError }
-      );
+      throw progressCallbackError(progressError);
     }
 
     const width = result.width;
@@ -276,11 +239,12 @@ export class LibheifDecoder implements IHeicDecoder {
         : 1;
 
     // DecodedImage.data must outlive free(): the C++ wrapper allocates pixels
-    // as a JS array, so wrap without copying when HEAPU8 proves it is not a
-    // heap view; otherwise copy.
-    const heapBuffer = module.HEAPU8 instanceof Uint8Array ? module.HEAPU8.buffer : undefined;
+    // as a JS array, so wrap without copying when the *live* HEAPU8 proves it
+    // is not a heap view (ALLOW_MEMORY_GROWTH may have replaced it during the
+    // decode); otherwise copy.
+    const postDecodeHeap = module.HEAPU8.buffer;
     const clampedData =
-      heapBuffer !== undefined && result.data.buffer !== heapBuffer
+      result.data.buffer !== postDecodeHeap
         ? new Uint8ClampedArray(result.data.buffer, result.data.byteOffset, result.data.byteLength)
         : new Uint8ClampedArray(result.data);
 
@@ -299,7 +263,7 @@ export class LibheifDecoder implements IHeicDecoder {
     const rawExif = result.exif;
     if (rawExif instanceof Uint8Array && rawExif.length >= 14) {
       decoded.exif =
-        heapBuffer !== undefined && rawExif.buffer !== heapBuffer
+        rawExif.buffer !== postDecodeHeap
           ? new Uint8Array(rawExif.buffer, rawExif.byteOffset, rawExif.byteLength)
           : new Uint8Array(rawExif);
     }

@@ -28,6 +28,8 @@ export const WorkerMessages = {
       unknownType?: string;
       /** Replies ignored for not echoing the request id (duplicates or late replies). */
       staleResults?: number;
+      /** Progress messages ignored for not echoing the request id. */
+      staleProgress?: number;
       /** The lease came from the pool rather than a fresh boot. */
       adopted?: boolean;
       workerUrl?: string | URL;
@@ -59,6 +61,9 @@ export const WorkerMessages = {
     if (stats.staleResults !== undefined) {
       details.push(`${stats.staleResults} result(s) ignored for not echoing the request id (duplicate or stale replies must not be posted)`);
     }
+    if (stats.staleProgress !== undefined) {
+      details.push(`${stats.staleProgress} progress message(s) ignored for not echoing the request id`);
+    }
     if (stats.adopted) {
       details.push(
         'lease adopted from the pool — a script that calls self.close() after replying stalls adopted leases'
@@ -73,8 +78,8 @@ export const WorkerMessages = {
       'verify the worker script implements the { id, type: "progress" | "result" } protocol.'
     );
   },
-  MaxConcurrentWorkersInvalid: (value: unknown): string =>
-    `maxConcurrentWorkers must be a positive integer, got: ${value}`,
+  MaxConcurrentWorkersInvalid: (value: unknown, max: number): string =>
+    `maxConcurrentWorkers must be an integer between 1 and ${max}, got: ${value}`,
   TimeoutInvalid: (value: unknown): string =>
     `timeoutMs must be a finite number >= 0 (0 disables the timeout), got: ${value}`
 } as const;

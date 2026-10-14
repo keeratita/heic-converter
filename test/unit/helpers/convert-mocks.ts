@@ -1,4 +1,4 @@
-import { vi } from 'vitest';
+import { expect, vi } from 'vitest';
 import type { DecodedImage } from '../../../src/types';
 import type { renderAndEncode } from '../../../src/render/canvas';
 
@@ -186,5 +186,20 @@ export function resetConvertMocks(overrides?: {
   nativeMockState.markRefused.mockClear();
   if (overrides?.decodedImage) {
     mockState.defaultDecodedImage = overrides.decodedImage;
+  }
+}
+
+/**
+ * The caller's options object doubles as the resize carrier — src/index.ts
+ * hands it to renderAndEncode as the 4th argument and `validateResize` reads
+ * only maxWidth/maxHeight/scale. When no resize is requested, none of those
+ * keys may carry an effective value. Check per key: expect.not.objectContaining
+ * only fails when ALL three keys are present, so a single-knob leak slips
+ * through it.
+ */
+export function expectNoEffectiveResize(carrier: unknown): void {
+  const carrierObject = (carrier ?? {}) as Record<string, unknown>;
+  for (const knob of ['maxWidth', 'maxHeight', 'scale'] as const) {
+    expect(carrierObject[knob], `resize carrier must not carry an effective ${knob}`).toBeUndefined();
   }
 }

@@ -1,40 +1,15 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { assertEncodeEnvironment, blobToBase64, canvasToBlob } from '../../src/render/canvas';
 
 describe('blobToBase64', () => {
-  let originalFileReader: typeof FileReader;
-
-  beforeEach(() => {
-    originalFileReader = global.FileReader;
-  });
-
-  afterEach(() => {
-    global.FileReader = originalFileReader;
-  });
-
-  it('should convert a Blob to a base64 data URL using FileReader', async () => {
+  it('converts a Blob to a base64 data URL', async () => {
     const blob = new Blob(['hello world'], { type: 'text/plain' });
 
-    class MockFileReader {
-      result: string | null = null;
-      onloadend: (() => void) | null = null;
-      onerror: (() => void) | null = null;
-
-      readAsDataURL(): void {
-        setTimeout(() => {
-          this.result = 'data:text/plain;base64,SGVsbG8gV29ybGQ=';
-          this.onloadend?.();
-        }, 0);
-      }
-    }
-
-    global.FileReader = MockFileReader as unknown as typeof FileReader;
-
     const result = await blobToBase64(blob);
-    expect(result).toBe('data:text/plain;base64,SGVsbG8gV29ybGQ=');
+    expect(result).toBe('data:text/plain;base64,aGVsbG8gd29ybGQ=');
   });
 
-  it('should use btoa fallback when FileReader is unavailable', async () => {
+  it('encodes bytes supplied via arrayBuffer()', async () => {
     const blob = new Blob(['test'], { type: 'image/png' });
 
     // Mock arrayBuffer to return known bytes
@@ -43,110 +18,54 @@ describe('blobToBase64', () => {
     view.set([116, 101, 115, 116]); // "test"
     blob.arrayBuffer = async () => mockArrayBuffer;
 
-    global.FileReader = undefined as unknown as typeof FileReader;
-
     const result = await blobToBase64(blob);
     expect(result).toMatch(/^data:image\/png;base64,/);
     expect(result).toContain('dGVzdA=='); // base64 of "test"
   });
 
-  it('should reject with a generic cause when FileReader.error is unset', async () => {
-    // Hosts may fire onerror with no error set; the rejection must stay
-    // typed with the fallback cause, not crash on undefined.message.
-    const blob = new Blob(['hello world'], { type: 'text/plain' });
-
-    class MockFileReaderNoError {
-      result: string | null = null;
-      onloadend: (() => void) | null = null;
-      onerror: (() => void) | null = null;
-
-      readAsDataURL(): void {
-        setTimeout(() => {
-          this.onerror?.();
-        }, 0);
-      }
-    }
-
-    global.FileReader = MockFileReaderNoError as unknown as typeof FileReader;
+  it('rejects with render_encode_failed and the cause when the blob cannot be read', async () => {
+    const blob = new Blob(['test'], { type: 'image/png' });
+    const boom = new Error('blob read failed');
+    blob.arrayBuffer = () => Promise.reject(boom);
 
     const error = await blobToBase64(blob).catch((e) => e);
     expect(error.code).toBe('render_encode_failed');
-    expect(error.message).toContain('FileReader failed');
-    expect(error.cause).toBeUndefined();
+    expect(error.message).toContain('blob read failed');
+    expect(error.cause).toBe(boom);
   });
 
-  it('should reject when FileReader result is not a string', async () => {
+  it('wraps a non-Error rejection reason via its string form', async () => {
     const blob = new Blob(['test'], { type: 'image/png' });
-
-    class MockFileReaderError {
-      result: unknown = null;
-      onloadend: (() => void) | null = null;
-      onerror: (() => void) | null = null;
-
-      readAsDataURL(): void {
-        setTimeout(() => {
-          this.onloadend?.();
-        }, 0);
-      }
-    }
-
-    global.FileReader = MockFileReaderError as unknown as typeof FileReader;
+    blob.arrayBuffer = () => Promise.reject('boom');
 
     await expect(blobToBase64(blob)).rejects.toThrow(
-      'Failed to convert Blob to base64 string'
+      'Failed to convert Blob to base64 string: boom'
     );
   });
 
-  it('should reject when FileReader encounters an error', async () => {
-    const blob = new Blob(['test'], { type: 'image/png' });
-
-    class MockFileReaderOnError {
-      result: string | null = null;
-      onloadend: (() => void) | null = null;
-      onerror: (() => void) | null = null;
-      error: Error = new Error('FileReader error');
-
-      readAsDataURL(): void {
-        setTimeout(() => {
-          this.onerror?.();
-        }, 0);
-      }
-    }
-
-    global.FileReader = MockFileReaderOnError as unknown as typeof FileReader;
-
-    await expect(blobToBase64(blob)).rejects.toThrow('FileReader error');
-  });
-
-  it('should handle empty Blob in btoa fallback', async () => {
+  it('handles an empty Blob', async () => {
     const blob = new Blob([], { type: 'application/octet-stream' });
     blob.arrayBuffer = async () => new ArrayBuffer(0);
-
-    global.FileReader = undefined as unknown as typeof FileReader;
 
     const result = await blobToBase64(blob);
     expect(result).toBe('data:application/octet-stream;base64,');
   });
 
-  it('should handle binary data in btoa fallback', async () => {
+  it('handles binary data', async () => {
     const bytes = new Uint8Array([0, 255, 128, 64]);
     const blob = new Blob([bytes], { type: 'application/octet-stream' });
-
-    global.FileReader = undefined as unknown as typeof FileReader;
 
     const result = await blobToBase64(blob);
     expect(result).toMatch(/^data:application\/octet-stream;base64,/);
   });
 
-  it('should handle large binary data without stack overflow', async () => {
+  it('handles large binary data without stack overflow', async () => {
     const size = 1024 * 1024; // 1MB
     const bytes = new Uint8Array(size);
     for (let i = 0; i < size; i++) {
       bytes[i] = i % 256;
     }
     const blob = new Blob([bytes], { type: 'application/octet-stream' });
-
-    global.FileReader = undefined as unknown as typeof FileReader;
 
     const result = await blobToBase64(blob);
     expect(result).toMatch(/^data:application\/octet-stream;base64,/);

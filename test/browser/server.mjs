@@ -37,7 +37,10 @@ const EXACT_ROUTES = new Map([
   ['/sandbox.js', path.join(__dirname, 'sandbox.js')],
   ['/api-test.html', path.join(__dirname, 'api-test.html')],
   ['/api-test.js', path.join(__dirname, 'api-test.js')],
-  ['/worker.js', path.join(__dirname, 'worker.js')],
+  // Canonical worker script: the GitHub Pages demo's copy doubles as the E2E
+  // worker (one file, one protocol — a second copy drifted once). Its relative
+  // './dist/index.mjs' import resolves against /worker.js → /dist/ below.
+  ['/worker.js', path.join(ROOT_DIR, 'docs/worker.js')],
   // GitHub Pages demo (docs/) — served with ./dist/ next to it, like the
   // deployed site artifact. '/demo' (no slash) redirects to '/demo/' below:
   // relative asset URLs (./demo.js, ./dist/*, ./worker.js) must resolve

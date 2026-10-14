@@ -1,0 +1,32 @@
+# Code owners for the paths where a compromised PR could ship malicious code
+# to every consumer. Generated decoder artifacts are pinned by SHA-256 in
+# build-scripts/wasm-artifacts.json, but the manifest is committed next to the
+# artifacts it pins: whoever reviews a change here must confirm it against the
+# Docker rebuild (ci.yml `wasm-provenance`), because `verify:wasm` alone only
+# detects unintentional drift, not a pair swapped together with its hashes.
+
+# Generated WASM decoder pair + the manifest that pins them
+src/wasm/public/** @keeratita
+src/wasm/wrapper/** @keeratita
+build-scripts/wasm-artifacts.json @keeratita
+
+# Everything that determines what the WASM build compiles (pinned sources,
+# flags, and the patch applied to them) and the supply-chain gates themselves.
+# The submodule gitlinks and .gitmodules are the pinned sources: a pointer-only
+# PR changes what every future `build:wasm` compiles while leaving the committed
+# bytes (and their pinned hashes) untouched.
+build-wasm/wrapper/** @keeratita
+build-wasm/src/** @keeratita
+.gitmodules @keeratita
+build-scripts/build-wasm.sh @keeratita
+build-scripts/patch-libheif.py @keeratita
+build-scripts/check-install-scripts.mjs @keeratita
+build-scripts/install-scripts.json @keeratita
+build-scripts/verify-wasm-artifacts.mjs @keeratita
+build-scripts/verify-npm-provenance.mjs @keeratita
+.github/workflows/** @keeratita
+
+# What `npm run build` compiles into the published tarball, and the package
+# manifest that decides which files ship.
+tsup.config.ts @keeratita
+package.json @keeratita

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { mockState, resetConvertMocks } from './helpers/convert-mocks';
+import { mockState, resetConvertMocks, expectNoEffectiveResize } from './helpers/convert-mocks';
 
 vi.mock('../../src/render/canvas', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/render/canvas')>();
@@ -87,7 +87,8 @@ describe('convertHeic - Options', () => {
         expect.any(Object),
         'jpeg',
         0.0,
-        undefined,
+        // The caller's options object is the resize carrier (arg 4); nothing resize-relevant here.
+        expect.objectContaining({ to: 'jpeg', quality: 0.0 }),
         true,
         undefined,
       false);
@@ -100,7 +101,7 @@ describe('convertHeic - Options', () => {
         expect.any(Object),
         'jpeg',
         1.0,
-        undefined,
+        expect.objectContaining({ to: 'jpeg', quality: 1.0 }),
         true,
         undefined,
       false);
@@ -149,7 +150,7 @@ describe('convertHeic - Options', () => {
           expect.any(Object),
           format,
           0.92,
-          undefined,
+          expect.objectContaining({ to: format }),
           true,
           undefined,
         false);
@@ -175,7 +176,7 @@ describe('convertHeic - Options', () => {
         expect.any(Object),
         'jpeg',
         0.92,
-        undefined,
+        expect.objectContaining({ to: 'jpeg' }),
         true,
         undefined,
       false);
@@ -217,7 +218,7 @@ describe('convertHeic - Options', () => {
         expect.any(Object),
         'jpeg',
         0.92,
-        undefined,
+        expect.any(Object), // the (empty) options object is the resize carrier
         true,
         undefined,
       false);
@@ -260,10 +261,12 @@ describe('convertHeic - Options', () => {
         expect.any(Object),
         'jpeg',
         0.92,
-        undefined,
+        expect.any(Object), // the caller's options object is the resize carrier (arg 4)
         true,
         undefined,
       false);
+      // Explicitly-undefined knobs are not an effective resize.
+      expectNoEffectiveResize(mockState.renderAndEncodeMock.mock.calls[0][3]);
     });
 
     it('should handle options as null', async () => {
@@ -308,7 +311,7 @@ describe('convertHeic - applyOrientation', () => {
       expect.anything(),
       'jpeg',
       0.92,
-      undefined,
+      expect.objectContaining({ applyOrientation: false }),
       false,
       undefined,
     false);
@@ -396,7 +399,7 @@ describe('convertHeic - Crop option', () => {
       expect.any(Object),
       'jpeg',
       expect.any(Number),
-      undefined,
+      expect.objectContaining({ crop: { x: 10, y: 20, width: 30, height: 40 } }),
       true,
       { x: 10, y: 20, width: 30, height: 40 },
     false);

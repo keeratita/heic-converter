@@ -3,11 +3,19 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, describe, expect, it } from 'vitest';
-import { collectInstallScripts, collectFromLockfile, collectAll, compare } from '../../build-scripts/check-install-scripts.mjs';
+import {
+  collectInstallScripts,
+  collectFromLockfile,
+  collectAll,
+  compare,
+  isRegistryUrl,
+  isRegistryTarballFor,
+} from '../../build-scripts/check-install-scripts.mjs';
 
 // The install-script gate is the only thing standing between a compromised dev
-// dependency and code execution on every `npm ci`. Test it the way as any other
-// control: a tree where it must fire and a tree where it must stay quiet.
+// dependency and code execution on every `npm ci`. Test it like any other
+// security control: a tree where it must fire and a tree where it must stay
+// quiet — plus the URL shapes that tried to impersonate the public registry.
 
 const root = mkdtempSync(path.join(tmpdir(), 'install-scripts-'));
 const nodeModules = path.join(root, 'node_modules');
@@ -93,6 +101,43 @@ describe('collectInstallScripts', () => {
     expect(found).toEqual(['child@1.2.3', 'hooked-postinstall@1.2.3']);
     rmSync(tree, { recursive: true, force: true });
   });
+
+  it('keeps a nested duplicate at a second version as its own flagged entry', () => {
+    // The npm-worm shape this gate exists to catch: the reviewed package at its
+    // allowlisted version plus an unreviewed nested copy at another. Merging
+    // by name alone folds the second entry into the first; name@version keying
+    // (and per-directory reporting) keeps compare() able to see the intruder.
+    const tree = mkdtempSync(path.join(tmpdir(), 'install-scripts-dup-'));
+    packageDir('reviewed-pkg', { postinstall: 'node install.js' }, {}, tree);
+    packageDir('host-pkg', {}, {}, tree);
+    packageDir(
+      'reviewed-pkg',
+      { postinstall: 'node evil.js' },
+      { version: '9.9.9' },
+      path.join(tree, 'node_modules', 'host-pkg')
+    );
+    const nm = path.join(tree, 'node_modules');
+
+    // Exercise collectAll — the name@version merge keying is the thing under
+    // test; name-keyed merging would fold 9.9.9 into the 1.2.3 entry before
+    // compare() ever sees the intruder (collectInstallScripts alone would pass
+    // either way, since it reports per-directory).
+    const merged = collectAll(nm);
+    const found = merged
+      .filter((p) => p.name === 'reviewed-pkg')
+      .map((p) => `${p.name}@${p.version}`)
+      .sort();
+    expect(found).toEqual(['reviewed-pkg@1.2.3', 'reviewed-pkg@9.9.9']);
+
+    // compare() over the full merged set — the repository's own lock entries
+    // are in there too (legitimately allowlisted elsewhere), so only the
+    // intruder's problems matter here.
+    const { problems } = compare(merged, { 'reviewed-pkg': '1.2.3' });
+    expect(problems.filter((p) => p.includes('reviewed-pkg'))).toEqual([
+      expect.stringContaining('reviewed-pkg@9.9.9'),
+    ]);
+    rmSync(tree, { recursive: true, force: true });
+  });
 });
 
 describe('collectFromLockfile', () => {
@@ -110,7 +155,14 @@ describe('collectFromLockfile', () => {
       'node_modules/from-github-shorthand': { version: '1.0.0', resolved: 'github:evil/helper' },
       'node_modules/from-local': { version: '1.0.0', resolved: 'file:../helper' },
       'node_modules/linked': { version: '1.0.0', link: true },
-      'node_modules/from-mirror': { version: '1.0.0', resolved: 'https://mirror.attacker.invalid/pkg.tgz' }
+      'node_modules/from-mirror': { version: '1.0.0', resolved: 'https://mirror.attacker.invalid/pkg.tgz' },
+      // Suffix-squats the public registry to dodge a loose `registry.` check.
+      'node_modules/suffix-squat': { version: '1.0.0', hasInstallScript: true, resolved: 'https://registry.npmjs.org.evil.invalid/x/-/x-1.0.0.tgz' },
+      // The real registry, but the tarball path belongs to another package:
+      // origin-only checks call this genuine provenance.
+      'node_modules/name-swap': { version: '1.0.0', hasInstallScript: true, resolved: 'https://registry.npmjs.org/attacker/-/name-swap-1.0.0.tgz' },
+      // No `resolved` at all: nothing to verify against, so fail closed.
+      'node_modules/no-resolved': { version: '1.0.0', hasInstallScript: true }
     }
   };
 
@@ -125,9 +177,25 @@ describe('collectFromLockfile', () => {
         'from-local@1.0.0',
         'from-mirror@1.0.0',
         'fsevents@2.3.3',
-        'linked@1.0.0'
+        'linked@1.0.0',
+        'name-swap@1.0.0',
+        'no-resolved@1.0.0',
+        'suffix-squat@1.0.0'
       ].sort()
     );
+  });
+
+  it('accepts only the exact registry origin: genuine tarballs carry hasInstallScript alone, squats carry both labels', () => {
+    const byName = Object.fromEntries(collectFromLockfile(lock).map((p) => [p.name, p.hooks]));
+    // The one host the allowlist reviews tarballs against must pass cleanly…
+    expect(byName['esbuild']).toEqual(['hasInstallScript']);
+    expect(byName['@scope/native']).toEqual(['hasInstallScript']);
+    // …and a suffix-squat of it must not be treated as genuine.
+    expect(byName['suffix-squat']).toEqual(['hasInstallScript', 'non-registry-dep']);
+    // Registry *origin* is not registry *provenance*: the tarball path must
+    // belong to the entry's own name, and a missing `resolved` fails closed.
+    expect(byName['name-swap']).toEqual(['hasInstallScript', 'non-registry-dep']);
+    expect(byName['no-resolved']).toEqual(['hasInstallScript', 'non-registry-dep']);
   });
 
   it('ignores the root project entry and clean registry dependencies', () => {
@@ -144,6 +212,60 @@ describe('collectFromLockfile', () => {
   it('returns nothing for a lockfile with no packages map', () => {
     expect(collectFromLockfile({})).toEqual([]);
     expect(collectFromLockfile(undefined)).toEqual([]);
+  });
+});
+
+describe('isRegistryUrl', () => {
+  it('accepts exactly the public registry origin', () => {
+    expect(isRegistryUrl('https://registry.npmjs.org/esbuild/-/esbuild-0.27.2.tgz')).toBe(true);
+    expect(isRegistryUrl('https://registry.npmjs.org/@scope/native/-/native-1.0.0.tgz')).toBe(true);
+  });
+
+  it('rejects every shape that impersonates the registry', () => {
+    for (const resolved of [
+      'http://registry.npmjs.org/x/-/x-1.0.0.tgz', // plaintext downgrade
+      'https://registry.npmjs.org.evil.invalid/x/-/x.tgz', // suffix squat
+      'https://registry.npmjs.orgx/y/-/y.tgz', // near-miss host
+      'https://registry.npmjs.org@evil.invalid/x.tgz', // userinfo trick
+      'https://evil.invalid/?u=https://registry.npmjs.org/', // only in the query
+      'https://registry.npmjs.org', // no path: not a tarball resolution
+      42,
+      undefined,
+    ]) {
+      expect(isRegistryUrl(resolved as string), String(resolved)).toBe(false);
+    }
+  });
+});
+
+describe('isRegistryTarballFor', () => {
+  it('accepts the registry tarball whose path belongs to the entry name', () => {
+    expect(isRegistryTarballFor('esbuild', 'https://registry.npmjs.org/esbuild/-/esbuild-0.27.2.tgz')).toBe(true);
+    expect(isRegistryTarballFor('@scope/native', 'https://registry.npmjs.org/@scope/native/-/native-1.0.0.tgz')).toBe(true);
+  });
+
+  it('rejects same-origin paths that belong to another package (or nothing)', () => {
+    for (const [name, resolved] of [
+      ['esbuild', 'https://registry.npmjs.org/attacker/-/esbuild-0.27.2.tgz'], // another package's tarball
+      ['esbuild', 'https://registry.npmjs.org/esbuildish/-/x.tgz'], // near-miss name segment
+      ['@scope/native', 'https://registry.npmjs.org/native/-/native-1.0.0.tgz'], // scope stripped
+      ['esbuild', ''], // missing resolution fails closed
+      ['esbuild', 'git+ssh://git@evil.invalid/esbuild.git'],
+    ] as Array<[string, string]>) {
+      expect(isRegistryTarballFor(name, resolved), `${name} <- ${resolved}`).toBe(false);
+    }
+  });
+});
+
+describe('compare — provenance is part of the verdict', () => {
+  it('never lets an allowlisted name pass on non-registry bytes', () => {
+    // The High-severity bypass this closes: same name, same reviewed version,
+    // but the lockfile fetches the payload from somewhere the allowlist never
+    // reviewed. Name+version matching alone let this through silently.
+    const swapped = [{ name: 'esbuild', version: '0.27.2', hooks: ['hasInstallScript', 'non-registry-dep'] }];
+    const { problems } = compare(swapped, { esbuild: '0.27.2' });
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain('esbuild@0.27.2');
+    expect(problems[0]).toContain('never allowlisted');
   });
 });
 

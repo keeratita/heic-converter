@@ -102,7 +102,7 @@ function convertHeic<S extends OutputShape = 'blob'>(
 
 | Parameter | Type | Description |
 | --- | --- | --- |
-| `input` | [`HeicInput`](#heicinput) | The HEIC file. `Blob`, `File`, `ArrayBuffer`, or `Uint8Array` (other `ArrayBufferView`s and cross-realm Blob-likes are accepted at runtime) |
+| `input` | [`HeicInput`](#heicinput) | The HEIC file. `Blob` (including `File`), `ArrayBuffer`, or any `ArrayBufferView` (`Uint8Array`, `DataView`, other typed arrays — read as raw bytes via `byteOffset`/`byteLength`, `SharedArrayBuffer`-backed views included). Cross-realm Blob-likes are accepted at runtime |
 | `options` | `ConvertOptions` | Optional configuration — see [Shared options](#shared-options) |
 
 **Returns** `Promise<Blob>` by default; `Promise<string>` with `output: 'dataUrl'` and `Promise<ArrayBuffer>` with `output: 'arrayBuffer'` (the generic parameter is inferred from `output`, so no cast is needed).
@@ -152,7 +152,7 @@ Each item is processed by the same pipeline as [`convertHeic`](#convertheicinput
 | `continueOnError: true` | Never rejects for item failures; every item runs to completion and you get per-item [`ConvertItemResult`](#convertitemresult) entries |
 | Abort | An aborted signal **wins over failure aggregation** — the batch rejects with `aborted` and no new items launch. With `continueOnError`, not-yet-started entries are filled with `aborted` errors instead |
 | Up-front mistakes | Bad `to`/`quality`/`concurrency`/… still reject normally even with `continueOnError` — a typo is a caller bug, not an item failure |
-| `onProgress` | Fires per item as `(index, percent)` and only for items that succeed |
+| `onProgress` | Fires per item as `(index, percent)`. Sub-100 percentages are live and may also arrive for items that ultimately fail; the `100` event fires only for items that succeed |
 
 ```ts
 const blobs = await convertMany(files, { to: 'webp', concurrency: 4, reuseDecoders: true });
@@ -184,7 +184,7 @@ Additional options:
 | `workerUrl` | `string \| URL` | — (**required**) | URL of the worker script that implements the [protocol](#web-worker-protocol). Keep it a compile-time constant (`new URL('./converter.worker.js', import.meta.url)`); the script runs with the page's privileges |
 | `workerType` | `'classic' \| 'module'` | `'classic'` | `'module'` when the script uses ES imports; classic scripts must be pre-bundled |
 | `timeoutMs` | `number` | `60000` | Per-call deadline, finite and `≥ 0` (`0` disables). **Includes time spent queued** for a free worker slot |
-| `maxConcurrentWorkers` | `number` | `navigator.hardwareConcurrency` clamped to 1–8 (4 when unavailable) | Positive integer. Upper bound on simultaneously live workers per `workerUrl` + type; extra calls queue |
+| `maxConcurrentWorkers` | `number` | `navigator.hardwareConcurrency` clamped to 1–8 (4 when unavailable) | Integer 1–64. Upper bound on simultaneously live workers per `workerUrl` + type; extra calls queue |
 
 Notes that are easy to trip over:
 
@@ -266,7 +266,7 @@ These fields are shared by [`convertHeic`](#convertheicinput-options) and [`conv
 
 | Option | Type | Default | Description | Rejects with |
 | --- | --- | --- | --- | --- |
-| `concurrency` | `number` | `4` | Maximum concurrent conversions; must be a positive integer | `invalid_concurrency` |
+| `concurrency` | `number` | `4` | Maximum concurrent conversions; integer 1–64 (each runner boots a full WASM decoder, so values above 64 are rejected, not clamped) | `invalid_concurrency` |
 | `continueOnError` | `boolean` | `false` | Resolve with per-item results instead of rejecting on the first failure | `invalid_input` |
 | `reuseDecoders` | `boolean` | `false` | Hand each batch runner one pooled library-owned `LibheifDecoder`, reused across items — amortizes the WASM module load for batches much larger than the concurrency. Ignored when `decoder` is injected or when `nativeDecode` actually selects the native path (the pool leases libheif instances) | `invalid_input` |
 
@@ -288,7 +288,7 @@ Both injectors are **fail-safe**: unparsable encoder output, a malformed block, 
 
 HEIC is a system format on Apple platforms and Windows; `nativeDecode: true` lets those hosts decode with the platform's own stack via `createImageBitmap` + `OffscreenCanvas` — hardware decode, and the ~300 KB gzipped libheif payload is never fetched. It is **opt-in** (default `false`): the libheif path stays the byte-for-byte reference everywhere.
 
-There is no HEIC-support API, so support is discovered by trying: the first opted-in conversion doubles as the probe. If the platform lacks the APIs (`createImageBitmap` / `OffscreenCanvas`), the library marks the realm native-ineligible, skips the attempt for later calls, and logs a one-time `console.warn` breadcrumb. A refusal of an individual file — corrupt data, a declared size beyond the canvas cap (16384 px per side, the same bound the WASM path enforces), a transient 2D-context failure — is treated as a property of the input, not the realm: that conversion retries with libheif and later files still try natively. Cancellation via `signal` is never a verdict. The caller sees the same successful result either way; native errors never surface.
+There is no HEIC-support API, so support is discovered by trying: the first opted-in conversion doubles as the probe. If the platform lacks the APIs (`createImageBitmap` / `OffscreenCanvas`), the library marks the realm native-ineligible, skips the attempt for later calls, and logs a one-time `console.warn` breadcrumb. A refusal of an individual file — corrupt data, a declared size beyond the decode caps (16384 px per side and 64 MP total, the same budgets the WASM path enforces), a transient 2D-context failure — is treated as a property of the input, not the realm: that conversion retries with libheif and later files still try natively. Cancellation via `signal` is never a verdict. The caller sees the same successful result either way; native errors never surface.
 
 Constraints by design:
 
@@ -304,10 +304,10 @@ Constraints by design:
 ### `HeicInput`
 
 ```ts
-type HeicInput = Blob | File | ArrayBuffer | Uint8Array;
+type HeicInput = Blob | ArrayBuffer | ArrayBufferView;
 ```
 
-The declared union covers the common cases; at runtime the resolver also accepts cross-realm `Blob`/`File` objects (duck-typed via `arrayBuffer()`) and other `ArrayBufferView`s such as `DataView` or `Uint16Array`. Anything else rejects with `invalid_input`.
+`File` is a `Blob`, so the union's first arm covers it. `ArrayBufferView` covers `Uint8Array`, `DataView`, and every other typed array (read as raw bytes via `byteOffset`/`byteLength`, including `SharedArrayBuffer`-backed views). At runtime the resolver also accepts cross-realm `Blob`/`File` objects (duck-typed via `arrayBuffer()`). A bare `SharedArrayBuffer` (not a view) and anything else reject with `invalid_input`.
 
 ### `ImageFormat`
 
@@ -565,7 +565,10 @@ self.onmessage = async (event) => {
       onProgress: (percent) => self.postMessage({ id, type: 'progress', percent }),
     });
     // With output: 'arrayBuffer' the payload is zero-copy via a transfer list.
-    self.postMessage({ id, type: 'result', ok: true, blob }, blob instanceof ArrayBuffer ? [blob] : []);
+    self.postMessage(
+      { id, type: 'result', ok: true, blob },
+      blob instanceof ArrayBuffer ? [blob] : []
+    );
   } catch (error) {
     self.postMessage({ id, type: 'result', ok: false, error: error?.stack ?? error?.message ?? String(error) });
   }
@@ -615,7 +618,7 @@ type HeicConverterErrorCode =
 | `invalid_resize` | all conversion APIs | `scale`/`maxWidth`/`maxHeight` not positive finite numbers, or target size exceeds 16384 px |
 | `invalid_format` | all conversion APIs | Unknown `to` value |
 | `invalid_crop` | all conversion APIs | `crop` with non-integer/non-positive dimensions, negative offsets, or a rectangle beyond the image's display size |
-| `invalid_concurrency` | all conversion APIs | `concurrency` (batch) or `maxConcurrentWorkers` (worker APIs) not a positive integer |
+| `invalid_concurrency` | all conversion APIs | `concurrency` (batch) or `maxConcurrentWorkers` (worker APIs) is not an integer between 1 and 64 |
 | `decoder_init_failed` | `convertHeic`, `convertMany` | WASM module could not be loaded (missing asset, CSP block) |
 | `decode_failed` | `convertHeic`, `convertMany` | Invalid/corrupt HEIC bytes, or a fault inside the WASM module |
 | `unsupported_environment` | `convertHeic`, `convertMany` | No canvas APIs (e.g. Node.js); the worker APIs reject with `worker_unsupported` there instead. Decode raw RGBA via `LibheifDecoder` |

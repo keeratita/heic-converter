@@ -131,20 +131,33 @@ describe('renderAndEncode - AVIF capability probe', () => {
     expect(mockCtx.putImageData).not.toHaveBeenCalled();
   });
 
-  it('rejects with format_unsupported when toBlob yields a null blob', async () => {
+  it('treats a null-blob toBlob as indeterminate, then reports the encode failure honestly', async () => {
+    // A null `toBlob` result is the spec's encoding-failure signal (tainted
+    // canvas, memory pressure), not a support verdict — engines that lack
+    // AVIF return a PNG blob instead. Caching it as `false` was the bug this
+    // pins against: the real encode hits the same null and the honest verdict
+    // is render_encode_failed.
     toBlobImpl = (_index, callback) => callback(null);
 
     const error = await renderAndEncode(decodedImage(100, 80), 'avif', 0.92).catch((e) => e);
-    expect(error).toMatchObject({ code: 'format_unsupported' });
+    expect(error).toMatchObject({ code: 'render_encode_failed' });
+    // Probe canvas + target canvas: the refusal cache was never set.
+    expect(createdCanvases).toHaveLength(2);
+    expect(await canEncodeAvif()).not.toBe(false);
   });
 
-  it('rejects with format_unsupported when the probe encode throws', async () => {
+  it('treats a throwing probe canvas as indeterminate; the same throw surfaces at encode time', async () => {
+    // The module's own contract: a canvas that throws (under memory pressure)
+    // is indeterminate, never a cached refusal. With no verdict cached, the
+    // real encode runs and its throw propagates unwrapped.
     toBlobImpl = () => {
       throw new Error('NotSupportedError');
     };
 
     const error = await renderAndEncode(decodedImage(100, 80), 'avif', 0.92).catch((e) => e);
-    expect(error).toMatchObject({ code: 'format_unsupported' });
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).toContain('NotSupportedError');
+    expect(await canEncodeAvif()).not.toBe(false);
   });
 
   it('caches the probe across conversions', async () => {

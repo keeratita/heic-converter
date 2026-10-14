@@ -389,8 +389,8 @@ Batch semantics worth knowing:
 
 - The promise rejects with the **first failure in time** (not the lowest index). All items are still allowed to finish; decoders of in-flight items are released when they settle.
 - The rejection is a `batch_item_failed` error carrying structured fields: `itemIndex` (0-based index of the first failing item), `itemTotal`, `failedCount` (total items that failed), and `cause` (the underlying error). The message names the failing item and, when several items failed, summarizes the count and the other errors.
-- `onProgress` only fires for items that succeed; a failing item never reports 100%.
-- `concurrency` must be a positive integer; the default is `4`.
+- `onProgress` fires `(index, percent)` as items run. Sub-100 percentages are live and may also arrive for items that ultimately fail; the `100` event fires only for items that succeed.
+- `concurrency` must be an integer between 1 and 64 (each runner boots a full WASM decoder, so runaway values are rejected, not clamped); the default is `4`.
 
 **Keeping going after failures** — with `continueOnError: true` the batch never rejects for item failures. Every item runs, and you get a result entry per item in input order:
 
@@ -469,7 +469,7 @@ const jpegBlob = await convertHeicInWorker(heicBlob, {
 > - `workerUrl` should be a compile-time constant; the script runs with the page's privileges.
 > - Only `progress` and `result` messages are understood; any other message type is ignored — but ignored messages are counted and surfaced in timeout diagnostics (see below).
 > - `decoder` cannot cross the worker boundary: passing it rejects immediately with an `invalid_input` error (it is also absent from `WorkerConvertOptions` at compile time). `onProgress` and `workerUrl` are stripped from the posted message; progress is forwarded through `{ type: 'progress', percent }` messages instead.
-> - Concurrent calls are bounded per worker script: calls beyond `maxConcurrentWorkers` queue and start as slots free. Must be a positive integer (`invalid_concurrency` otherwise). Default: `navigator.hardwareConcurrency` clamped to 1–8 (4 when unavailable).
+> - Concurrent calls are bounded per worker script: calls beyond `maxConcurrentWorkers` queue and start as slots free. Must be an integer between 1 and 64 (`invalid_concurrency` otherwise). Default: `navigator.hardwareConcurrency` clamped to 1–8 (4 when unavailable).
 > - `timeoutMs` (default `60000`) bounds how long the promise waits for a result; must be a finite number ≥ 0, `0` disables. The deadline starts when the call is made, so time spent queued behind `maxConcurrentWorkers` counts toward it — raise `timeoutMs` or `maxConcurrentWorkers` for very large batches. A timeout rejects with a `worker_timeout` error whose message includes diagnostics — how many progress messages arrived, the last percent, and any unrecognized message type (the usual sign the worker script doesn't implement the protocol).
 > - This helper is **browser-only**: it rejects in Node.js, where there is no global `Worker`.
 
@@ -520,7 +520,7 @@ The sections below are the working reference. The exhaustive version — full si
 
 Converts a HEIC image file to a standard web format.
 
-- **`input`**: `Blob | File | ArrayBuffer | Uint8Array`
+- **`input`**: `Blob` (including `File`), `ArrayBuffer`, or any `ArrayBufferView` (`Uint8Array`, `DataView`, …)
 - **`options`**: (optional) `ConvertOptions`
   - `to`: `'jpeg' | 'jpg' | 'png' | 'webp' | 'avif' | 'svg'` (Default: `'jpeg'`; `avif` rejects with `format_unsupported` where the canvas cannot encode it)
   - `quality`: `number` (0.0 to 1.0, applicable to JPEG, WebP, and AVIF. Default: `0.92`)
@@ -541,10 +541,10 @@ Converts a HEIC image file to a standard web format.
 
 Converts multiple HEIC images with bounded concurrency. Results are returned in input order; rejects with the first failure in time — a `batch_item_failed` error whose `message` names the failing item and whose fields describe the batch (`itemIndex` 0-based, `itemTotal`, `failedCount`, `cause`). With `continueOnError` the promise fulfills with per-item results instead.
 
-- **`inputs`**: `Array<Blob | File | ArrayBuffer | Uint8Array>`
+- **`inputs`**: `Array<Blob (incl. File) | ArrayBuffer | ArrayBufferView>`
 - **`options`**: (optional) `ConvertManyOptions` — same as `ConvertOptions`, except `onProgress` uses the batch signature below; plus:
-  - `concurrency`: `number` (Maximum concurrent conversions. Default: `4`)
-  - `onProgress`: `(index: number, percent: number) => void` (Per-item progress callback; fires only for successful items)
+  - `concurrency`: `number` (Maximum concurrent conversions; integer 1–64. Default: `4`)
+  - `onProgress`: `(index: number, percent: number) => void` (Per-item progress callback; sub-100 may fire for failing items, `100` only on success)
   - `decoder`: `IHeicDecoder` (Optional. When provided, the same instance is shared by all concurrent conversions and must be safe for concurrent `decode()` calls; the library never frees an injected decoder; `reuseDecoders` is ignored)
   - `continueOnError`: `boolean` (Return per-item `{ index, ok, result | error }` entries instead of rejecting on the first failure. Default: `false`)
   - `reuseDecoders`: `boolean` (Hand each batch runner one pooled `LibheifDecoder` reused across items — amortizes WASM init for large batches while keeping exclusive use. Ignored when `decoder` is set or `nativeDecode: true`. Default: `false`)
@@ -554,22 +554,22 @@ Converts multiple HEIC images with bounded concurrency. Results are returned in 
 
 Converts a HEIC image inside a Web Worker. The worker script must implement the message protocol shown in [Usage section 13](#13-web-worker-conversion). Browser-only; rejects in Node.js.
 
-- **`input`**: `Blob | File | ArrayBuffer | Uint8Array`
+- **`input`**: `Blob` (including `File`), `ArrayBuffer`, or any `ArrayBufferView` (`Uint8Array`, `DataView`, …)
 - **`options`**: `WorkerConvertOptions` — same as `ConvertOptions` but without `decoder` (cannot be structured-cloned; passing one rejects with `invalid_input`), plus:
   - `workerUrl`: `string | URL` (URL of the worker script; should be a compile-time constant)
   - `workerType`: `'classic' | 'module'` (Worker script type. Default: `'classic'`; use `'module'` for scripts with ES imports)
   - `timeoutMs`: `number` (Maximum wait for the result in milliseconds, including time spent queued. Finite, ≥ 0; `0` disables. Default: `60000`)
-  - `maxConcurrentWorkers`: `number` (Positive integer. Concurrent workers per `workerUrl` + type; extra calls queue. Default: `navigator.hardwareConcurrency` clamped to 1–8)
+  - `maxConcurrentWorkers`: `number` (Integer 1–64. Concurrent workers per `workerUrl` + type; extra calls queue. Default: `navigator.hardwareConcurrency` clamped to 1–8)
 - **Returns**: `Promise<Blob>` — or `Promise<string>` / `Promise<ArrayBuffer>` with the typed `output` overloads. Aborting via `signal` terminates the worker immediately.
 
 ### `convertManyInWorker(inputs, options)`
 
 Converts multiple HEIC images, each inside a Web Worker, with `convertMany` semantics (input order, `batch_item_failed` aggregation, `continueOnError` per-item results). Browser-only; rejects in Node.js.
 
-- **`inputs`**: `Array<Blob | File | ArrayBuffer | Uint8Array>`
+- **`inputs`**: `Array<Blob (incl. File) | ArrayBuffer | ArrayBufferView>`
 - **`options`**: `WorkerBatchOptions` — same as `convertHeicInWorker`'s `WorkerConvertOptions` (including `output`, `crop`, `preserveExif`, `signal`), except `onProgress` uses the batch signature below; plus:
   - `onProgress`: `(index: number, percent: number) => void` (Per-item progress callback)
-  - `maxConcurrentWorkers`: `number` (Positive integer. Real concurrency — each in-flight item occupies one semaphore slot. Default: `navigator.hardwareConcurrency` clamped to 1–8)
+  - `maxConcurrentWorkers`: `number` (Integer 1–64. Real concurrency — each in-flight item occupies one semaphore slot. Default: `navigator.hardwareConcurrency` clamped to 1–8)
   - `continueOnError`: `boolean` (Per-item `{ index, ok, result | error }` entries instead of rejecting on the first failure. Default: `false`)
 - **Returns**: `Promise<Blob[]>` — typed overloads mirror `convertMany` (`output` / `continueOnError` combinations)
 
@@ -597,7 +597,7 @@ All errors thrown by this library are `HeicConverterError` instances (`extends E
 | `invalid_resize` | all conversion APIs | `scale`/`maxWidth`/`maxHeight` not positive finite numbers, or target size exceeds 16384 px |
 | `invalid_format` | all conversion APIs | Unknown `to` value |
 | `invalid_crop` | all conversion APIs | `crop` with non-integer/non-positive dimensions, negative offsets, or a rectangle beyond the image's display size |
-| `invalid_concurrency` | all conversion APIs | `concurrency` (batch) or `maxConcurrentWorkers` (worker APIs) not a positive integer |
+| `invalid_concurrency` | all conversion APIs | `concurrency` (batch) or `maxConcurrentWorkers` (worker APIs) is not an integer between 1 and 64 |
 | `decoder_init_failed` | `convertHeic`, `convertMany` | WASM module could not be loaded (missing asset, CSP block) |
 | `decode_failed` | `convertHeic`, `convertMany` | Invalid/corrupt HEIC bytes |
 | `unsupported_environment` | `convertHeic`, `convertMany` | No canvas APIs (e.g. Node.js); the worker APIs reject with `worker_unsupported` there instead. Decode raw RGBA via `LibheifDecoder` |

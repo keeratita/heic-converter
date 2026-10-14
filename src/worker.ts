@@ -7,10 +7,10 @@ import type {
 } from './types';
 import { Messages } from './messages/core';
 import { WorkerMessages } from './messages/worker';
-import { clampPercent } from './progress';
+import { clampPercent, progressCallbackFor, progressGateFor } from './progress';
 import { HeicConverterError } from './errors';
 import { runBoundedBatch } from './batch';
-import { validateConvertOptions, validateContinueOnError } from './validate';
+import { validateBatchOptions, validateConvertOptions, MAX_BATCH_CONCURRENCY } from './validate';
 
 /**
  * Worker-only option validators live here, not in `./validate`: validate.ts is
@@ -18,10 +18,15 @@ import { validateConvertOptions, validateContinueOnError } from './validate';
  * that text into the eager chunk. Same call sites, same error codes.
  */
 
-/** @throws `invalid_concurrency` for a non-positive-integer maxConcurrentWorkers. */
+/** @throws `invalid_concurrency` for a maxConcurrentWorkers outside 1..MAX_BATCH_CONCURRENCY. */
 function validateMaxConcurrentWorkers(maxConcurrentWorkers: unknown): void {
-  if (maxConcurrentWorkers !== undefined && (!Number.isInteger(maxConcurrentWorkers) || (maxConcurrentWorkers as number) < 1)) {
-    throw new HeicConverterError('invalid_concurrency', WorkerMessages.MaxConcurrentWorkersInvalid(maxConcurrentWorkers));
+  if (
+    maxConcurrentWorkers !== undefined &&
+    (!Number.isInteger(maxConcurrentWorkers) ||
+      (maxConcurrentWorkers as number) < 1 ||
+      (maxConcurrentWorkers as number) > MAX_BATCH_CONCURRENCY)
+  ) {
+    throw new HeicConverterError('invalid_concurrency', WorkerMessages.MaxConcurrentWorkersInvalid(maxConcurrentWorkers, MAX_BATCH_CONCURRENCY));
   }
 }
 
@@ -59,7 +64,9 @@ export interface WorkerConvertOptions extends Omit<ConvertOptions, 'decoder'> {
    * Upper bound on simultaneously live workers for this worker script.
    * Calls beyond the bound queue until a slot frees, which keeps bulk
    * conversions (`inputs.map(i => convertHeicInWorker(i, …))`) from
-   * exhausting memory or the browser's worker limit.
+   * exhausting memory or the browser's worker limit. Must be an integer
+   * from 1 to `64` (each worker is a full WASM boot with its own heap, so
+   * an unbounded value is a page-taking-down footgun, not capacity).
    * Defaults to `navigator.hardwareConcurrency` clamped to 1–8.
    */
   maxConcurrentWorkers?: number;
@@ -101,6 +108,10 @@ interface ReceivedStats {
   unknownType?: string;
   /** Replies ignored for not echoing the current request id (see `CorrelatedMessage`). */
   staleResults?: number;
+  /** Progress messages ignored for not echoing the current request id — a
+   *  misbehaving script can stream stale percentages while staying silent on
+   *  the live request, which would otherwise read as a simply-silent worker. */
+  staleProgress?: number;
 }
 
 function defaultMaxWorkers(): number {
@@ -231,14 +242,6 @@ function reserveWorkerSlot(
   return release;
 }
 
-function toProgressCallbackError(error: unknown): HeicConverterError {
-  return new HeicConverterError(
-    'progress_callback_failed',
-    Messages.ProgressCallbackThrew(error instanceof Error ? error.message : String(error)),
-    { cause: error }
-  );
-}
-
 /** @internal Semaphore unit-test hooks; not part of the public API. */
 export const __semaphoreTestHooks = {
   reserveWorkerSlot,
@@ -302,6 +305,10 @@ export function convertHeicInWorker<S extends OutputShape = 'blob'>(
 
     const stats: ReceivedStats = { progressMessages: 0 };
     const requestId = nextRequestId++;
+    // One shared-gate instance per lease: identical clamp/withhold/record
+    // semantics as the in-process path, and the identical "non-function is
+    // absent" policy (progressGateFor, see src/progress.ts).
+    const gate = progressGateFor(options.onProgress);
     let worker: Worker | undefined;
     let settled = false;
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -356,6 +363,7 @@ export function convertHeicInWorker<S extends OutputShape = 'blob'>(
               lastPercent: stats.lastPercent,
               unknownType: stats.unknownType,
               staleResults: stats.staleResults,
+              staleProgress: stats.staleProgress,
               adopted: adoptedLease,
               workerUrl: options.workerUrl,
               startedAt,
@@ -370,7 +378,11 @@ export function convertHeicInWorker<S extends OutputShape = 'blob'>(
       const message = event.data as Partial<WorkerMessage> | undefined;
       if (message?.type === 'progress') {
         if (message.id !== requestId) {
-          return; // stale progress from a previous lease on an adopted worker
+          // Stale progress from a previous lease on an adopted worker. Counted
+          // (like staleResults) so a script streaming stale percentages is
+          // distinguishable from one that went genuinely silent.
+          stats.staleProgress = (stats.staleProgress ?? 0) + 1;
+          return;
         }
         stats.progressMessages += 1;
         const normalized = clampPercent(message.percent);
@@ -378,12 +390,14 @@ export function convertHeicInWorker<S extends OutputShape = 'blob'>(
         if (normalized >= 100) {
           return; // 100% is emitted on success only
         }
-        try {
-          options.onProgress?.(normalized);
-        } catch (error) {
-          // A throwing progress callback must not leak the worker.
+        gate?.report(normalized);
+        const hostError = gate?.pendingError();
+        if (hostError) {
+          // A throwing progress callback must not leak the worker. The gate
+          // records instead of throwing (shared contract with the in-process
+          // path); this transport's timing policy is reject-and-terminate.
           cleanup();
-          reject(toProgressCallbackError(error));
+          reject(hostError);
         }
         return;
       }
@@ -407,9 +421,9 @@ export function convertHeicInWorker<S extends OutputShape = 'blob'>(
       cleanup(clean);
       if (clean) {
         try {
-          options.onProgress?.(100);
+          gate?.complete(); // emits the withheld 100% (worker-side counterpart)
         } catch (error) {
-          reject(toProgressCallbackError(error));
+          reject(error);
           return;
         }
         resolve(message.blob as ConvertResult<S>);
@@ -524,7 +538,9 @@ export function convertHeicInWorker<S extends OutputShape = 'blob'>(
 export interface WorkerBatchOptions extends Omit<WorkerConvertOptions, 'onProgress'> {
   /**
    * Per-item progress callback: receives the 0-based item index and its
-   * progress percentage (normalized 0–100). Fires only for successful items.
+   * progress percentage (normalized 0–100). Values below 100 may also be
+   * reported for items that ultimately fail; the 100% event fires only for
+   * items that succeed.
    */
   onProgress?: (index: number, percent: number) => void;
 
@@ -574,26 +590,28 @@ export async function convertManyInWorker<S extends OutputShape = 'blob'>(
     throw new HeicConverterError('invalid_input', WorkerMessages.WorkerDecoderUnsupported);
   }
   // Same up-front shared validation as convertMany: option typos surface their
-  // own code on the main thread, not stringified worker_failed.
+  // own code on the main thread, not stringified worker_failed. Batch knobs
+  // go through validateBatchOptions so both batch entry points enforce the
+  // same rules (a knob registered on one side only is the drift this shared
+  // function exists to prevent).
   validateConvertOptions(options);
-  validateContinueOnError(options?.continueOnError);
-  validateMaxConcurrentWorkers(options?.maxConcurrentWorkers);
-  validateTimeoutMs(options?.timeoutMs);
+  validateBatchOptions(options);
+  validateMaxConcurrentWorkers(options.maxConcurrentWorkers);
+  validateTimeoutMs(options.timeoutMs);
 
   // Batch-only knobs stay out of the per-item worker options.
-  /* v8 ignore next 1 -- options is required by every overload; omitting it throws at the decoder check above */
-  const { onProgress, continueOnError: _continueOnError, ...perItemOptions } = options ?? {};
+  const { onProgress, continueOnError: _continueOnError, ...perItemOptions } = options;
+  // Same "non-function is absent" policy as convertMany (progressCallbackFor).
+  const hostProgress = progressCallbackFor(onProgress);
 
   return runBoundedBatch<ConvertResult<S>>(
     inputs,
-    toRunnerConcurrency(options?.maxConcurrentWorkers),
+    toRunnerConcurrency(options.maxConcurrentWorkers),
     (input, index) =>
       convertHeicInWorker<S>(input as HeicInput, {
         ...perItemOptions,
-        ...(onProgress !== undefined
-          ? { onProgress: (percent: number): void => onProgress(index, percent) }
-          : {}),
+        ...(hostProgress ? { onProgress: (percent: number): void => hostProgress(index, percent) } : {}),
       }),
-    { continueOnError: options?.continueOnError === true, signal: options?.signal }
+    { continueOnError: options.continueOnError === true, signal: options.signal }
   ) as Promise<ConvertResult<S>[] | ConvertItemResult<ConvertResult<S>>[]>;
 }

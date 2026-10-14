@@ -26,7 +26,28 @@ jobs:
         node-version-file: '.nvmrc' # single source of truth for the dev/CI runtime
         cache: 'npm'
 
-    - name: Install Dependencies
+    # Install twice, in the right order: the first pass (--ignore-scripts) puts
+    # files on disk without executing anything, so the allowlist verdict is
+    # reached BEFORE any package's install script has run — which `npm ci`
+    # followed by the gate could only ever report on, not prevent.
+    - name: Install Dependencies (scripts deferred)
+      run: npm ci --ignore-scripts
+
+    # Fails if a dev dependency started running code at install time, or if an
+    # allowlisted one changed version without being re-reviewed. Authoritative
+    # list: build-scripts/install-scripts.json (today: esbuild, fsevents). Runs
+    # while the tree is still --ignore-scripts: the verdict precedes execution.
+    - name: Verify Install-Script Allowlist
+      run: npm run check:scripts
+
+    # Both gates are pure-node scripts (no node_modules needed), so they sit
+    # between the two installs: a swapped/mismatched WASM pair fails before the
+    # second `npm ci` and lint are ever paid for.
+    - name: Verify WASM Artifacts (pinned hashes + CSP scan)
+      run: npm run verify:wasm
+
+    - name: Install Dependencies (run allowlisted install scripts)
+      # Same lockfile the gate just vetted; links esbuild's binary etc.
       run: npm ci
 
     # Only the husky pre-commit hook ran the linter, and `--no-verify` skips it:
@@ -34,15 +55,6 @@ jobs:
     # no husky installed.
     - name: Lint
       run: npm run lint
-
-    # Fails if a dev dependency started running code at install time, or if an
-    # allowlisted one changed version without being re-reviewed. Authoritative
-    # list: build-scripts/install-scripts.json (today: esbuild, fsevents).
-    - name: Verify Install-Script Allowlist
-      run: npm run check:scripts
-
-    - name: Verify WASM Artifacts (pinned hashes + CSP scan)
-      run: npm run verify:wasm
 
     # Tests are excluded from tsconfig.json, so they need their own project —
     # without this, type errors in test/unit/** (wrong option names, dead
@@ -75,3 +87,67 @@ jobs:
 
     - name: Run Browser E2E Tests (CSP Sandbox + GitHub Pages Demo)
       run: node test/browser/test-playwright.mjs
+
+  # The committed WASM+glue pair is only as trustworthy as the sources that
+  # produced it. `verify:wasm` above compares artifacts against
+  # wasm-artifacts.json — but that manifest lives in the same PR, so swapping
+  # the pair and running `npm run wasm:hashes` alone would pass it. This job
+  # rebuilds the pair from the pinned submodules inside Docker (fresh runner,
+  # no build cache) and fails when the rebuild does not produce the committed
+  # hashes. It runs only when a diff touches the WASM inputs or outputs, since
+  # a full compile is expensive; CODEOWNERS puts a second pair of eyes on the
+  # same paths. No `npm ci` here: the build needs only bash, git, and Docker.
+  wasm-provenance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        submodules: true # the pinned libheif/libde265 sources
+        fetch-depth: 0 # base diff for the change detector below
+        persist-credentials: false
+
+    - name: Detect WASM-relevant changes
+      id: changed
+      env:
+        BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+      run: |
+        # git push events give `before`; PR events give the base sha. An empty
+        # BASE (force-push/new branch) errs conservative: rebuild anyway.
+        if [ -z "${BASE}" ] || ! git cat-file -e "${BASE}^{commit}" 2>/dev/null; then
+          echo 'changed=true' >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        if git diff --name-only "$BASE" "$GITHUB_SHA" -- \
+            src/wasm/public/heic-decoder.wasm \
+            src/wasm/wrapper/heic-decoder.js \
+            build-scripts/wasm-artifacts.json \
+            build-scripts/build-wasm.sh \
+            build-scripts/patch-libheif.py \
+            build-wasm/wrapper/main.cpp \
+            build-wasm/src/libheif \
+            build-wasm/src/libde265 \
+            .gitmodules | grep -q .; then
+          echo 'changed=true' >> "$GITHUB_OUTPUT"
+        else
+          echo 'changed=false' >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Rebuild WASM from pinned sources (Docker)
+      if: steps.changed.outputs.changed == 'true'
+      run: npm run build:wasm
+
+    - name: Verify rebuild matches the committed artifacts
+      if: steps.changed.outputs.changed == 'true'
+      # One gate implementation, two call sites: this is the exact check
+      # `npm run verify:wasm` runs (pinned SHA-256s + the glue eval/new-
+      # Function scan), now against the files build:wasm just rebuilt into
+      # src/wasm/ — tampered pinned sources fail the CSP scan too.
+      run: |
+        if ! node build-scripts/verify-wasm-artifacts.mjs; then
+          echo "::error::the committed pair does not come from the pinned sources/flags. Rebuild locally (npm run build:wasm) and commit what Docker actually produced; if the sources changed, bump the pins and get the rebuild reviewed."
+          exit 1
+        fi

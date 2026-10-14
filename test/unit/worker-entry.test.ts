@@ -28,7 +28,10 @@ beforeEach(() => {
 
 describe('convertHeicInWorker / convertManyInWorker pass the deferred module through', () => {
   it('forwards input and options unchanged and resolves with the module result', async () => {
-    const result = { blob: decodedBlob, width: 10, height: 20, format: 'jpeg' };
+    // Mock payloads must carry the real API shape (ConvertResult for OPTIONS'
+    // output), not a phantom — a wrapper that "passed through" a shape the
+    // implementation never returns would still have looked green here.
+    const result = new ArrayBuffer(3); // OPTIONS.output === 'arrayBuffer'
     convertHeicSpy.mockResolvedValue(result);
 
     const actual = await convertHeicInWorker(INPUT, OPTIONS);
@@ -55,7 +58,11 @@ describe('convertHeicInWorker / convertManyInWorker pass the deferred module thr
   });
 
   it('forwards the batch inputs and options unchanged and resolves with the module result', async () => {
-    const results = [{ ok: true, result: { blob: decodedBlob } }, { ok: false, error: 'x' }];
+    // Real ContinueOnError result entries ({index, ok, result|error}).
+    const results = [
+      { index: 0, ok: true as const, result: decodedBlob },
+      { index: 1, ok: false as const, error: new Error('x') },
+    ];
     convertManySpy.mockResolvedValue(results);
     const inputs = [INPUT, INPUT];
     const batchOptions = { workerUrl: '/worker.js', maxConcurrentWorkers: 2, continueOnError: true as const };

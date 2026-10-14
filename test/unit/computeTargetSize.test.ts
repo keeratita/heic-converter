@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { computeTargetSize, validateResize } from '../../src/render/canvas';
+import { computeTargetSize } from '../../src/render/canvas';
+import { validateResize } from '../../src/validate';
 
 describe('computeTargetSize', () => {
   it('returns the original size when no resize options are given', () => {

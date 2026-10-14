@@ -7,9 +7,9 @@ import {
   blobToBase64,
 } from './render/canvas';
 import { Messages } from './messages/core';
-import { clampPercent } from './progress';
+import { progressCallbackFor, progressGateFor } from './progress';
 import { HeicConverterError } from './errors';
-import { runBoundedBatch, runnerCountFor } from './batch';
+import { runBoundedBatch } from './batch';
 import {
   throwIfAborted,
   validateBatchOptions,
@@ -70,11 +70,12 @@ function loadWorkerModule(): Promise<typeof import('./worker')> {
  *
  * The worker script is user-provided and must handle the following message
  * protocol (types are exported as {@link WorkerProgressMessage} and
- * {@link WorkerResultMessage}):
+ * {@link WorkerResultMessage}); the canonical reference implementation is
+ * `docs/worker.js`, and this example is kept byte-equal to it (modulo the
+ * import specifier) by `test/unit/docs-sync.test.ts`:
  *
  * ```js
- * // converter.worker.js — keep in sync with docs/worker.js,
- * // test/browser/worker.js, and this JSDoc example.
+ * // converter.worker.js
  * import { convertHeic } from '@keeratita/heic-converter';
  *
  * self.onmessage = async (event) => {
@@ -84,7 +85,11 @@ function loadWorkerModule(): Promise<typeof import('./worker')> {
  *       ...options,
  *       onProgress: (percent) => self.postMessage({ id, type: 'progress', percent }),
  *     });
- *     self.postMessage({ id, type: 'result', ok: true, blob });
+ *     // With output: 'arrayBuffer' the payload is zero-copy via a transfer list.
+ *     self.postMessage(
+ *       { id, type: 'result', ok: true, blob },
+ *       blob instanceof ArrayBuffer ? [blob] : []
+ *     );
  *   } catch (error) {
  *     self.postMessage({ id, type: 'result', ok: false, error: error?.stack ?? error?.message ?? String(error) });
  *   }
@@ -117,7 +122,8 @@ function loadWorkerModule(): Promise<typeof import('./worker')> {
  * - Workers are pooled per `workerUrl`, so concurrent callers to the same URL
  *   share one bounded set rather than spawning unbounded workers.
  *
- * @param input HEIC image as a Blob, File, ArrayBuffer, or Uint8Array.
+ * @param input HEIC image as a Blob (incl. File), ArrayBuffer, or ArrayBufferView
+ *   (typed array or DataView).
  * @param options Conversion options plus the worker script URL.
  * @returns The converted image as a Blob, data URL string, or ArrayBuffer
  *   depending on `options.output` (default Blob).
@@ -156,7 +162,7 @@ export function convertHeicInWorker<S extends OutputShape = 'blob'>(
  * call below erases the union, so drift here is a public typing bug that `tsc`,
  * the unit tests and the bundle guard all fail to catch.
  *
- * @param inputs HEIC images as Blobs, Files, ArrayBuffers, or Uint8Arrays.
+ * @param inputs HEIC images as Blobs (incl. Files), ArrayBuffers, or ArrayBufferViews.
  * @param options Batch + worker conversion options (see {@link WorkerBatchOptions}).
  * @returns The converted images in input order, or per-item result entries
  *   when `continueOnError: true`.
@@ -202,7 +208,7 @@ export function freeSharedDecoder(): void {
 
 /**
  * Converts a Blob to the requested output representation. The base64 path
- * reuses the canvas module's FileReader/btoa helper.
+ * reuses the canvas module's `blobToBase64` (arrayBuffer + btoa).
  */
 async function shapeOutput<S extends OutputShape>(blob: Blob, output: S): Promise<ConvertResult<S>> {
   if (output === 'dataUrl') {
@@ -216,7 +222,10 @@ async function shapeOutput<S extends OutputShape>(blob: Blob, output: S): Promis
 
 /**
  * Resolves any supported input form to a Uint8Array, including cross-realm
- * Blob-likes (detected via `arrayBuffer()`) and other ArrayBufferViews.
+ * Blob-likes (detected via `arrayBuffer()` — a Blob from another realm fails
+ * `instanceof Blob`) and every ArrayBufferView (DataView, non-Uint8 typed
+ * arrays, SharedArrayBuffer-backed views), which the public `HeicInput` type
+ * declares.
  */
 async function resolveInputBytes(input: HeicInput): Promise<Uint8Array> {
   if (input instanceof Uint8Array) {
@@ -248,68 +257,6 @@ async function resolveInputBytes(input: HeicInput): Promise<Uint8Array> {
     'invalid_input',
     Messages.UnsupportedInputType(Object.prototype.toString.call(input))
   );
-}
-
-/**
- * Host onProgress wrapper enforcing the callback contract on every path:
- * values are clamped to 0-100, a throwing host callback never breaks the
- * pipeline (it is recorded and surfaced as `progress_callback_failed`), and
- * 100% is withheld until `complete()` confirms success — a failed conversion
- * never reports completion.
- */
-function createProgressReporter(
-  onProgress?: (percent: number) => void
-): { report: (percent: number) => void; complete: () => void } | undefined {
-  // Non-function values (e.g. null) are treated as absent.
-  if (typeof onProgress !== 'function') {
-    return undefined;
-  }
-  let done = false;
-  let hostError: unknown;
-  const invokeHost = (percent: number): void => {
-    try {
-      onProgress(percent);
-    } catch (error) {
-      throw new HeicConverterError(
-        'progress_callback_failed',
-        Messages.ProgressCallbackThrew(error instanceof Error ? error.message : String(error)),
-        { cause: error }
-      );
-    }
-  };
-  return {
-    report: (percent: number): void => {
-      if (done) {
-        return;
-      }
-      const value = clampPercent(percent);
-      if (value >= 100) {
-        return; // withheld; emitted by complete()
-      }
-      try {
-        onProgress(value);
-      } catch (error) {
-        hostError = hostError ?? error;
-      }
-    },
-    complete: (): void => {
-      /* v8 ignore if -- single call site, fresh wrapper per conversion */
-      if (done) {
-        return;
-      }
-      done = true;
-      if (hostError !== undefined) {
-        throw new HeicConverterError(
-          'progress_callback_failed',
-          Messages.ProgressCallbackThrew(
-            hostError instanceof Error ? hostError.message : String(hostError)
-          ),
-          { cause: hostError }
-        );
-      }
-      invokeHost(100);
-    },
-  };
 }
 
 /**
@@ -346,7 +293,8 @@ function warnNativeChunkLoad(reason: string): void {
  * Converts HEIC image data to a standard web format (JPEG, PNG, WebP, AVIF,
  * or SVG).
  *
- * @param input HEIC image as a Blob, File, ArrayBuffer, or Uint8Array.
+ * @param input HEIC image as a Blob (incl. File), ArrayBuffer, or ArrayBufferView
+ *   (typed array or DataView).
  * @param options Conversion configuration options (see {@link ConvertOptions}).
  * @returns The converted image as a Blob, data URL string, or ArrayBuffer
  *   depending on `options.output` (default Blob).
@@ -377,10 +325,11 @@ export async function convertHeic<S extends OutputShape = 'blob'>(
   const signal = options?.signal;
   throwIfAborted(signal);
 
-  const resizeOptions =
-    options?.maxWidth !== undefined || options?.maxHeight !== undefined || options?.scale !== undefined
-      ? options
-      : undefined;
+  // The full options object doubles as the resize carrier (`ConvertOptions
+  // extends ResizeOptions`): validateResize/computeTargetSize no-op when no
+  // knob is set, so gating on "does any knob exist" in a second place here
+  // would only create a drift opportunity.
+  const resizeOptions = options;
 
   // 2. Resolve input to a Uint8Array
   const buffer = await resolveInputBytes(input);
@@ -435,7 +384,7 @@ export async function convertHeic<S extends OutputShape = 'blob'>(
   try {
     // 4. Initialize and decode. A failed native attempt degrades
     // transparently: retry once with libheif, the reference decoder.
-    const progress = createProgressReporter(options?.onProgress);
+    const progress = progressGateFor(options?.onProgress);
     const initAndDecode = async (strategy: IHeicDecoder): Promise<DecodedImage> => {
       try {
         await strategy.initialize();
@@ -524,44 +473,26 @@ export async function convertHeic<S extends OutputShape = 'blob'>(
  * `convertMany` batch (`reuseDecoders: true`). Each in-use instance belongs
  * to exactly one item at a time — the exclusive-use invariant of the
  * per-conversion path is preserved; only the creation (WASM init/free) cost
- * is amortized. `dispose()` is safe to call while items are still running:
- * leased instances are freed when they come back.
+ * is amortized. No capacity accounting: the pool exists per batch, every
+ * runner holds at most one lease, so `acquire()` can never be starved — a
+ * bounded pool with a waiter queue could only ever park on itself. An
+ * over-subscribed runner count (a broken invariant elsewhere) therefore
+ * creates an extra instance instead of deadlocking. `dispose()` is safe to
+ * call while items are still running: leased instances are freed when they
+ * come back.
  */
 class DecoderPool {
-  private readonly max: number;
   private readonly idle: LibheifDecoder[] = [];
-  private readonly waiters: Array<(decoder: LibheifDecoder) => void> = [];
-  private leasedCount = 0;
   private disposed = false;
 
-  constructor(max: number) {
-    this.max = Math.max(1, max);
-  }
-
-  /**
-   * Callers must not acquire after `dispose()`: the batch runner loop
-   * guarantees this (no new items are claimed once the batch settles). Parking
-   * below would deadlock, and it stays unreachable only while the pool bound
-   * equals the runner count — both sides call `runnerCountFor()` in batch.ts.
-   */
-  async acquire(): Promise<LibheifDecoder> {
-    const idle = this.idle.pop();
-    if (idle) {
-      return idle;
-    }
-    /* v8 ignore else -- pool bound === runner count (both call runnerCountFor); waiting is the deadlock guard */
-    if (this.leasedCount < this.max) {
-      this.leasedCount += 1;
-      return new LibheifDecoder();
-    }
-    /* v8 ignore next 1 -- waiters cannot form; see acquire() */
-    return new Promise<LibheifDecoder>((resolve) => this.waiters.push(resolve));
+  acquire(): LibheifDecoder {
+    return this.idle.pop() ?? new LibheifDecoder();
   }
 
   release(decoder: LibheifDecoder): void {
-    if (this.disposed) {
-      // Pool is dead: free instead of re-parking. `leasedCount` is
-      // intentionally frozen — it no longer bounds anything.
+    // A faulted instance's heap is unusable: free it instead of parking, so
+    // the next item gets a fresh module rather than corrupted memory.
+    if (this.disposed || isDecoderPoisoned(decoder)) {
       try {
         decoder.free();
       } catch {
@@ -569,31 +500,7 @@ class DecoderPool {
       }
       return;
     }
-    if (isDecoderPoisoned(decoder)) {
-      // Its module faulted, so the heap is unusable: parking it would corrupt
-      // the next item. Give the slot back rather than shrink the pool — once
-      // every instance had faulted, a frozen count would park waiters forever.
-      this.leasedCount -= 1;
-      try {
-        decoder.free();
-      } catch {
-        // Best-effort cleanup.
-      }
-      const waiter = this.waiters.shift();
-      /* v8 ignore if -- waiters cannot form (pool bound === runner count) */
-      if (waiter) {
-        this.leasedCount += 1;
-        waiter(new LibheifDecoder());
-      }
-      return;
-    }
-    const waiter = this.waiters.shift();
-    /* v8 ignore if -- waiters cannot form (pool bound === runner count) */
-    if (waiter) {
-      waiter(decoder);
-    } else {
-      this.idle.push(decoder);
-    }
+    this.idle.push(decoder);
   }
 
   dispose(): void {
@@ -606,12 +513,7 @@ class DecoderPool {
       }
     }
     this.idle.length = 0;
-    // Defensive: never leave an acquire() parked forever. Handed-out
-    // instances are freed by release() on the disposed branch.
-    for (const resolve of this.waiters.splice(0)) {
-      /* v8 ignore next 1 -- waiters cannot form; guards a future invariant break */
-      resolve(new LibheifDecoder());
-    }
+    // Handed-out instances are freed by release() on the disposed branch.
   }
 }
 
@@ -629,7 +531,7 @@ class DecoderPool {
  * (a mid-batch abort completes not-yet-started items with `aborted`
  * entries instead of launching them).
  *
- * @param inputs HEIC images as Blobs, Files, ArrayBuffers, or Uint8Arrays.
+ * @param inputs HEIC images as Blobs (incl. Files), ArrayBuffers, or ArrayBufferViews.
  * @param options Batch conversion options (see {@link ConvertManyOptions}).
  * @returns The converted images in input order: results array by default,
  *   or per-item result entries when `continueOnError: true`.
@@ -673,27 +575,28 @@ export async function convertMany<S extends OutputShape = 'blob'>(
     reuseDecoders,
     ...itemOptions
   } = options ?? {};
+  const hostProgress = progressCallbackFor(onProgress);
 
   // The pool leases LibheifDecoder instances — leasing one into a batch that is
   // actually taking the native path would silently defeat nativeDecode. Batches
   // whose opt-in is policy-pinned to libheif still pool (see nativeDecodeEligible).
   const usePool = reuseDecoders === true && options?.decoder === undefined && !nativeDecodeEligible(options);
-  const pool = usePool ? new DecoderPool(runnerCountFor(concurrency, inputs.length)) : null;
+  const pool = usePool ? new DecoderPool() : null;
 
   try {
     return (await runBoundedBatch<ConvertResult<S>>(
       inputs,
       concurrency,
       async (input, index) => {
-        const leased = pool ? await pool.acquire() : null;
+        const leased = pool ? pool.acquire() : null;
         try {
           return await convertHeic<S>(input as HeicInput, {
             ...itemOptions,
             ...(leased ? { decoder: leased } : {}),
-            onProgress:
-              onProgress !== undefined
-                ? (percent: number) => onProgress(index, percent)
-                : undefined,
+            // `hostProgress` is the one typeof decision for the whole batch
+            // (progressCallbackFor: non-function counts as absent), bound per
+            // item to the documented (index, percent) signature.
+            onProgress: hostProgress ? (percent: number) => hostProgress(index, percent) : undefined,
           });
         } finally {
           if (leased) {

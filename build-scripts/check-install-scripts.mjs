@@ -8,7 +8,11 @@
 // its postinstall to link the platform binary — so instead the set of packages
 // that declare install scripts is pinned in build-scripts/install-scripts.json
 // and CI fails when it changes. A new entry means a real dependency was added;
-// review it, then `npm run check:scripts -- --write`.
+// review it, then `npm run check:scripts -- --write`. Provenance is part of the
+// verdict, not a note: a package whose `resolved` is not the public registry's
+// own tarball for that name (git/`file:`/link/foreign host/other-package path)
+// is never allowlisted, so an allowlisted name cannot be fed attacker bytes by
+// a hand-edited lockfile.
 
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -19,7 +23,36 @@ const ALLOWLIST = path.join(ROOT, 'build-scripts', 'install-scripts.json');
 const LOCKFILE = path.join(ROOT, 'package-lock.json');
 const INSTALL_SCRIPTS = ['preinstall', 'install', 'postinstall'];
 const SKIP = new Set(['.bin', '.package-lock.json', '.cache']);
-const REGISTRY_HOST = /^https?:\/\/[^/]*registry\.[^/]+\//i;
+// The hook label that drives the verdict: collectFromLockfile stamps it, and
+// both compare() and --write refuse to allowlist such entries. One name so a
+// rename cannot silently desync the stamp from the refusal.
+const NON_REGISTRY_DEP = 'non-registry-dep';
+
+// Exact origin, not a hostname shape: a loose `registry.` pattern lets
+// `https://registry.npmjs.org.evil.com/x.tgz` — or a plain-HTTP "registry" —
+// pass as the public registry, which is the one host the allowlist reviews
+// tarballs against. Anything else is a non-registry resolution.
+const REGISTRY_ORIGIN = 'https://registry.npmjs.org/';
+
+export function isRegistryUrl(resolved) {
+  return typeof resolved === 'string' && resolved.startsWith(REGISTRY_ORIGIN);
+}
+
+/**
+ * Registry *provenance*, not just registry *origin*: the canonical tarball
+ * layout is `<origin>/<name>/-/<tarball>.tgz`, and the name segment must equal
+ * the manifest's name. A hand-edited lockfile can otherwise point an allowlisted
+ * dependency (esbuild, say) at any other package's tarball on the real registry
+ * — or at a `git+ssh`/`file:` source — and slip through `compare()`, which only
+ * matches name and version. Anything this rejects is never allowlisted.
+ */
+export function isRegistryTarballFor(name, resolved) {
+  if (!isRegistryUrl(resolved)) {
+    return false;
+  }
+  // Registry URLs keep the scope verbatim: `@scope/pkg/-/pkg-1.0.0.tgz`.
+  return resolved.slice(REGISTRY_ORIGIN.length).startsWith(`${name}/-/`);
+}
 
 /**
  * Primary source: the committed lockfile, which is what `npm ci` installs and
@@ -44,8 +77,11 @@ export function collectFromLockfile(lock) {
       hooks.push('hasInstallScript');
     }
     const resolved = typeof entry.resolved === 'string' ? entry.resolved : '';
-    if (entry.link === true || entry.linked === true || (resolved && !REGISTRY_HOST.test(resolved))) {
-      hooks.push('non-registry-dep');
+    // Fail closed: a lockfile entry without `resolved` has no registry
+    // provenance to check — the root project is already skipped above, and
+    // every legitimately installed dependency carries a tarball URL.
+    if (entry.link === true || entry.linked === true || !isRegistryTarballFor(name, resolved)) {
+      hooks.push(NON_REGISTRY_DEP);
     }
     if (hooks.length) {
       found.push({ name, version: entry.version ?? 'unknown', hooks });
@@ -138,9 +174,12 @@ export function collectInstallScripts(nodeModulesDir) {
 
 /**
  * Flags install scripts that were never reviewed. The allowlist pins name *and*
- * version, because matching on name alone would let a malicious new release of
- * an already-reviewed package (esbuild, say) run arbitrary code at install time
- * without touching the file a reviewer looks at.
+ * version (`collectAll` reports distinct name@version pairs), because matching
+ * on name alone would let a malicious new release — or a nested duplicate at a
+ * second version — of an already-reviewed package (esbuild, say) run arbitrary
+ * code at install time without touching the file a reviewer looks at. When the
+ * same name legitimately installs at two versions, `--write` keeps only one
+ * (last wins) and the other stays flagged until a reviewer edits the allowlist.
  *
  * Entries in the allowlist that are no longer installed are *not* a failure:
  * optional dependencies are platform-specific (fsevents exists on macOS, not on
@@ -151,6 +190,16 @@ export function collectInstallScripts(nodeModulesDir) {
 export function compare(found, allowed) {
   const problems = [];
   for (const pkg of found) {
+    // Load-bearing, not decorative: an allowlisted name is worthless once its
+    // bytes come from somewhere else. git/`file:`/foreign-host resolutions and
+    // registry tarballs whose path belongs to a *different* package execute
+    // code `npm ci` never reviewed against the allowlist — never allowlist them.
+    if (pkg.hooks.includes(NON_REGISTRY_DEP)) {
+      problems.push(
+        `${pkg.name}@${pkg.version} resolves from a non-registry origin (git/file:/link, a foreign host, or a registry path belonging to another package) — non-registry install hooks are never allowlisted`
+      );
+      continue;
+    }
     if (!Object.prototype.hasOwnProperty.call(allowed, pkg.name)) {
       problems.push(`${pkg.name}@${pkg.version} declares ${pkg.hooks.join(', ')} but is not allowlisted`);
     } else if (allowed[pkg.name] !== pkg.version) {
@@ -164,16 +213,22 @@ export function compare(found, allowed) {
   return { problems, stale };
 }
 
-/** Lockfile + installed tree, merged by package name. */
+/**
+ * Lockfile + installed tree, merged by *name@version*. Keying on the version
+ * too is load-bearing: keying by name alone folds a nested duplicate of an
+ * allowlisted package (`vite/node_modules/left-pad@evil` beside the reviewed
+ * `left-pad@1.0.0`) into the allowlisted entry, so `compare()` never sees the
+ * unreviewed version — the exact npm-worm shape the gate exists to catch.
+ */
 export function collectAll(nodeModules) {
   const merged = new Map();
   const add = (pkg) => {
-    const existing = merged.get(pkg.name);
+    const key = `${pkg.name}@${pkg.version}`;
+    const existing = merged.get(key);
     if (existing) {
       existing.hooks = [...new Set([...existing.hooks, ...pkg.hooks])];
-      existing.version = existing.version === 'unknown' ? pkg.version : existing.version;
     } else {
-      merged.set(pkg.name, { ...pkg });
+      merged.set(key, { ...pkg });
     }
   };
   if (existsSync(LOCKFILE)) {
@@ -199,6 +254,15 @@ function main() {
   }
   const found = collectAll(nodeModules);
   if (process.argv.includes('--write')) {
+    // --write blesses the whole found set; refusing here keeps a tampered (or
+    // merely mis-installed) lockfile from being laundered into the allowlist.
+    const offenders = found.filter((pkg) => pkg.hooks.includes(NON_REGISTRY_DEP));
+    if (offenders.length) {
+      console.error(
+        `Refusing to --write with non-registry packages present: ${offenders.map((p) => `${p.name}@${p.version}`).join(', ')} — restore registry provenance (or remove them) first`
+      );
+      process.exit(1);
+    }
     const allow = Object.fromEntries(found.map((pkg) => [pkg.name, pkg.version]));
     writeFileSync(ALLOWLIST, `${JSON.stringify({ allow }, null, 2)}\n`);
     console.log(`Allowlisted ${found.length} package(s): ${Object.keys(allow).join(', ') || '(none)'}`);

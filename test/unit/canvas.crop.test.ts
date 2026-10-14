@@ -237,35 +237,20 @@ describe('renderAndEncode - Crop', () => {
   });
 
   it('crop applies to the SVG wrapper at crop dimensions', async () => {
-    const originalFileReader = global.FileReader;
-    global.FileReader = class {
-      result = 'data:image/png;base64,AAAA';
-      error = null;
-      readAsDataURL(): void {
-        setTimeout(() => this.onloadend?.(), 0);
-      }
-      onloadend?: () => void;
-      onerror?: () => void;
-    } as unknown as typeof FileReader;
-
     toBlobImpl = (callback, type) => {
       const target = createdCanvases[0];
       encodeDims.push({ w: target.width, h: target.height });
       callback(new Blob(['x'], { type: (type as string) ?? 'image/png' }));
     };
 
-    try {
-      const blob = await renderAndEncode(decodedImage(1600, 1200), 'svg', 0.92, undefined, true, {
-        x: 0,
-        y: 0,
-        width: 300,
-        height: 200,
-      });
-      expect(blob.type).toBe('image/svg+xml');
-      expect(encodeDims).toEqual([{ w: 300, h: 200 }]);
-      expect(mockCtx.setTransform).toHaveBeenCalledWith(1, 0, 0, 1, 0, 0);
-    } finally {
-      global.FileReader = originalFileReader;
-    }
+    const blob = await renderAndEncode(decodedImage(1600, 1200), 'svg', 0.92, undefined, true, {
+      x: 0,
+      y: 0,
+      width: 300,
+      height: 200,
+    });
+    expect(blob.type).toBe('image/svg+xml');
+    expect(encodeDims).toEqual([{ w: 300, h: 200 }]);
+    expect(mockCtx.setTransform).toHaveBeenCalledWith(1, 0, 0, 1, 0, 0);
   });
 });

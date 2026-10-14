@@ -45,7 +45,7 @@ describe('convertHeic - Decoder Lifecycle', () => {
       expect.objectContaining({ width: 2, height: 2 }),
       'svg',
       0.92,
-      undefined,
+      expect.objectContaining({ to: 'svg', decoder: injectedDecoder }),
       true,
       undefined,
     false);
@@ -195,7 +195,7 @@ describe('convertHeic - Decoder Lifecycle', () => {
         expect.objectContaining({ width: -1, height: -1 }),
         'jpeg',
         0.92,
-        undefined,
+        expect.objectContaining({ decoder: garbageDecoder }),
         true,
         undefined,
       false);

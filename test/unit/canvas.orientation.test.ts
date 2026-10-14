@@ -171,30 +171,15 @@ describe('renderAndEncode - Orientation', () => {
   });
 
   it('orientation applies to the SVG wrapper at display dimensions', async () => {
-    const originalFileReader = global.FileReader;
-    global.FileReader = class {
-      result = 'data:image/png;base64,AAAA';
-      error = null;
-      readAsDataURL(): void {
-        setTimeout(() => this.onloadend?.(), 0);
-      }
-      onloadend?: () => void;
-      onerror?: () => void;
-    } as unknown as typeof FileReader;
-
     toBlobImpl = (callback, type) => {
       const target = createdCanvases[0];
       encodeDims.push({ w: target.width, h: target.height });
       callback(new Blob(['x'], { type: (type as string) ?? 'image/png' }));
     };
 
-    try {
-      const blob = await renderAndEncode(decodedImage(1600, 1200, 6), 'svg', 0.92);
-      expect(blob.type).toBe('image/svg+xml');
-      expect(encodeDims).toEqual([{ w: 1200, h: 1600 }]);
-      expect(mockCtx.setTransform).toHaveBeenCalledWith(0, 1, -1, 0, 1200, 0);
-    } finally {
-      global.FileReader = originalFileReader;
-    }
+    const blob = await renderAndEncode(decodedImage(1600, 1200, 6), 'svg', 0.92);
+    expect(blob.type).toBe('image/svg+xml');
+    expect(encodeDims).toEqual([{ w: 1200, h: 1600 }]);
+    expect(mockCtx.setTransform).toHaveBeenCalledWith(0, 1, -1, 0, 1200, 0);
   });
 });

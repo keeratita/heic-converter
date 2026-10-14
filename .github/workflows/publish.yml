@@ -32,19 +32,27 @@ jobs:
         node-version-file: '.nvmrc' # single source of truth for the dev/CI runtime
         cache: 'npm'
 
-    - name: Install Dependencies
+    # Install scripts run only AFTER the allowlist gate has passed: the first
+    # pass lays files down with --ignore-scripts, the gate reads the lockfile +
+    # tree, and only then does the full `npm ci` execute the vetted scripts.
+    - name: Install Dependencies (scripts deferred)
+      run: npm ci --ignore-scripts
+
+    - name: Verify Install-Script Allowlist
+      run: npm run check:scripts
+
+    # Pure-node gate, no node_modules needed: a bad WASM pair fails before the
+    # second install and lint are paid for. Mirrors ci.yml.
+    - name: Verify WASM Artifacts (pinned hashes + CSP scan)
+      run: npm run verify:wasm
+
+    - name: Install Dependencies (run allowlisted install scripts)
       run: npm ci
 
     # Mirrors ci.yml: a release must not be able to publish bytes that CI would
     # have rejected (the husky hooks are not installed on a tag-push runner).
     - name: Lint
       run: npm run lint
-
-    - name: Verify Install-Script Allowlist
-      run: npm run check:scripts
-
-    - name: Verify WASM Artifacts (pinned hashes + CSP scan)
-      run: npm run verify:wasm
 
     - name: Typecheck Sources and Tests
       run: npm run typecheck

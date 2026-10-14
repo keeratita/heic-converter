@@ -99,7 +99,15 @@ export const SUPPORTED_FORMATS: readonly ImageFormat[] = [
 /** Default JPEG/WebP encoding quality used when `quality` is not provided. */
 export const DEFAULT_QUALITY = 0.92;
 
-export type HeicInput = Blob | File | ArrayBuffer | Uint8Array;
+/**
+ * Accepted input for every convert entry point. `ArrayBufferView` is a
+ * declared (tested) surface: DataView and non-Uint8 typed arrays are read as
+ * raw bytes (byteOffset/byteLength), including SharedArrayBuffer-backed
+ * views. Cross-realm Blob-likes (anything exposing `arrayBuffer()`, e.g. a
+ * Blob from another frame) are accepted at runtime even though `instanceof
+ * Blob` cannot see them.
+ */
+export type HeicInput = Blob | ArrayBuffer | ArrayBufferView;
 
 /**
  * How {@link convertHeic} returns the converted image.

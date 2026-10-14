@@ -1,5 +1,5 @@
 // Release automation (ESM). Run via `npm run release [patch|minor|major|current]`.
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import readline from 'node:readline';
 import { createRequire } from 'node:module';
 import path from 'node:path';
@@ -9,22 +9,42 @@ const require = createRequire(import.meta.url);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PKG_PATH = path.join(__dirname, '../package.json');
 
+// Git arguments are interpolated from repo-controlled strings (package.json
+// version, branch name). Everything git-facing therefore goes through
+// execFileSync — no shell, so `$()`, backticks, and `;` in a version or refname
+// are data, not commands. (A doctored `"version": "1.0.0$(touch$IFS/tmp/pwned)"`
+// passes lint/build/test and would otherwise execute on the maintainer's
+// machine at `npm run release current`.)
+function git(args) {
+  return execFileSync('git', args, { encoding: 'utf8' });
+}
+function gitInherit(args) {
+  execFileSync('git', args, { stdio: 'inherit' });
+}
+function npmInherit(args) {
+  execFileSync('npm', args, { stdio: 'inherit' });
+}
+function execDetail(err) {
+  const stderr = err.stderr ? err.stderr.toString().trim() : '';
+  return [err.message, stderr].filter(Boolean).join('\n');
+}
+
 // Check if git directory is clean
 try {
-  const status = execSync('git status --porcelain').toString().trim();
+  const status = git(['status', '--porcelain']).trim();
   if (status) {
     console.error('❌ Error: Git working directory is not clean. Please commit or stash changes first.');
     process.exit(1);
   }
 } catch (err) {
-  console.error('❌ Error checking git status:', err.message);
+  console.error('❌ Error checking git status:', execDetail(err));
   process.exit(1);
 }
 
 // Releasing from the wrong branch is unrecoverable once pushed: fail hard.
 let currentBranch = '';
 try {
-  currentBranch = execSync('git branch --show-current').toString().trim();
+  currentBranch = git(['branch', '--show-current']).trim();
 } catch {
   currentBranch = '';
 }
@@ -35,10 +55,11 @@ if (!currentBranch) {
   );
   process.exit(1);
 }
-
-function execDetail(err) {
-  const stderr = err.stderr ? err.stderr.toString().trim() : '';
-  return [err.message, stderr].filter(Boolean).join('\n');
+// execFileSync makes the refname inert, but an absurd branch name still should
+// not reach `git push origin …` (a leading `-` would read as a flag).
+if (!/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(currentBranch)) {
+  console.error(`❌ Error: Current branch name "${currentBranch}" is not a plain refname; refusing to push.`);
+  process.exit(1);
 }
 
 // Function to run the release process
@@ -46,18 +67,24 @@ function runRelease(type) {
   try {
     // 1. Run lint, build, and test first to make sure everything passes
     console.log('🔄 Running lint, build, and tests...');
-    execSync('npm run lint', { stdio: 'inherit' });
-    execSync('npm run build', { stdio: 'inherit' });
-    execSync('npm run test', { stdio: 'inherit' });
+    npmInherit(['run', 'lint']);
+    npmInherit(['run', 'build']);
+    npmInherit(['run', 'test']);
 
     if (type === 'current') {
-      // Get current version from package.json
+      // Get current version from package.json. `current` skips `npm version`,
+      // so nothing else validates the version string — do it here before it
+      // becomes a tag name.
       const pkg = require(PKG_PATH);
       const currentVersion = pkg.version;
+      if (typeof currentVersion !== 'string' || !/^\d+\.\d+\.\d+(-[\w.]+)?$/.test(currentVersion)) {
+        console.error(`❌ Error: package.json version "${currentVersion}" is not a plain semver string; refusing to tag.`);
+        process.exit(1);
+      }
       const tagName = `v${currentVersion}`;
 
       // Check if tag already exists
-      const tagExists = execSync(`git tag -l "${tagName}"`).toString().trim();
+      const tagExists = git(['tag', '-l', tagName]).trim();
       if (tagExists) {
         console.error(`❌ Error: Tag ${tagName} already exists!`);
         process.exit(1);
@@ -65,12 +92,12 @@ function runRelease(type) {
 
       // Create tag for current version
       console.log(`\n🔄 Creating tag ${tagName} for current version...`);
-      execSync(`git tag -a ${tagName} -m "chore(release): ${tagName}"`, { stdio: 'inherit' });
+      gitInherit(['tag', '-a', tagName, '-m', `chore(release): ${tagName}`]);
 
       // Push tag to remote
       console.log(`\n🔄 Pushing tag ${tagName} to remote...`);
       try {
-        execSync(`git push origin ${tagName}`, { stdio: 'inherit' });
+        gitInherit(['push', 'origin', tagName]);
       } catch (err) {
         console.error(`❌ Pushing tag ${tagName} failed:\n${execDetail(err)}`);
         console.error(
@@ -86,12 +113,12 @@ function runRelease(type) {
     } else {
       // 2. Bump version
       console.log(`\n🔄 Bumping version (${type})...`);
-      execSync(`npm version ${type} -m "chore(release): %s"`, { stdio: 'inherit' });
+      npmInherit(['version', type, '-m', 'chore(release): %s']);
 
       // 3. Push to git
       console.log(`\n🔄 Pushing commits and tags to remote (branch: ${currentBranch})...`);
       try {
-        execSync(`git push origin ${currentBranch} --follow-tags`, { stdio: 'inherit' });
+        gitInherit(['push', 'origin', currentBranch, '--follow-tags']);
       } catch (err) {
         console.error(`❌ Push failed:\n${execDetail(err)}`);
         console.error(

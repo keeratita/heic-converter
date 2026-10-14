@@ -25,21 +25,27 @@ describe('Messages', () => {
   describe('index.ts builders', () => {
     it('formats the core validation messages', () => {
       expect(Messages.QualityInvalid(2)).toContain('Quality must be a number between 0.0 and 1.0, got: 2');
-      expect(Messages.ApplyOrientationInvalid('yes')).toBe('applyOrientation must be a boolean, got: yes');
+      expect(Messages.BooleanOptionInvalid('applyOrientation', 'yes')).toBe(
+        'applyOrientation must be a boolean, got: yes'
+      );
       expect(Messages.UnsupportedInputType('[object Object]')).toContain('Got: [object Object]');
       expect(Messages.DecoderInitFailed('boom')).toContain('Failed to initialize HEIC decoder: boom');
       expect(Messages.DecoderInitFailed('boom')).toContain('wasm-unsafe-eval');
       expect(Messages.RenderEncodeFailed('png', 'oops')).toContain('as png: oops');
-      expect(Messages.ConcurrencyInvalid(0)).toContain('got: 0');
+      expect(Messages.ConcurrencyInvalid(0, 64)).toContain('between 1 and 64, got: 0');
       expect(Messages.InputsMustBeArray).toBe('Inputs must be an array of HEIC images');
       expect(Messages.ConvertManyItemFailed(2, 3, 'nope')).toBe(
         'Conversion of item 2 of 3 failed: nope'
       );
       expect(Messages.ConvertManyExtraFailures(4, 5)).toBe(' (4 of 5 items failed in total)');
       expect(Messages.ConvertManyOtherErrors(['a', 'b'])).toBe('; other errors: a | b');
-      expect(Messages.BatchItemProducedNoResult(2)).toBe('Item 2 produced no result');
-      expect(Messages.BatchItemProducedNoResult(undefined)).toBe('Item undefined produced no result');
-      expect(Messages.BatchEndedWithoutResult).toBe('Batch ended without a result');
+      // Reached only from v8-ignored dead tails in batch.ts, so pin them here.
+      expect(Messages.BatchItemProducedNoResult(1, 3)).toBe(
+        'Conversion of item 1 of 3 failed: item produced no result'
+      );
+      expect(Messages.BatchEndedWithoutSettling(4)).toBe(
+        'Batch ended without settling any of its 4 items'
+      );
     });
   });
 
@@ -49,7 +55,6 @@ describe('Messages', () => {
       expect(Messages.MaxWidthInvalid(-5)).toContain('maxWidth must be a positive finite number');
       expect(Messages.MaxHeightInvalid(Number.NaN)).toContain('maxHeight must be a positive finite number');
       expect(Messages.TargetSizeTooLarge(20000, 10, 16384)).toContain('16384');
-      expect(Messages.BlobToBase64Failed).toContain('base64');
       expect(Messages.BlobToBase64FailedWithCause('io')).toContain('io');
       expect(Messages.CanvasToBlobFailed('image/png')).toContain('image/png');
       expect(Messages.CanvasUnsupported).toContain('Canvas is not supported');
@@ -57,6 +62,8 @@ describe('Messages', () => {
       expect(Messages.DataLengthMismatch(40000, 100, 100, 1000)).toContain('40000');
       expect(Messages.ContextUnavailable).toContain('2D rendering context');
       expect(Messages.UnsupportedFormat('gif')).toContain('gif');
+      expect(Messages.ExifChunkLoadWarning).toContain('dist/exif-');
+      expect(Messages.ExifChunkLoadWarning).toContain('EXIF injector chunk could not be loaded');
     });
   });
 
@@ -71,6 +78,8 @@ describe('Messages', () => {
         'Decoder was freed before decoding completed'
       );
       expect(Messages.DecodeInputAllocFailed(1024)).toContain('1024 bytes');
+      expect(Messages.GlueApiMissing('_malloc, HEAPU8')).toContain('missing required APIs (_malloc, HEAPU8)');
+      expect(Messages.GlueApiMissing('_malloc')).toContain('same release');
     });
   });
 
@@ -163,8 +172,8 @@ describe('Messages', () => {
     it('owns the worker-only option validation text', () => {
       // Only src/worker.ts throws these, so the strings must stay in this chunk;
       // bundle.test.ts asserts they never appear in the eagerly loaded graph.
-      expect(WorkerMessages.MaxConcurrentWorkersInvalid(1.5)).toContain(
-        'maxConcurrentWorkers must be a positive integer, got: 1.5'
+      expect(WorkerMessages.MaxConcurrentWorkersInvalid(1.5, 64)).toContain(
+        'maxConcurrentWorkers must be an integer between 1 and 64, got: 1.5'
       );
       expect(WorkerMessages.TimeoutInvalid(-1)).toContain('timeoutMs must be a finite number >= 0');
     });
@@ -177,9 +186,13 @@ describe('Messages', () => {
       expect(message).toContain('got: base64');
     });
 
-    it('formats boolean option rejections', () => {
-      expect(Messages.ReuseDecodersInvalid(1)).toContain('reuseDecoders must be a boolean');
-      expect(Messages.ContinueOnErrorInvalid('yes')).toContain('continueOnError must be a boolean');
+    it('formats boolean option rejections through the one shared template', () => {
+      expect(Messages.BooleanOptionInvalid('reuseDecoders', 1)).toBe(
+        'reuseDecoders must be a boolean, got: 1'
+      );
+      expect(Messages.BooleanOptionInvalid('continueOnError', 'yes')).toBe(
+        'continueOnError must be a boolean, got: yes'
+      );
     });
 
     it('formats signal rejection', () => {

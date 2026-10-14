@@ -4,9 +4,8 @@ import { HeicConverterError } from '../errors';
 import { validateCrop, validateFormat, validateResize } from '../validate';
 
 // Option validators live in src/validate.ts (single source of truth shared
-// with the orchestration layer); re-exported here for the render stage's own
-// up-front re-checks.
-export { validateCrop, validateFormat, validateResize } from '../validate';
+// with the orchestration layer); the render stage imports them directly for
+// its own up-front re-checks.
 
 /**
  * Maximum supported canvas dimension per side (browsers cap around this):
@@ -89,9 +88,13 @@ export function canEncodeAvif(): Promise<AvifSupport> {
     if (Date.now() < indeterminateUntil) {
       return Promise.resolve(undefined);
     }
-    // Rejection is definitive; indeterminate stays uncached but starts the
+    // An encode *rejection* (null `toBlob` callback, `convertToBlob()`
+    // EncodingError) is what engines do under memory/GPU pressure, not a
+    // support verdict — it maps to indeterminate like a starved callback.
+    // Only a completed probe producing a non-AVIF (or empty) blob is a
+    // definitive `false`; indeterminate stays uncached but starts the
     // cooldown so a burst shares one starved window.
-    const attempt = runAvifProbe().catch(() => false as const);
+    const attempt = runAvifProbe().catch(() => undefined);
     avifSupport = attempt;
     void attempt.then((result) => {
       if (result === undefined && avifSupport === attempt) {
@@ -194,33 +197,11 @@ function validateTargetSize(width: number, height: number): void {
 }
 
 /**
- * Converts a Blob to a base64 Data URL.
- * Supports both browser (FileReader) and Node.js (btoa) contexts.
+ * Converts a Blob to a base64 data URL (`blob.arrayBuffer()` + `btoa`; both
+ * present on every host that reaches the render stage). Encoding failure is a
+ * `render_encode_failed`.
  */
 export async function blobToBase64(blob: Blob): Promise<string> {
-  if (typeof FileReader !== 'undefined') {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        if (typeof reader.result === 'string') {
-          resolve(reader.result);
-        } else {
-          reject(new HeicConverterError('render_encode_failed', Messages.BlobToBase64Failed));
-        }
-      };
-      reader.onerror = () =>
-      reject(
-        new HeicConverterError(
-          'render_encode_failed',
-          Messages.BlobToBase64FailedWithCause(reader.error?.message ?? 'FileReader failed'),
-          { cause: reader.error ?? undefined }
-        )
-      );
-      reader.readAsDataURL(blob);
-    });
-  }
-
-  // Node.js fallback if Blob is polyfilled or globally available but FileReader is not
   try {
     const arrayBuffer = await blob.arrayBuffer();
     const bytes = new Uint8Array(arrayBuffer);
@@ -245,7 +226,9 @@ export async function blobToBase64(blob: Blob): Promise<string> {
 }
 
 /**
- * Converts a Canvas to a Blob with format-specific options.
+ * Encodes a canvas via the encoder it exposes: `convertToBlob` for an
+ * OffscreenCanvas, `toBlob` for an HTMLCanvasElement. A null blob from the
+ * latter is a `render_encode_failed`.
  */
 export function canvasToBlob(
   canvas: HTMLCanvasElement | OffscreenCanvas,
@@ -371,14 +354,14 @@ function effectiveOrientation(orientation: number | undefined, apply: boolean): 
   return orientation >= 1 && orientation <= 8 ? orientation : 1;
 }
 
+let exifChunkWarned = false;
+
 /**
  * Re-inject the source EXIF block into freshly encoded JPEG/PNG bytes when
  * `preserveExif` is on. Fail-safe: returns the original blob when the flag
  * is off, no block was decoded, or the injector refused to modify
  * unparsable output (metadata loss beats a corrupt image, always).
  */
-let exifChunkWarned = false;
-
 async function withExif(
   blob: Blob,
   decoded: DecodedImage,
@@ -398,10 +381,7 @@ async function withExif(
   if (!exifModule) {
     if (!exifChunkWarned) {
       exifChunkWarned = true;
-      console.warn(
-        '@keeratita/heic-converter: the EXIF injector chunk could not be loaded — converted without ' +
-          'metadata; serve every file in dist/ together, with dist/exif-*.mjs as JavaScript.'
-      );
+      console.warn(Messages.ExifChunkLoadWarning);
     }
     return blob;
   }

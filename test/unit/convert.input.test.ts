@@ -73,7 +73,9 @@ describe('convertHeic - Input Types', () => {
       expect.objectContaining({ width: 1, height: 1 }),
       'png',
       0.5,
-      undefined,
+      // The caller's options object is the resize carrier (arg 4); validateResize
+      // reads the resize keys off it; no resize set here.
+      expect.objectContaining({ to: 'png', quality: 0.5 }),
       true,
       undefined,
     false);
@@ -175,7 +177,7 @@ describe('convertHeic - Input Types', () => {
     const invalidInput = { foo: 'bar' } as unknown as Uint8Array;
 
     await expect(convertHeic(invalidInput)).rejects.toThrow(
-      'Unsupported input type. Expected Blob, File, ArrayBuffer, or Uint8Array.',
+      'Unsupported input type. Expected Blob (incl. File), ArrayBuffer, or ArrayBufferView.',
     );
   });
 
@@ -250,11 +252,27 @@ describe('convertHeic - Input Types', () => {
     view.setUint8(1, 8);
     view.setUint8(2, 9);
 
-    const result = await convertHeic(view as unknown as Uint8Array);
+    // No cast: HeicInput declares ArrayBufferView, so the typecheck itself
+    // pins that DataView is a supported input surface.
+    const result = await convertHeic(view);
 
     expect(result).toBeInstanceOf(Blob);
     const decodedInput = mockState.decoderInstances[0].decode.mock.calls[0][0];
     expect(Array.from(decodedInput)).toEqual([7, 8, 9]);
+  });
+
+  it('reads non-Uint8Array views by byteOffset/byteLength (Uint16Array)', async () => {
+    // Element type and view range are the contract: the decoder must see the
+    // raw byte range only — no element reinterpretation, no leading/trailing
+    // bytes from the backing buffer.
+    const buffer = new ArrayBuffer(8);
+    new Uint8Array(buffer).set([0, 0, 1, 2, 3, 4, 0, 0]);
+    const view = new Uint16Array(buffer, 2, 2); // bytes 2..6 = [1, 2, 3, 4]
+
+    await convertHeic(view);
+
+    const decodedInput = mockState.decoderInstances[0].decode.mock.calls[0][0];
+    expect(Array.from(decodedInput)).toEqual([1, 2, 3, 4]);
   });
 
   it('should handle Uint8Array input directly without conversion', async () => {

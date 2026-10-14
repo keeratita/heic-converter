@@ -204,6 +204,22 @@ describe('convertHeicInWorker', () => {
     expect(worker.terminated).toBe(false);
   });
 
+  it('treats a truthy non-function onProgress as absent', async () => {
+    // Same "non-function is absent" policy as the in-process path
+    // (progressGateFor): the transport must not invoke it and surface the
+    // TypeError as progress_callback_failed.
+    const promise = convertHeicInWorker(new Uint8Array([1]), {
+      workerUrl: '/worker.js',
+      onProgress: 42 as unknown as (percent: number) => void,
+    });
+
+    const worker = MockWorker.instances[0];
+    worker.emit('message', { data: { type: 'progress', percent: 42 } });
+    worker.emit('message', { data: { type: 'result', ok: true, blob: new Blob() } });
+
+    await expect(promise).resolves.toBeInstanceOf(Blob);
+  });
+
   it('should not terminate the worker on progress messages', async () => {
     const promise = convertHeicInWorker(new Uint8Array([1]), { workerUrl: '/worker.js' });
 
@@ -736,12 +752,17 @@ describe('convertHeicInWorker', () => {
         timeoutMs: 5,
       });
       // Leftovers addressed to the finished request: neither may reach item B.
+      // Two stale percentages — the counter must accumulate, not just exist.
       worker.emit('message', { data: { id: firstId, type: 'progress', percent: 50 } });
+      worker.emit('message', { data: { id: firstId, type: 'progress', percent: 90 } });
       worker.emit('message', { data: { id: firstId, type: 'result', ok: true, blob: new Blob(['ghost']) } });
 
       const error = await second.catch((e) => e);
       expect(error.code).toBe('worker_timeout');
       expect(error.message).toContain('1 result(s) ignored for not echoing the request id');
+      // A script streaming stale percentages must be distinguishable from one
+      // that went genuinely silent (both look idle without this counter).
+      expect(error.message).toContain('2 progress message(s) ignored for not echoing the request id');
       expect(onProgressB).not.toHaveBeenCalled();
     });
 
@@ -1175,6 +1196,8 @@ describe('convertManyInWorker', () => {
     worker.emit('message', { data: { type: 'result', ok: true, blob } });
   const emitFailure = (worker: MockWorker, error: string) =>
     worker.emit('message', { data: { type: 'result', ok: false, error } });
+  const emitProgress = (worker: MockWorker, percent: number) =>
+    worker.emit('message', { data: { type: 'progress', percent } });
 
   beforeEach(() => {
     originalWorker = globalThis.Worker;
@@ -1217,6 +1240,24 @@ describe('convertManyInWorker', () => {
     expect(results[2]).toBe(blob);
   });
 
+  it('treats a truthy non-function onProgress as absent', async () => {
+    // The fourth entry point shares the one policy point (progressCallbackFor):
+    // previously a malformed callback made every item fail with
+    // progress_callback_failed instead of being ignored.
+    const blob = new Blob(['x'], { type: 'image/png' });
+    const promise = convertManyInWorker([new Uint8Array([1])], {
+      workerUrl: uniqueUrl(),
+      onProgress: 42 as unknown as (index: number, percent: number) => void,
+    });
+
+    const worker = MockWorker.instances[0];
+    worker.emit('message', { data: { type: 'progress', percent: 40 } });
+    worker.emit('message', { data: { type: 'result', ok: true, blob } });
+
+    const results = await promise;
+    expect(results).toEqual([blob]);
+  });
+
   it('rejects with batch_item_failed naming the failing item', async () => {
     const promise = convertManyInWorker([new Uint8Array([1]), new Uint8Array([2])], {
       workerUrl: uniqueUrl(),
@@ -1242,7 +1283,12 @@ describe('convertManyInWorker', () => {
       onProgress,
     });
 
+    emitProgress(MockWorker.instances[0], 40);
     emitResult(MockWorker.instances[0], blob);
+    // The failing item still forwards its sub-100 percent live (documented
+    // contract); only its 100% is withheld, and continueOnError keeps the
+    // batch itself fulfilled with per-item entries.
+    emitProgress(MockWorker.instances[1], 55);
     emitFailure(MockWorker.instances[1], 'one bad file');
 
     const results = await promise;
@@ -1255,9 +1301,12 @@ describe('convertManyInWorker', () => {
     }
     expect(failedItem.error).toBeInstanceOf(HeicConverterError);
     expect((failedItem.error as HeicConverterError).code).toBe('worker_failed');
-    // Progress fired only for the successful item.
-    expect(onProgress).toHaveBeenCalledWith(0, 100);
-    expect(onProgress.mock.calls.every(([index]) => index === 0)).toBe(true);
+    // Sub-100 percent arrives for both items…
+    expect(onProgress).toHaveBeenCalledWith(0, 40);
+    expect(onProgress).toHaveBeenCalledWith(1, 55);
+    // …but only the successful item gets 100%.
+    const hundreds = onProgress.mock.calls.filter(([, percent]) => percent === 100);
+    expect(hundreds).toEqual([[0, 100]]);
   });
 
   it('forwards per-item progress as (index, percent)', async () => {
@@ -1268,7 +1317,7 @@ describe('convertManyInWorker', () => {
       onProgress,
     });
 
-    MockWorker.instances[1].emit('message', { data: { type: 'progress', percent: 40 } });
+    emitProgress(MockWorker.instances[1], 40);
     expect(onProgress).toHaveBeenCalledWith(1, 40);
 
     emitResult(MockWorker.instances[0], new Blob(['a']));
@@ -1401,6 +1450,7 @@ describe('worker entry-point validation (main thread)', () => {
     ['string timeoutMs', { timeoutMs: '5000' }, 'invalid_input'],
     ['zero maxConcurrentWorkers', { maxConcurrentWorkers: 0 }, 'invalid_concurrency'],
     ['non-finite maxConcurrentWorkers', { maxConcurrentWorkers: Number.POSITIVE_INFINITY }, 'invalid_concurrency'],
+    ['over-ceiling maxConcurrentWorkers', { maxConcurrentWorkers: 65 }, 'invalid_concurrency'],
   ];
 
   it.each(cases)('convertHeicInWorker rejects %s on the main thread', async (_label, options, code) => {
@@ -1418,6 +1468,21 @@ describe('worker entry-point validation (main thread)', () => {
       ...options,
     } as never).catch((e) => e);
     expect(error).toMatchObject({ code });
+    expect(MockWorker.instances).toHaveLength(0);
+  });
+
+  it('convertManyInWorker validates batch knobs like convertMany does', async () => {
+    // Batch-only knobs go through validateBatchOptions, so a malformed one
+    // gets the same main-thread rejection convertMany gives — not a silently
+    // ignored property (and not stringified worker_failed).
+    for (const bad of ['yes', 1, {}]) {
+      const error = await convertManyInWorker([input()], {
+        workerUrl: validateUrl(),
+        reuseDecoders: bad,
+      } as never).catch((e) => e);
+      expect(error).toMatchObject({ code: 'invalid_input' });
+      expect((error as Error).message).toContain('reuseDecoders must be a boolean');
+    }
     expect(MockWorker.instances).toHaveLength(0);
   });
 

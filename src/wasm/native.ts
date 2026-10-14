@@ -2,6 +2,13 @@ import { HeicConverterError } from '../errors';
 import type { DecodedImage, IHeicDecoder } from '../types';
 
 /**
+ * Platform-native HEIC decoding — the Strategy behind `nativeDecode: true`.
+ * On HEIC-capable hosts (Safari/iOS, Edge, Windows) ImageIO decodes in
+ * hardware and the bundled libheif payload is never fetched. Dynamic-import
+ * only, so hosts that never opt in never download this chunk.
+ */
+
+/**
  * Decoded-dimension cap, a duplicate of `MAX_CANVAS_DIMENSION` in
  * render/canvas.ts (pinned equal by native-decoder.test.ts) so this lazy
  * chunk stays out of the render module graph.
@@ -9,11 +16,14 @@ import type { DecodedImage, IHeicDecoder } from '../types';
 export const MAX_NATIVE_DECODE_DIMENSION = 16384;
 
 /**
- * Platform-native HEIC decoding — the Strategy behind `nativeDecode: true`.
- * On HEIC-capable hosts (Safari/iOS, Edge, Windows) ImageIO decodes in
- * hardware and the bundled libheif payload is never fetched. Dynamic-import
- * only, so hosts that never opt in never download this chunk.
+ * Total-pixel cap, a duplicate of `kMaxDecodePixels` in
+ * build-wasm/wrapper/main.cpp (pinned equal by native-decoder.test.ts, same
+ * lazy-chunk-purity reason as the dimension cap). Without it, a
+ * container-declared 16384x16384 passes both side checks and the canvas +
+ * ImageData pair below allocates ~1 GB outside the WASM heap — the libheif
+ * path rejects that size, so native must not accept it.
  */
+export const MAX_NATIVE_DECODE_PIXELS = 64 * 1024 * 1024;
 
 /**
  * Per-realm refusal flag, sticky only for an environment-class failure
@@ -73,8 +83,15 @@ export class NativeHeicDecoder implements IHeicDecoder {
   }
 
   async decode(data: Uint8Array): Promise<DecodedImage> {
-    // Blob rejects SharedArrayBuffer-backed input; copy to detach.
-    const bytes = new Uint8Array(data);
+    // Per spec, browser Blob construction rejects SharedArrayBuffer-backed
+    // parts (DataCloneError); only those need the detaching copy. Copying
+    // unconditionally would put every input through memory twice to defend
+    // one edge case. (Node's Blob does not throw, so the copy is pinned by
+    // inspecting the constructor argument, not by bytes — native-decoder.test.ts.)
+    const bytes: Uint8Array<ArrayBuffer> =
+      typeof SharedArrayBuffer !== 'undefined' && data.buffer instanceof SharedArrayBuffer
+        ? new Uint8Array(data)
+        : (data as Uint8Array<ArrayBuffer>); // the guard above proves this is not SAB-backed
     const bitmap = await createImageBitmap(new Blob([bytes], { type: 'image/heic' }), {
       imageOrientation: 'from-image',
     });
@@ -87,6 +104,15 @@ export class NativeHeicDecoder implements IHeicDecoder {
         throw new HeicConverterError(
           'decode_failed',
           `Native HEIC decoding is limited to ${MAX_NATIVE_DECODE_DIMENSION}px per side, got ${bitmap.width}x${bitmap.height}.`
+        );
+      }
+      if (bitmap.width * bitmap.height > MAX_NATIVE_DECODE_PIXELS) {
+        // Both sides pass at up to 16384 each — a 16384x8192 container clears
+        // the side cap but allocates ~512 MB here. Same budget as the WASM
+        // path's kMaxDecodePixels; checked before any canvas/ImageData exists.
+        throw new HeicConverterError(
+          'decode_failed',
+          `Native HEIC decoding is limited to ${MAX_NATIVE_DECODE_PIXELS / (1024 * 1024)}MP total, got ${bitmap.width}x${bitmap.height} (${bitmap.width * bitmap.height} pixels).`
         );
       }
       const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);

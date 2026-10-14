@@ -16,14 +16,11 @@ describe('renderAndEncode Unit Tests', () => {
   let originalOffscreenCanvas: typeof OffscreenCanvas;
   let originalImageData: typeof ImageData;
 
-  let originalFileReader: typeof FileReader;
-
   beforeEach(() => {
     // Save originals
     originalDocument = global.document;
     originalOffscreenCanvas = global.OffscreenCanvas;
     originalImageData = global.ImageData;
-    originalFileReader = global.FileReader;
 
     // Mock canvas
     mockCtx = {
@@ -63,7 +60,6 @@ describe('renderAndEncode Unit Tests', () => {
     global.document = originalDocument;
     global.OffscreenCanvas = originalOffscreenCanvas;
     global.ImageData = originalImageData;
-    global.FileReader = originalFileReader;
   });
 
   describe('JPEG/JPG format', () => {
@@ -150,24 +146,6 @@ describe('renderAndEncode Unit Tests', () => {
         callback(mockPngBlob);
       });
 
-      // Mock FileReader class properly
-      class MockFileReader1 {
-        result: string | null = 'data:image/png;base64,cG5nLWRhdGE=';
-        onloadend: (() => void) | null = null;
-        onerror: (() => void) | null = null;
-        
-        readAsDataURL(): void {
-          // Simulate async completion
-          setTimeout(() => {
-            if (this.onloadend) {
-              this.onloadend();
-            }
-          }, 0);
-        }
-      }
-
-      global.FileReader = MockFileReader1 as unknown as typeof FileReader;
-
       const result = await renderAndEncode(decoded, 'svg', 1);
 
       expect(result).toBeInstanceOf(Blob);
@@ -177,7 +155,9 @@ describe('renderAndEncode Unit Tests', () => {
       expect(svgContent).toContain('<svg');
       expect(svgContent).toContain('xmlns="http://www.w3.org/2000/svg"');
       expect(svgContent).toContain('viewBox="0 0 100 100"');
-      expect(svgContent).toContain('data:image/png;base64');
+      // The embedded copy is the real PNG blob bytes through the one
+      // arrayBuffer+btoa path (btoa('png-data')).
+      expect(svgContent).toContain('data:image/png;base64,cG5nLWRhdGE=');
     });
 
     it('should handle SVG encoding with different dimensions', async () => {
@@ -187,22 +167,6 @@ describe('renderAndEncode Unit Tests', () => {
       mockCanvas.toBlob = vi.fn((callback: (blob: Blob | null) => void) => {
         callback(mockPngBlob);
       });
-
-      class MockFileReader2 {
-        result: string | null = 'data:image/png;base64,test';
-        onloadend: (() => void) | null = null;
-        onerror: (() => void) | null = null;
-        
-        readAsDataURL(): void {
-          setTimeout(() => {
-            if (this.onloadend) {
-              this.onloadend();
-            }
-          }, 0);
-        }
-      }
-
-      global.FileReader = MockFileReader2 as unknown as typeof FileReader;
 
       const result = await renderAndEncode(decoded, 'svg', 1);
 
@@ -220,31 +184,18 @@ describe('renderAndEncode Unit Tests', () => {
       });
 
       const canvasWidthAtBase64: Array<number> = [];
-
-      class MockFileReaderRelease {
-        result: string | null = 'data:image/png;base64,QUJD';
-        onloadend: (() => void) | null = null;
-        onerror: (() => void) | null = null;
-
-        readAsDataURL(): void {
-          // The canvas must already be released (width zeroed) while the
-          // base64 round-trip runs, so the encoded copy is the only thing
-          // pinning pixel memory at this point.
-          canvasWidthAtBase64.push(mockCanvas.width);
-          setTimeout(() => {
-            if (this.onloadend) {
-              this.onloadend();
-            }
-          }, 0);
-        }
-      }
-
-      global.FileReader = MockFileReaderRelease as unknown as typeof FileReader;
+      mockPngBlob.arrayBuffer = vi.fn(() => {
+        // The canvas must already be released (width zeroed) while the
+        // base64 round-trip runs, so the encoded copy is the only thing
+        // pinning pixel memory at this point.
+        canvasWidthAtBase64.push(mockCanvas.width);
+        return Blob.prototype.arrayBuffer.call(mockPngBlob);
+      });
 
       const result = await renderAndEncode(decoded, 'svg', 1);
 
       const svgContent = await result.text();
-      expect(svgContent).toContain('data:image/png;base64,QUJD');
+      expect(svgContent).toContain('data:image/png;base64,cG5nLWRhdGE=');
       expect(canvasWidthAtBase64).toEqual([0]);
     });
   });
@@ -413,8 +364,8 @@ describe('renderAndEncode Unit Tests', () => {
     });
   });
 
-  describe('blobToBase64 Node.js fallback', () => {
-    it('should use Buffer/btoa when FileReader is not available', async () => {
+  describe('blobToBase64 (single arrayBuffer+btoa path)', () => {
+    it('should encode through arrayBuffer + btoa', async () => {
       const decoded = createMockDecodedImage(100, 100);
       const mockBlob = new Blob(['test-data'], { type: 'image/png' });
 
@@ -422,27 +373,21 @@ describe('renderAndEncode Unit Tests', () => {
         callback(mockBlob);
       });
 
-      // Empty buffer => btoa('') yields an empty payload, proving the Node
-      // (arrayBuffer + btoa) path ran: a FileReader mock would have returned
-      // a fixed non-empty data URL instead.
+      // Empty buffer => btoa('') yields an empty payload, proving the bytes
+      // came from arrayBuffer() (a fixed data URL would say otherwise).
       mockBlob.arrayBuffer = vi.fn().mockResolvedValue(new ArrayBuffer(0));
-
-      // Keep FileReader undefined so the Node.js (arrayBuffer + btoa) fallback
-      // path is the one actually exercised.
-      global.FileReader = undefined as any;
 
       const result = await renderAndEncode(decoded, 'svg', 1);
 
       const svgContent = await result.text();
       expect(svgContent).toContain('data:image/png;base64,');
-      // Empty buffer => empty base64 payload, proving btoa ran (a FileReader
-      // mock would have returned a fixed non-empty payload).
+      // Empty buffer => empty base64 payload, proving the btoa path ran.
       expect(svgContent).toContain('base64," />');
     });
   });
 
   describe('blobToBase64 error handling', () => {
-    it('should reject when FileReader result is not a string', async () => {
+    it('should reject with the cause when the blob cannot be read', async () => {
       const decoded = createMockDecodedImage(100, 100);
       const mockBlob = new Blob(['test-data'], { type: 'image/png' });
 
@@ -450,27 +395,14 @@ describe('renderAndEncode Unit Tests', () => {
         callback(mockBlob);
       });
 
-      class MockFileReader4 {
-        result: any = null; // Not a string
-        onloadend: (() => void) | null = null;
-        onerror: (() => void) | null = null;
-        readAsDataURL(): void {
-          setTimeout(() => {
-            if (this.onloadend) {
-              this.onloadend();
-            }
-          }, 0);
-        }
-      }
-
-      global.FileReader = MockFileReader4 as unknown as typeof FileReader;
+      mockBlob.arrayBuffer = vi.fn().mockRejectedValue(new Error('blob read exploded'));
 
       await expect(renderAndEncode(decoded, 'svg', 1)).rejects.toThrow(
-        'Failed to convert Blob to base64 string'
+        'Failed to convert Blob to base64 string: blob read exploded'
       );
     });
 
-    it('should reject when FileReader encounters an error', async () => {
+    it('should wrap a non-Error rejection reason', async () => {
       const decoded = createMockDecodedImage(100, 100);
       const mockBlob = new Blob(['test-data'], { type: 'image/png' });
 
@@ -478,42 +410,32 @@ describe('renderAndEncode Unit Tests', () => {
         callback(mockBlob);
       });
 
-      const mockError = new Error('FileReader error');
-      class MockFileReader5 {
-        result: string | null = 'data:image/png;base64,test';
-        onloadend: (() => void) | null = null;
-        onerror: (() => void) | null = null;
-        readAsDataURL(): void {
-          setTimeout(() => {
-            if (this.onerror) {
-              // Simulate error
-              (this as any).error = mockError;
-              this.onerror();
-            }
-          }, 0);
-        }
-      }
-
-      global.FileReader = MockFileReader5 as unknown as typeof FileReader;
-
-      await expect(renderAndEncode(decoded, 'svg', 1)).rejects.toThrow('FileReader error');
-    });
-
-    it('should wrap a non-Error value thrown by the Node fallback', async () => {
-      const decoded = createMockDecodedImage(100, 100);
-      const mockBlob = new Blob(['test-data'], { type: 'image/png' });
-
-      mockCanvas.toBlob = vi.fn((callback: (blob: Blob | null) => void) => {
-        callback(mockBlob);
-      });
-
-      // Remove FileReader to trigger the Node.js fallback path.
-      global.FileReader = undefined as unknown as typeof FileReader;
       mockBlob.arrayBuffer = vi.fn().mockRejectedValue('boom');
 
       await expect(renderAndEncode(decoded, 'svg', 1)).rejects.toThrow(
         'Failed to convert Blob to base64 string: boom'
       );
+    });
+
+    it('should wrap a throwing btoa (host without a usable btoa)', async () => {
+      const decoded = createMockDecodedImage(100, 100);
+      const mockBlob = new Blob(['test-data'], { type: 'image/png' });
+
+      mockCanvas.toBlob = vi.fn((callback: (blob: Blob | null) => void) => {
+        callback(mockBlob);
+      });
+
+      const originalBtoa = global.btoa;
+      global.btoa = (() => {
+        throw new Error('btoa exploded');
+      }) as typeof global.btoa;
+      try {
+        await expect(renderAndEncode(decoded, 'svg', 1)).rejects.toThrow(
+          'Failed to convert Blob to base64 string: btoa exploded'
+        );
+      } finally {
+        global.btoa = originalBtoa;
+      }
     });
   });
 
@@ -897,31 +819,6 @@ describe('renderAndEncode Unit Tests', () => {
       expect(mockCtx.putImageData).toHaveBeenCalled();
 
       global.ImageData = originalImageData;
-    });
-  });
-
-  describe('blobToBase64 error handling', () => {
-    it('should throw error with message when arrayBuffer fails', async () => {
-      const decoded = createMockDecodedImage(100, 100);
-      const mockBlob = new Blob(['test-data'], { type: 'image/png' });
-
-      mockCanvas.toBlob = vi.fn((callback: (blob: Blob | null) => void) => {
-        callback(mockBlob);
-      });
-
-      // Mock arrayBuffer to throw
-      mockBlob.arrayBuffer = vi.fn().mockRejectedValue(new Error('arrayBuffer failed'));
-
-      // Remove FileReader to trigger Node.js fallback
-      const originalFileReader = global.FileReader;
-      global.FileReader = undefined as any;
-
-      await expect(renderAndEncode(decoded, 'svg', 1)).rejects.toThrow(
-        'Failed to convert Blob to base64 string: arrayBuffer failed'
-      );
-
-      // Restore FileReader
-      global.FileReader = originalFileReader;
     });
   });
 });
