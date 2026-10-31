@@ -38,6 +38,16 @@ Both libraries are checked out as **git submodules** under `build-wasm/src/`, pi
 
 `build-wasm.sh` verifies the submodule checkout matches the pinned version and fails with a hint if they drift. The submodule commit itself is the version marker — there are no separate marker files.
 
+## Build-time patches
+
+Every `npm run build:wasm` resets the libheif submodule (`git submodule update --force`) and applies three deterministic transformations before compiling — this is what makes the CI `wasm-provenance` from-scratch rebuild byte-match the committed hashes:
+
+1. **Progress hooks** (`build-scripts/patch-libheif.py`) — adds start/on/end progress callbacks to libheif < 1.21; no-op on the pinned 1.23.7.
+2. **Diagnostic neutralization** (`build-scripts/neutralize-libheif-diagnostics.py`) — stubs the debug-only printers (`dump` / `dump_children` / `dump_to_string` / `get_debug_info` / `get_debug_message` / `debug_dump*`) and drops the one live `std::cerr`. They are virtual (vtable-pinned) and their bodies are what pull libc++ iostream+locale into the module (~118 KB raw on 1.23.7); the decode path never calls them.
+3. **`<sstream>` shim** (`build-scripts/libheif-no-streams.h`, `-include`d into every libheif TU) — replaces `std::(o|i)stringstream` with a non-logging fake. Error codes and control flow survive; streamed detail text becomes empty (already untrusted: `sanitizeDecoderDetail()` strips control chars and clamps it before `error.message`).
+
+The guards fail **closed**: the neutralizer asserts a `box.cc` stub and a ≥100-stub floor (pinned by `test/unit/libheif-diagnostics.test.ts`), and `build-wasm.sh` aborts when the linker map shows libc++ `iostream`/`new_helpers`. Decoded output is pinned byte-exact by `test/unit/wasm-golden.test.ts` and the browser E2E.
+
 ## Cloning
 
 Submodules are not fetched by a plain `git clone`. Use:

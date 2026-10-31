@@ -174,11 +174,11 @@ Fetching a `.gz`/`.br` variant URL directly will not work — see the compressio
 
 #### Reducing the download size
 
-The WASM binary (~795 KB, ~290 KB gzipped) dominates the payload; everything else is small and lazy. The Emscripten glue is a separate chunk fetched only on the first decode, and the Web Worker implementation, the opt-in EXIF injectors, and the opt-in native-decode strategy are separate chunks fetched only when you first call `convertHeicInWorker`/`convertManyInWorker` or pass `preserveExif: true` / `nativeDecode: true`. What every consumer pays for up front is a few kilobytes of gzipped JavaScript — `test/unit/bundle.test.ts` fails the build if one of those boundaries moves or the eager budget grows, so the numbers live in the tests rather than here.
+The WASM binary (~634 KB, ~242 KB gzipped) dominates the payload; everything else is small and lazy. The Emscripten glue is a separate chunk fetched only on the first decode, and the Web Worker implementation, the opt-in EXIF injectors, and the opt-in native-decode strategy are separate chunks fetched only when you first call `convertHeicInWorker`/`convertManyInWorker` or pass `preserveExif: true` / `nativeDecode: true`. What every consumer pays for up front is a few kilobytes of gzipped JavaScript — `test/unit/bundle.test.ts` fails the build if one of those boundaries moves or the eager budget grows, so the numbers live in the tests rather than here.
 
 On HEIC-capable hosts (Safari/iOS, Edge, Windows) `nativeDecode: true` skips the WASM binary entirely — the platform decodes. Pages that instantiate decoders repeatedly (or re-instantiate after `free()`) can instead compile the WASM once and share it via `moduleOverrides.instantiateWasm` — see the recipe in [API.md](API.md#libheifdecoderoptions).
 
-`npm run build` also emits pre-compressed copies — `dist/heic-decoder.wasm.gz` (~290 KB) and `dist/heic-decoder.wasm.br` (~232 KB) — and verifies each one decompresses back to the binary, so a corrupt sidecar cannot reach a CDN. Most static hosts and CDNs (GitHub Pages, Netlify, Vercel, Cloudflare) already compress `application/wasm` automatically when the browser sends `Accept-Encoding`; verify with:
+`npm run build` also emits pre-compressed copies — `dist/heic-decoder.wasm.gz` (~242 KB) and `dist/heic-decoder.wasm.br` (~195 KB) — and verifies each one decompresses back to the binary, so a corrupt sidecar cannot reach a CDN. Most static hosts and CDNs (GitHub Pages, Netlify, Vercel, Cloudflare) already compress `application/wasm` automatically when the browser sends `Accept-Encoding`; verify with:
 
 ```bash
 curl -sI -H 'Accept-Encoding: br' https://your-site/heic-decoder.wasm | grep -i content-encoding

@@ -23,8 +23,12 @@ fi
 
 echo "Starting Docker-based Emscripten build..."
 
-# Ensure submodules are checked out at the pinned versions
-git submodule update --init --recursive
+# Ensure submodules are checked out at the pinned versions. --force: the
+# in-container build scripts (patch-libheif.py, neutralize-libheif-diagnostics.py)
+# edit the submodule trees, so a later run must be able to reset them even
+# when a previous build left them modified; the tag check below still pins
+# provenance.
+git submodule update --init --recursive --force
 
 # The submodule commit is the version marker; verify it matches the pinned tags
 LIBHEIF_CHECKOUT="$(git -C "$BUILD_DIR/src/libheif" describe --tags --exact-match 2>/dev/null || echo 'unknown')"
@@ -54,10 +58,10 @@ mkdir -p build-wasm/src
 cd build-wasm/src
 
 # 1. Build libde265 (CMake-only since v1.1.0; no autotools)
-# Cached builds are gated on version + a hash of this script, so a version bump, a
-# stale tree, or any flag edit forces a clean rebuild. A comment-only edit can
-# over-invalidate (build time only), which is the safe direction.
-SCRIPT_HASH=\$(md5sum /src/build-scripts/build-wasm.sh | cut -c1-12)
+# Cache reuse is gated on version + a hash of this script AND the two libheif
+# patch inputs (they change libheif.a without touching this file). Over-
+# invalidating on comment-only edits is the safe direction.
+SCRIPT_HASH=\$(md5sum /src/build-scripts/build-wasm.sh /src/build-scripts/neutralize-libheif-diagnostics.py /src/build-scripts/libheif-no-streams.h | md5sum | cut -c1-12)
 
 cd libde265
 if [ -f build/libde265/libde265.a ] && [ -f build/.built-v\${LIBDE265_VERSION}-\${SCRIPT_HASH} ]; then
@@ -99,6 +103,11 @@ cd ..
 
 # 2. Build libheif
 python3 /src/build-scripts/patch-libheif.py
+# Stub the debug-only diagnostic printers; with the -include shim below this
+# drops libc++ iostream+locale (~18% gz, canonical figures in AGENTS.md).
+# Fails loudly on a libheif bump that reshapes the diagnostics; decoded
+# output is verified byte-identical by test/unit/wasm-golden.test.ts.
+python3 /src/build-scripts/neutralize-libheif-diagnostics.py
 
 cd libheif
 if [ -f build/libheif/libheif.a ] && [ -f build/.built-v\${LIBHEIF_VERSION}-\${SCRIPT_HASH} ]; then
@@ -135,7 +144,11 @@ else
     -DWITH_OpenJPEG_ENCODER=OFF \\
     -DWITH_EXAMPLES=OFF \\
     -DCMAKE_C_FLAGS=\"-Oz\" \\
-    -DCMAKE_CXX_FLAGS=\"-Oz -DLIBHEIF_BOX_EMSCRIPTEN_H\"
+    -DCMAKE_CXX_FLAGS=\"-Oz -DLIBHEIF_BOX_EMSCRIPTEN_H -include /src/build-scripts/libheif-no-streams.h\"
+    # -include libheif-no-streams.h rewrites std::stringstream sites into a
+    # non-logging fake (see the header); error codes and control flow survive,
+    # streamed detail text does not. The link-map guard below fails the build
+    # if libc++ iostream ever gets linked anyway.
   # The codec knobs are libheif's generated per-codec options: CMakeLists declares
   # option(WITH_<name>) in a loop over its codec table, so a name the pinned version
   # does not generate is silently ignored rather than an error. The set was diffed
@@ -171,6 +184,9 @@ echo 'Compiling WebAssembly wrapper...'
 # Must be preserved (see AGENTS.md): DYNAMIC_EXECUTION=0, ALLOW_MEMORY_GROWTH=1,
 # EXPORT_ES6=1, MODULARIZE=1, ENVIRONMENT, --bind, link-level -O3, MALLOC=emmalloc,
 # FILESYSTEM=0, and the post-link wasm-opt pass.
+# Size also depends on the two build-time libheif patches — the neutralizer
+# (diagnostic printers stubbed) and the -include shim (sstream faked) above —
+# plus the link-map guard below that fails the build when they stop biting.
 #
 # The LINK stays at -O3: the only link level that instantiates on emsdk 3.1.56.
 # -O2 fails real decodes; -Os, -Oz and -flto build a smaller .wasm that dies at
@@ -204,7 +220,8 @@ emcc ${WRAPPER_SRC} \\
     -s MALLOC=emmalloc \\
     -s FILESYSTEM=0 \\
     -fexceptions -fcxx-exceptions \\
-    -O3 --bind
+    -O3 --bind \\
+    -Wl,-Map=/src/build-wasm/wrapper/heic-decoder.map
 
 # Post-link size pass: binaryen runs on the emitted module after the glue is final,
 # so it cannot desynchronize imports the way emcc's link-level size flags do.
@@ -213,6 +230,23 @@ emcc ${WRAPPER_SRC} \\
 # Do NOT add --minify-imports* (the glue references the current import names), -Oz,
 # or --strip-target-features: the last two increase gz/brotli despite shrinking raw.
 /emsdk/upstream/bin/wasm-opt /src/build-wasm/wrapper/heic-decoder.wasm -o /src/build-wasm/wrapper/heic-decoder.wasm.opt -O3 --zero-filled-memory && mv /src/build-wasm/wrapper/heic-decoder.wasm.opt /src/build-wasm/wrapper/heic-decoder.wasm
+
+# Guard: the diagnostics shim must actually bite. iostream/new_helpers in the
+# link map mean something still constructs a std stream — exactly what a
+# libheif bump that renames a diagnostic would do. Fail closed rather than
+# ship the ~55 KB gz regression; a missing map is fatal too (grep exit 2
+# would otherwise skip the if).
+if [ ! -s /src/build-wasm/wrapper/heic-decoder.map ]; then
+  echo 'Error: emcc produced no linker map; the iostream guard cannot run.' >&2
+  exit 1
+fi
+if grep -qE 'libc\+\+[^ ]*\.a\((iostream|new_helpers)\.o\)' /src/build-wasm/wrapper/heic-decoder.map; then
+  echo 'Error: libc++ iostream objects were linked into the module.' >&2
+  echo 'The diagnostic printers are back in — check neutralize-libheif-diagnostics.py' >&2
+  echo 'and build-scripts/libheif-no-streams.h against this libheif version.' >&2
+  exit 1
+fi
+rm -f /src/build-wasm/wrapper/heic-decoder.map
 
 # Copy artifacts
 cp /src/build-wasm/wrapper/heic-decoder.wasm /src/src/wasm/public/

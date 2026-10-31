@@ -120,6 +120,8 @@ build/
 # only the copies under src/wasm/ are tracked)
 build-wasm/wrapper/heic-decoder.js
 build-wasm/wrapper/heic-decoder.wasm
+# Transient input to the iostream guard; survives only when it aborts a build.
+build-wasm/wrapper/heic-decoder.map
 
 # E2E artifacts
 test/browser/e2e-success.png

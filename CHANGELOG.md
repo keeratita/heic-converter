@@ -5,6 +5,14 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2026-11-01
+
+### Changed
+
+- **The WASM decoder ships ~18% smaller gzipped** (packaged binary 302,120 → 247,431 B gz; first-decode payload 322,043 → 265,693 B gz). The build stubs libheif's debug-only diagnostic printers and fakes `std::stringstream` internals, so libc++'s iostream+locale machinery is no longer linked. See `WASM_DEPENDENCIES.md` § Build-time patches; fail-closed guards (stub-count floor + linker-map check) make a silent regression impossible.
+- **Consequence:** the human-readable detail libheif formatted into `decode_failed` messages is no longer embedded — the message keeps the `Error code N (subcode M)` prefix and the typed `error.code` is unchanged. That detail was already untrusted container-derived text, sanitized and clamped before reaching `error.message`.
+- Decoded output is **byte-identical** to 0.6.0 — pinned by `wasm-golden.test.ts` (exact RGBA per fixture + the 66-input mutation table) and the browser E2E.
+
 ## [0.6.0] - 2026-10-31
 
 **Headline for upgraders.** The worker message protocol now requires a per-request `id`
