@@ -1,6 +1,6 @@
 {
   "allow": {
-    "esbuild": "0.27.2",
+    "esbuild": "0.27.7",
     "fsevents": "2.3.3"
   }
 }
