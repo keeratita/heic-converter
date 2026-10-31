@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { HeicConverterError, LibheifDecoder } from '../../src/index';
+import { buildMutations } from '../../build-scripts/wasm-golden-table.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(__dirname, '../..');
@@ -67,12 +68,15 @@ const FIXTURE_GOLDENS: Record<string, FixtureGolden> = {
 
 /**
  * Expected outcome per mutated input: `OK:<first 12 hex of RGBA sha256>` or
- * `ERR:<error code>`. Regenerate with the decoder after an intentional change to
- * the fixtures or the decode pipeline — never adjust a single entry to make a
- * build pass. Regenerated wholesale for the libheif 1.23.7 rebuild: all 66 inputs
- * re-decoded against the committed artifacts, 65 reproduced unchanged and exactly
- * one moved (`exif-orientation-6.heic:trunc0.999`); `reproduces the golden outcome
- * for every mutated input` re-checks every row on each run.
+ * `ERR:<error code>`. Machine-owned block: regenerate it wholesale with
+ * `npm run wasm:goldens -- --write` after an intentional change to the fixtures or
+ * the decode pipeline — never by adjusting a single entry to make a build pass.
+ * `reproduces the golden outcome for every mutated input` re-checks every row on
+ * each run, so a drifted table fails the suite instead of passing quietly.
+ *
+ * Last regenerated wholesale for the libheif 1.23.7 rebuild: 65 of 66 rows
+ * reproduced unchanged and exactly one moved (`exif-orientation-6.heic:trunc0.999`,
+ * explained by the test that pins it below).
  */
 const MUTATION_GOLDENS: Record<string, string> = {
   'example.heic:full': 'OK:7f8f77c3e33f',
@@ -123,11 +127,6 @@ const MUTATION_GOLDENS: Record<string, string> = {
   'exif-orientation-6.heic:trunc0.25': 'ERR:decode_failed',
   'exif-orientation-6.heic:trunc0.5': 'ERR:decode_failed',
   'exif-orientation-6.heic:trunc0.75': 'ERR:decode_failed',
-  // 1.23.7 dropped 1.23.6's whole-file rejection here. This truncation drops the last
-  // 11 bytes of the 12-byte tag-274 IFD entry (its type, count and value) plus the
-  // 4-byte next-IFD offset, so IFD0 declares an entry with no body; the image decodes
-  // with pixels identical to :full. The hash alone cannot see that the malformed Exif
-  // item was *dropped* — the dedicated test below pins that part.
   'exif-orientation-6.heic:trunc0.999': 'OK:2000e8366c8a',
   'exif-orientation-6.heic:empty': 'ERR:decode_failed',
   'exif-orientation-6.heic:garbage': 'ERR:decode_failed',
@@ -176,40 +175,6 @@ const decodeFresh = async (bytes: Uint8Array) => {
   } finally {
     decoder.free();
   }
-};
-
-/**
- * Builds the mutated inputs behind MUTATION_GOLDENS. The generator and the label
- * format must stay in lockstep with the table: a single deterministic LCG seeded
- * with 0x5eed, consumed in the same order the table was produced.
- */
-const buildMutations = (): Array<[string, Uint8Array]> => {
-  let seed = 0x5eed;
-  const rnd = (n: number): number => {
-    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
-    return seed % n;
-  };
-  const inputs: Array<[string, Uint8Array]> = [];
-  for (const name of ['example.heic', 'colors-with-alpha.heic', 'exif-orientation-6.heic']) {
-    const bytes = fs.readFileSync(path.join(FIXTURE_DIR, name));
-    inputs.push([`${name}:full`, new Uint8Array(bytes)]);
-    for (const frac of [0.25, 0.5, 0.75, 0.999]) {
-      inputs.push([
-        `${name}:trunc${frac}`,
-        new Uint8Array(bytes.subarray(0, Math.max(1, Math.floor(bytes.length * frac))))
-      ]);
-    }
-    inputs.push([`${name}:empty`, new Uint8Array(0)]);
-    inputs.push([`${name}:garbage`, new Uint8Array(64).fill(0xff)]);
-    inputs.push([`${name}:headeronly`, new Uint8Array(bytes.subarray(0, 12))]);
-    for (let i = 0; i < 14; i++) {
-      const copy = Uint8Array.from(bytes);
-      const pos = 24 + rnd(Math.max(1, copy.length - 25));
-      copy[pos] ^= 1 << rnd(8);
-      inputs.push([`${name}:flip${i}@${pos}`, copy]);
-    }
-  }
-  return inputs;
 };
 
 /**
@@ -278,11 +243,12 @@ describe.skipIf(!hasArtifacts && !isCI)('WASM output goldens', { timeout: 30_000
   it('drops a truncated Exif item rather than failing the decode', async () => {
     // The mutation table records only the RGBA hash, so it cannot tell "identical
     // pixels, metadata intact" from "identical pixels, metadata thrown away". This is
-    // the orientation regression fixture, and :trunc0.999 cuts its tag-274 IFD entry
-    // mid-body: libheif 1.23.6 rejected the whole file, 1.23.7 discards the malformed
-    // Exif item and returns the same raster with no orientation and no block to
-    // inject — metadata loss, never a half-parsed block reaching the injectors. Pin
-    // the whole outcome, not just the pixels.
+    // the orientation regression fixture, and :trunc0.999 drops the last 11 bytes of
+    // its 12-byte tag-274 IFD entry (type, count, value) plus the 4-byte next-IFD
+    // offset, so IFD0 declares an entry with no body: libheif 1.23.6 rejected the
+    // whole file, 1.23.7 discards the malformed Exif item and returns the same raster
+    // with no orientation and no block to inject — metadata loss, never a half-parsed
+    // block reaching the injectors. Pin the whole outcome, not just the pixels.
     const golden = FIXTURE_GOLDENS['exif-orientation-6.heic'];
     // The same input the table's :trunc0.999 row pins, taken from the generator that
     // produces it, so the two cannot drift apart.

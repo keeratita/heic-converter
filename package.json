@@ -30,6 +30,7 @@
     "build:wasm": "bash build-scripts/build-wasm.sh",
     "verify:wasm": "node build-scripts/verify-wasm-artifacts.mjs",
     "wasm:hashes": "node build-scripts/verify-wasm-artifacts.mjs --write",
+    "wasm:goldens": "node build-scripts/wasm-golden-table.mjs",
     "check:scripts": "node build-scripts/check-install-scripts.mjs",
     "verify:provenance": "node build-scripts/verify-npm-provenance.mjs",
     "test": "vitest run",

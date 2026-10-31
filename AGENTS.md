@@ -21,6 +21,7 @@ Key design constraints:
 | `npm run build:wasm` | Rebuild the WASM decoder (`build-scripts/build-wasm.sh`) — **requires Docker** |
 | `npm run verify:wasm` | Verify committed glue + WASM against the SHA-256s in `build-scripts/wasm-artifacts.json` and scan the glue for `eval`/`new Function` |
 | `npm run wasm:hashes` | Regenerate `wasm-artifacts.json` — **must run and commit after every `build:wasm`** or CI fails |
+| `npm run wasm:goldens` | Verify the WASM decode goldens against the built decoder; `-- --write` regenerates the `MUTATION_GOLDENS` block — **run after every `build:wasm` whose behavior changed** |
 | `npm run check:scripts` | Enforce the dev-tree install-script allowlist in `build-scripts/install-scripts.json` — `-- --write` regenerates after review |
 | `npm run verify:provenance` | Post-publish check: SLSA provenance attestation, `gitHead`, registry-hosted tarball |
 | `npm test` / `test:watch` / `test:coverage` | Unit tests (Vitest, Node); coverage thresholds in `vitest.config.ts` are 100% on all axes — unreachable guards carry `/* v8 ignore */` with a reason |
@@ -67,6 +68,7 @@ build-scripts/
   install-scripts.json      # Reviewed packages allowed to run install scripts
   verify-npm-provenance.mjs # Post-publish SLSA / gitHead / integrity check
   wasm-artifacts.json       # Pinned artifact hashes — regenerate with npm run wasm:hashes
+  wasm-golden-table.mjs     # Mutation generator + MUTATION_GOLDENS regenerator (npm run wasm:goldens)
   release.mjs               # SemVer release automation
 test/
   unit/                     # Vitest unit tests (integration tests use the real WASM)
@@ -109,6 +111,7 @@ docs/
 - **Two separate "builds"**: `build` (TS → `dist/`) vs `build:wasm` (C++ → WASM); most work needs only the former. **Always `npm run build` before running suites after a checkout or merge** — a stale `dist/` JS chunk paired with the current WASM fails as the misleading `module.HeicDecoder is not a constructor` (`bundle.test.ts`'s byte-identity check covers the WASM, not the JS chunks).
 - `.wasm` is externalized (`tsup.config.ts` `external`) and served separately; keep `locateFile`/`wasmBinary` compatibility.
 - Tests that decode real HEIC files require `src/wasm/public/heic-decoder.wasm` to exist.
+- **`MUTATION_GOLDENS` is generated, never hand-edited.** `npm run wasm:goldens` re-decodes all 66 mutated inputs against `dist/` and diffs them against the table; `-- --write` rewrites the block wholesale. A decoder change that flips an outcome must land with a regeneration, not a single-row edit. The block is machine-owned, so a comment written inside it is destroyed by the next run — prose belongs in the tests. `build-scripts/wasm-golden-table.mjs` owns both the mutation generator and the table format (the suite imports the generator from there, so the two cannot drift), and `test/unit/wasm-golden-table.test.ts` pins the formatting byte-for-byte, which is what makes a hand-edit fail.
 - **WASM build changes must be executed, not just measured.** Every rejected size flag in 0.5.1 built a *smaller* binary that only failed at `WebAssembly.instantiate()`. Adopt nothing until the real-decode integration tests, `wasm-golden.test.ts` (exact decoded RGBA per fixture + mutated-input outcomes) and the browser E2E pass against the rebuilt pair — glue + WASM come from one `emcc` invocation, always replace both together, then `npm run wasm:hashes`.
 - **Never deep-compare large buffers in tests.** `toEqual` on ~800 KB Buffers walks them structurally (~1.1 s idle, over the 5 s timeout under the parallel suite). Use `a.equals(b)` with sha256s in the message; hash pixel data and compare digests like `wasm-golden.test.ts`.
 - **`vi.mock` intercepts only the first of two *racing* dynamic imports** of the same path (vitest 5.0.3 limitation; sequential imports and real ESM caching are fine). Batches exercising a mocked lazy chunk must use `concurrency: 1` or seed the registry with a static import of the mocked path.

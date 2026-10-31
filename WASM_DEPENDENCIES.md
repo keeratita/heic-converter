@@ -27,6 +27,8 @@ Both libraries are checked out as **git submodules** under `build-wasm/src/`, pi
    ```bash
    npm run build:wasm
    npm run wasm:hashes   # regenerates build-scripts/wasm-artifacts.json — must be committed
+   npm run build         # refresh dist/ before the goldens read it
+   npm run wasm:goldens -- --write   # regenerates the MUTATION_GOLDENS block in test/unit/wasm-golden.test.ts
    ```
 
    The build replaces **both** generated files (`src/wasm/public/heic-decoder.wasm` and
