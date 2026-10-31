@@ -5,15 +5,23 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.0] - 2026-10-31
 
-Release as **0.6.0**: the worker message protocol gains a required `id` echo (below), which breaks worker scripts written against the 0.5.x docs, and worker reuse changes what a live worker means for existing callers. Both are deliberate, documented contract changes.
+**Headline for upgraders.** The worker message protocol now requires a per-request `id`
+echo: a custom worker script written against the 0.5.x docs must destructure `id` from
+`event.data` and post it back on every reply, or adopted leases will stall until
+`timeoutMs`. See the breaking entry under _Changed_ and the reference script in
+README §13 / `docs/worker.js`. Both that and worker reuse are deliberate, documented
+contract changes. Everything else here is additive (`nativeDecode`, worker reuse, the
+shared-module recipe) or internal, and the decoder is rebuilt against **libheif 1.23.7**,
+a security release.
 
 ### Added
 
 - **Opt-in platform-native HEIC decoding** (`nativeDecode: true`): on HEIC-capable hosts the platform's own `createImageBitmap` stack decodes and the ~290 KB gzipped libheif payload is never fetched. The Strategy lives in its own lazy chunk, fails over to libheif transparently, and never surfaces a native error to a caller. See API.md _Decode strategy_.
 - **Worker reuse**: `convertHeicInWorker`/`convertManyInWorker` keep live workers across a batch — a worker that answered a clean `ok: true` is parked and adopted by the next request instead of paying boot again; anything unclean (timeout, abort, transport error, `ok: false`) is still terminated, so a faulted module never serves the next item. At most 2 workers per URL are kept warm, so idle pools cannot hoard grown WASM heaps.
 - **Shared compiled module recipe** (API.md): `moduleOverrides.instantiateWasm` now has a documented, test-verified recipe for compiling `heic-decoder.wasm` once and instantiating it per decoder.
+- **`npm run wasm:goldens`** (contributor tooling — nothing new ships): regenerates the WASM decode goldens from the built decoder, so a decoder change that flips an outcome lands as a wholesale regeneration rather than a hand-adjusted table row. The mutation generator moved to `build-scripts/wasm-golden-table.mjs` and is shared with the suite, so the assertions and the generator cannot drift apart.
 
 ### Changed
 
