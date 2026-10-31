@@ -4,12 +4,12 @@ The WASM decoder is built from the following upstream libraries, cross-compiled 
 
 | Library | Version | Repository |
 | --- | --- | --- |
-| libheif | 1.23.5 | https://github.com/strukturag/libheif |
+| libheif | 1.23.7 | https://github.com/strukturag/libheif |
 | libde265 | 1.1.3 | https://github.com/strukturag/libde265 |
 
 Both libraries are checked out as **git submodules** under `build-wasm/src/`, pinned to their release tags:
 
-- `build-wasm/src/libheif` → `v1.23.5`
+- `build-wasm/src/libheif` → `v1.23.7`
 - `build-wasm/src/libde265` → `v1.1.3`
 
 ## Updating

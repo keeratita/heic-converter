@@ -22,7 +22,7 @@ You should get an acknowledgement within 3 business days and a fix timeline with
 
 The decoder parses **attacker-supplied `.heic`/`.heif` files**, so anything that lets a crafted image do more than return an error is in scope:
 
-- Memory-safety or control-flow issues reachable through the WASM build of **libheif 1.23.5** / **libde265 1.1.3** (a malformed container, tile grid, property box, or EXIF block causing an out-of-bounds read/write, unbounded allocation, or module abort).
+- Memory-safety or control-flow issues reachable through the WASM build of **libheif 1.23.7** / **libde265 1.1.3** (a malformed container, tile grid, property box, or EXIF block causing an out-of-bounds read/write, unbounded allocation, or module abort).
 - A `WebAssembly.RuntimeError` / `Aborted(...)` escaping as an uncaught error instead of a typed `HeicConverterError`, or bad input leaving a decoder instance usable again afterwards — each conversion gets its own instance, and one whose module faulted is discarded rather than returned to the pool.
 - Unvalidated options reaching the canvas/encoder path (`resize`, `crop`, `quality`) in a way that blocks the event loop or exhausts memory beyond the documented limits.
 - EXIF re-injection (`preserveExif`) writing bytes outside the segment/chunk it claims to insert, or leaking a block into a format that should not carry it.

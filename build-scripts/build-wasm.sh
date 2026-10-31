@@ -3,7 +3,7 @@ set -e
 
 # Configuration
 LIBDE265_VERSION="1.1.3"
-LIBHEIF_VERSION="1.23.6"
+LIBHEIF_VERSION="1.23.7"
 EMSDK_VERSION="3.1.56"
 BUILD_DIR="$(pwd)/build-wasm"
 OUT_DIR="$(pwd)/src/wasm/public"
@@ -136,7 +136,10 @@ else
     -DWITH_EXAMPLES=OFF \\
     -DCMAKE_C_FLAGS=\"-Oz\" \\
     -DCMAKE_CXX_FLAGS=\"-Oz -DLIBHEIF_BOX_EMSCRIPTEN_H\"
-  # The codec knobs use the option() names libheif 1.23.5 declares. The old
+  # The codec knobs are libheif's generated per-codec options: CMakeLists declares
+  # option(WITH_<name>) in a loop over its codec table, so a name the pinned version
+  # does not generate is silently ignored rather than an error. The set was diffed
+  # against upstream v1.23.5 and v1.23.7: unchanged. The old
   # -DWITH_AOM/-DWITH_JPEG/-DWITH_OPENJPEG spelled options that do not exist, so
   # CMake ignored them and the real knobs kept their ON defaults; only a failing
   # find_package inside the emsdk image kept those codecs out. Spelling them

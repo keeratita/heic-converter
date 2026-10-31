@@ -69,7 +69,10 @@ const FIXTURE_GOLDENS: Record<string, FixtureGolden> = {
  * Expected outcome per mutated input: `OK:<first 12 hex of RGBA sha256>` or
  * `ERR:<error code>`. Regenerate with the decoder after an intentional change to
  * the fixtures or the decode pipeline — never adjust a single entry to make a
- * build pass.
+ * build pass. Regenerated wholesale for the libheif 1.23.7 rebuild: all 66 inputs
+ * re-decoded against the committed artifacts, 65 reproduced unchanged and exactly
+ * one moved (`exif-orientation-6.heic:trunc0.999`); `reproduces the golden outcome
+ * for every mutated input` re-checks every row on each run.
  */
 const MUTATION_GOLDENS: Record<string, string> = {
   'example.heic:full': 'OK:7f8f77c3e33f',
@@ -120,7 +123,12 @@ const MUTATION_GOLDENS: Record<string, string> = {
   'exif-orientation-6.heic:trunc0.25': 'ERR:decode_failed',
   'exif-orientation-6.heic:trunc0.5': 'ERR:decode_failed',
   'exif-orientation-6.heic:trunc0.75': 'ERR:decode_failed',
-  'exif-orientation-6.heic:trunc0.999': 'ERR:decode_failed',
+  // 1.23.7 dropped 1.23.6's whole-file rejection here. This truncation drops the last
+  // 11 bytes of the 12-byte tag-274 IFD entry (its type, count and value) plus the
+  // 4-byte next-IFD offset, so IFD0 declares an entry with no body; the image decodes
+  // with pixels identical to :full. The hash alone cannot see that the malformed Exif
+  // item was *dropped* — the dedicated test below pins that part.
+  'exif-orientation-6.heic:trunc0.999': 'OK:2000e8366c8a',
   'exif-orientation-6.heic:empty': 'ERR:decode_failed',
   'exif-orientation-6.heic:garbage': 'ERR:decode_failed',
   'exif-orientation-6.heic:headeronly': 'ERR:decode_failed',
@@ -265,6 +273,38 @@ describe.skipIf(!hasArtifacts && !isCI)('WASM output goldens', { timeout: 30_000
       }
     }
     expect(mismatches).toEqual([]);
+  });
+
+  it('drops a truncated Exif item rather than failing the decode', async () => {
+    // The mutation table records only the RGBA hash, so it cannot tell "identical
+    // pixels, metadata intact" from "identical pixels, metadata thrown away". This is
+    // the orientation regression fixture, and :trunc0.999 cuts its tag-274 IFD entry
+    // mid-body: libheif 1.23.6 rejected the whole file, 1.23.7 discards the malformed
+    // Exif item and returns the same raster with no orientation and no block to
+    // inject — metadata loss, never a half-parsed block reaching the injectors. Pin
+    // the whole outcome, not just the pixels.
+    const golden = FIXTURE_GOLDENS['exif-orientation-6.heic'];
+    // The same input the table's :trunc0.999 row pins, taken from the generator that
+    // produces it, so the two cannot drift apart.
+    const [truncated] = buildMutations()
+      .filter(([label]) => label === 'exif-orientation-6.heic:trunc0.999')
+      .map(([, bytes]) => bytes);
+    expect(truncated, 'the mutation generator no longer emits :trunc0.999').toBeDefined();
+
+    const full = await decodeFresh(fs.readFileSync(path.join(FIXTURE_DIR, 'exif-orientation-6.heic')));
+    expect([full.width, full.height, full.orientation, full.exif?.length ?? 0]).toEqual([
+      golden.width,
+      golden.height,
+      golden.orientation,
+      golden.exifBytes
+    ]);
+
+    const partial = await decodeFresh(truncated);
+    expect(partial.width).toBe(full.width);
+    expect(partial.height).toBe(full.height);
+    expect(await sha256(partial.data)).toBe(await sha256(full.data));
+    expect(partial.orientation).toBeUndefined();
+    expect(partial.exif).toBeUndefined();
   });
 
   it('reports malformed input as a typed error, never as a module abort', async () => {
