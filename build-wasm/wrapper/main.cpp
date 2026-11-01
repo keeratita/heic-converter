@@ -2,14 +2,24 @@
 // single source of truth; build-scripts/build-wasm.sh compiles it directly).
 // Keep the decode limits below in sync with MAX_CANVAS_DIMENSION in
 // src/render/canvas.ts and the wrapper contract in src/wasm/wrapper.ts.
-#include <emscripten/bind.h>
+//
+// Raw C ABI — no embind (the build links without --bind): the exported
+// surface is heic_decode / heic_result_free below plus _malloc/_free from the
+// allocator. embind's typeinfo/marshalling tables in the module and its
+// runtime in the glue measured 13.7 KB gz combined at the pinned flags, so
+// the JS side reads the fixed-layout DecodeResult header through a DataView
+// and copies the plane itself. Progress reaches JS through the EM_JS
+// trampoline — EM_JS compiles to a plain glue function, so
+// DYNAMIC_EXECUTION=0 is unaffected — with the host callback installed as
+// Module.__progressCb by src/wasm/wrapper.ts immediately around the
+// synchronous heic_decode() call.
+#include <emscripten.h>
 #include <libheif/heif.h>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <string>
 #include <vector>
-
-using namespace emscripten;
 
 namespace {
 
@@ -18,6 +28,8 @@ namespace {
 // kMaxDecodeDimension matches MAX_CANVAS_DIMENSION in src/render/canvas.ts;
 // kMaxDecodePixels keeps the RGBA buffer we hand to JS <= 256 MB. libheif's
 // own default is 32768^2 pixels (~4 GB RGBA), far too large for a browser.
+// src/wasm/native.ts pins its own caps to these two constants by parsing
+// this file — keep the declarations in sync or that test fails.
 const int kMaxDecodeDimension = 16384;
 const uint64_t kMaxDecodePixels = 64ULL * 1024 * 1024;
 
@@ -38,12 +50,23 @@ std::string heif_error_to_string(const heif_error& err) {
     return msg;
 }
 
+// Whole-container fourcc scan. The first-byte search is the hot part: memchr
+// measured 2.8x over the naive per-byte loop on the adversarial worst case
+// (full double pass with no early meta-box hit), while typical files cost
+// ~0.1% of decode time either way. Semantics are the naive scan's exactly:
+// true when the 4 bytes occur anywhere in [bytes, bytes+len).
 bool contains_fourcc(const uint8_t* bytes, size_t len, const char* cc) {
-    for (size_t i = 0; i + 4 <= len; ++i) {
-        if (bytes[i] == (uint8_t)cc[0] && bytes[i + 1] == (uint8_t)cc[1] &&
-            bytes[i + 2] == (uint8_t)cc[2] && bytes[i + 3] == (uint8_t)cc[3]) {
+    const uint8_t* p = bytes;
+    const uint8_t* end = bytes + len;
+    while (end - p >= 4) {
+        p = (const uint8_t*)memchr(p, (uint8_t)cc[0], (size_t)(end - p));
+        if (p == nullptr) {
+            return false;
+        }
+        if (end - p >= 4 && memcmp(p, cc, 4) == 0) {
             return true;
         }
+        ++p;
     }
     return false;
 }
@@ -168,7 +191,7 @@ bool is_tiff_header(const uint8_t* p, size_t size) {
     if (!le && !be) {
         return false;
     }
-    const uint16_t magic = le ? (uint16_t)(p[2] | (p[3] << 8)) : (uint16_t)(p[3] | (p[2] << 8));
+    const uint16_t magic = le ? (uint16_t)(p[2] | (p[3] << 8)) : (uint32_t)(p[3] | (p[2] << 8));
     return magic == 42;
 }
 
@@ -214,245 +237,263 @@ std::vector<uint8_t> normalize_exif_item(const uint8_t* data, size_t size) {
     return out;
 }
 
-struct DecodeProgressData {
-    val callback;
-    int max_progress = 0;
-};
+// Progress trampoline: EM_JS compiles this into the glue as a plain function
+// (no eval / new Function — DYNAMIC_EXECUTION=0 is unaffected). The host
+// callback is Module.__progressCb, installed by src/wasm/wrapper.ts
+// immediately before the synchronous heic_decode() call and cleared after.
+// A throwing host callback must never unwind through libheif (raw
+// ctx/handle/img would leak) or abort the module; the JS wrapper records host
+// throws at its own boundary and this catch swallows anything that still
+// escapes.
+EM_JS(void, call_js_progress, (double percent), {
+  try {
+    if (Module.__progressCb) {
+      Module.__progressCb(percent);
+    }
+  } catch (e) {}
+});
+
+// Single-threaded, synchronous decode: this file-scope state is race-free.
+int g_max_progress = 0;
 
 } // namespace
 
-class HeicDecoderWasm {
-public:
-    // Convenience entry point: embind marshals the JS Uint8Array into a
-    // std::string byte-by-byte. Kept for compatibility with glue builds that
-    // do not export _malloc/_free; prefer decodeFromPointer (below) when
-    // available (see src/wasm/wrapper.ts).
-    val decode(std::string data, val progress_callback) {
-        return decode_bytes(reinterpret_cast<const uint8_t*>(data.data()),
-                            data.size(),
-                            progress_callback);
-    }
-
-    // Fast path: the caller placed the file bytes in the WASM heap itself
-    // (module._malloc + HEAPU8.set), avoiding embind's per-byte input
-    // marshalling. heap_ptr/len are only valid for the duration of this call.
-    // heap_ptr is a plain number, not a raw pointer: embind forbids binding
-    // raw pointer parameters (static_assert in wire.h), and the JS side
-    // already holds a numeric address from _malloc anyway.
-    val decodeFromPointer(uintptr_t heap_ptr, uint32_t len, val progress_callback) {
-        const uint8_t* ptr = reinterpret_cast<const uint8_t*>(heap_ptr);
-        if (heap_ptr == 0 || ptr == nullptr || len == 0) {
-            return val("Empty decode input");
-        }
-        return decode_bytes(ptr, static_cast<size_t>(len), progress_callback);
-    }
-
-private:
-    val decode_bytes(const uint8_t* bytes, size_t len, val progress_callback) {
-        if (bytes == nullptr || len == 0) {
-            return val("Empty decode input");
-        }
-
-        heif_context* ctx = heif_context_alloc();
-        if (!ctx) {
-            return val("Failed to allocate heif context");
-        }
-
-        // Cap memory libheif itself allocates for one (possibly adversarial)
-        // file, well below the 1.23.x default of 32768^2 pixels.
-        heif_security_limits* limits = heif_context_get_security_limits(ctx);
-        if (limits) {
-            limits->max_image_size_pixels = kMaxDecodePixels;
-        }
-
-        heif_error err = heif_context_read_from_memory_without_copy(
-            ctx, bytes, len, nullptr);
-
-        if (err.code != heif_error_Ok) {
-            heif_context_free(ctx);
-            return val(heif_error_to_string(err));
-        }
-
-        heif_image_handle* handle = nullptr;
-        err = heif_context_get_primary_image_handle(ctx, &handle);
-        if (err.code != heif_error_Ok) {
-            heif_context_free(ctx);
-            return val(heif_error_to_string(err));
-        }
-
-        const bool has_progress =
-            !progress_callback.isUndefined() && !progress_callback.isNull();
-
-        DecodeProgressData progress_data{progress_callback, 0};
-        heif_decoding_options* options = heif_decoding_options_alloc();
-
-        if (has_progress) {
-            options->start_progress = [](enum heif_progress_step, int max_progress, void* progress_user_data) {
-                if (progress_user_data) {
-                    auto* d = static_cast<DecodeProgressData*>(progress_user_data);
-                    d->max_progress = max_progress;
-                }
-            };
-            options->on_progress = [](enum heif_progress_step, int progress, void* progress_user_data) {
-                if (progress_user_data) {
-                    auto* d = static_cast<DecodeProgressData*>(progress_user_data);
-                    if (d->max_progress > 0 && !d->callback.isUndefined()) {
-                        double percent = (double)progress / d->max_progress * 100.0;
-                        try {
-                            d->callback(percent);
-                        } catch (...) {
-                            // A throwing host callback must never unwind
-                            // through libheif (raw ctx/handle/img would leak)
-                            // or abort the module; disable further callbacks.
-                            d->callback = val::undefined();
-                        }
-                    }
-                }
-            };
-            options->progress_user_data = &progress_data;
-            try {
-                progress_callback(0.0);
-            } catch (...) {
-                progress_data.callback = val::undefined();
-            }
-        }
-
-        heif_image* img = nullptr;
-        err = heif_decode_image(handle, &img, heif_colorspace_RGB, heif_chroma_interleaved_RGBA, options);
-
-        // Orientation policy:
-        // - `irot`/`imir` display transforms are applied by libheif during
-        //   decode (dimensions come back swapped), so files carrying those
-        //   boxes must never be rotated further — Apple-style files have both
-        //   irot and EXIF tag 274, and reading EXIF unconditionally would
-        //   double-rotate them.
-        // - Otherwise honor the EXIF orientation tag (274) from the Exif
-        //   item: the file class written by editors that only rewrite EXIF
-        //   metadata; browsers honor it, so we must too.
-        // The irot/imir check is a whole-container fourcc scan: conservative
-        // by design, the worst case is "not rotated" (pre-fix behavior),
-        // never "double-rotated".
-        //
-        // The raw Exif *bytes* are read regardless of the fourcc guard (for
-        // metadata preservation in converted output): files that both carry
-        // irot and hold EXIF should still be able to preserve the block —
-        // only the orientation value is guarded.
-        int orientation = 1;
-        std::vector<uint8_t> exif_block;
-        if (err.code == heif_error_Ok) {
-            const bool pending_transform =
-                contains_fourcc(bytes, len, "irot") || contains_fourcc(bytes, len, "imir");
-            int n_blocks = heif_image_handle_get_number_of_metadata_blocks(handle, "Exif");
-            if (n_blocks > kMaxMetadataBlocks) {
-                n_blocks = kMaxMetadataBlocks;
-            }
-            if (n_blocks > 0) {
-                std::vector<heif_item_id> ids((size_t)n_blocks);
-                int got = heif_image_handle_get_list_of_metadata_block_IDs(
-                    handle, "Exif", ids.data(), n_blocks);
-                for (int i = 0; i < got; ++i) {
-                    if (!exif_block.empty() && (pending_transform || orientation != 1)) {
-                        break; // have everything we came for
-                    }
-                    size_t msize = heif_image_handle_get_metadata_size(handle, ids[i]);
-                    if (msize < 8 || msize > kMaxExifParseBytes) {
-                        continue;
-                    }
-                    std::vector<uint8_t> buf(msize);
-                    heif_error merr = heif_image_handle_get_metadata(handle, ids[i], buf.data());
-                    if (merr.code != heif_error_Ok) {
-                        continue;
-                    }
-                    if (exif_block.empty()) {
-                        exif_block = normalize_exif_item(buf.data(), msize);
-                    }
-                    if (!pending_transform && orientation == 1) {
-                        orientation = parse_exif_orientation(buf.data(), msize);
-                    }
-                }
-            }
-        }
-
-        heif_image_handle_release(handle);
-        heif_decoding_options_free(options);
-
-        if (err.code != heif_error_Ok) {
-            heif_context_free(ctx);
-            return val(heif_error_to_string(err));
-        }
-
-        int width = heif_image_get_width(img, heif_channel_interleaved);
-        int height = heif_image_get_height(img, heif_channel_interleaved);
-
-        // Trust nothing returned by the decoder: validate dimensions in
-        // 64-bit arithmetic *before* allocating (width*height*4 overflows
-        // int above ~2^29 pixels), then reject anything beyond our caps.
-        if (width <= 0 || height <= 0 ||
-            width > kMaxDecodeDimension || height > kMaxDecodeDimension ||
-            (uint64_t)width * (uint64_t)height > kMaxDecodePixels) {
-            heif_image_release(img);
-            heif_context_free(ctx);
-            return val("Decoded image dimensions " + std::to_string(width) + "x" +
-                       std::to_string(height) +
-                       " exceed the supported limits (" +
-                       std::to_string(kMaxDecodeDimension) + "px per side, " +
-                       std::to_string(kMaxDecodePixels / (1024 * 1024)) + "MP total)");
-        }
-
-        int stride = 0;
-        const uint8_t* p = heif_image_get_plane_readonly(img, heif_channel_interleaved, &stride);
-        const uint64_t row_bytes = (uint64_t)width * 4;
-        if (p == nullptr || stride < (int)row_bytes) {
-            heif_image_release(img);
-            heif_context_free(ctx);
-            return val("Failed to access decoded pixel plane");
-        }
-
-        if (has_progress) {
-            try {
-                progress_callback(100.0);
-            } catch (...) {
-                // Progress reporting is best-effort; never fail a good decode.
-            }
-        }
-
-        // Copy pixels into a JS-owned Uint8Array so the result stays valid
-        // after free() and across concurrent decodes (never a heap view).
-        const uint64_t total_bytes = row_bytes * (uint64_t)height;
-        val resultData = val::global("Uint8Array").new_((uint32_t)total_bytes);
-        if ((uint64_t)stride == row_bytes) {
-            // Tightly packed rows: one bulk copy instead of height JS calls.
-            resultData.call<void>("set", val(typed_memory_view((size_t)total_bytes, p)));
-        } else {
-            for (int y = 0; y < height; ++y) {
-                val memoryView = val(typed_memory_view((size_t)row_bytes, p + (size_t)y * stride));
-                resultData.call<void>("set", memoryView, val((uint32_t)((uint64_t)y * row_bytes)));
-            }
-        }
-
-        heif_image_release(img);
-        heif_context_free(ctx);
-
-        val result = val::object();
-        result.set("width", width);
-        result.set("height", height);
-        result.set("data", resultData);
-        result.set("orientation", orientation);
-        if (!exif_block.empty()) {
-            // JS-owned copy (same guarantee as `data`): valid after free(),
-            // never a WASM-heap view. Already normalized to "Exif\0\0"+TIFF.
-            val exifData = val::global("Uint8Array").new_((uint32_t)exif_block.size());
-            exifData.call<void>("set",
-                                val(typed_memory_view(exif_block.size(), exif_block.data())));
-            result.set("exif", exifData);
-        }
-        return result;
-    }
+// The JS-visible header is nine 4-byte fields at fixed offsets (static
+// asserted below), read through a DataView in src/wasm/wrapper.ts. Everything
+// after error_len is C++-private bookkeeping that JS must never read; the
+// struct and what it owns are released only by heic_result_free.
+struct DecodeResult {
+    int32_t width;       // 0 => error; read error/error_len for the detail
+    int32_t height;
+    int32_t orientation; // 1..8 as parsed; JS applies its own range guard
+    uint32_t plane;      // RGBA bytes: `height` rows of `stride` bytes
+    uint32_t stride;
+    uint32_t exif;       // "Exif\0\0"+TIFF block, or 0
+    uint32_t exif_len;
+    uint32_t error;      // utf8 detail bytes, or 0
+    uint32_t error_len;
+    // Private state — released by heic_result_free, never read by JS:
+    heif_image* img;
+    heif_context* ctx;
+    std::vector<uint8_t>* exif_store;
+    std::vector<char>* error_store;
 };
 
-EMSCRIPTEN_BINDINGS(heic_decoder_module) {
-    class_<HeicDecoderWasm>("HeicDecoder")
-        .constructor<>()
-        .function("decode", &HeicDecoderWasm::decode)
-        .function("decodeFromPointer", &HeicDecoderWasm::decodeFromPointer);
+static_assert(offsetof(DecodeResult, width) == 0, "layout");
+static_assert(offsetof(DecodeResult, error_len) == 32, "layout");
+static_assert(sizeof(DecodeResult) == 52, "layout");
+
+namespace {
+
+DecodeResult* make_error(const std::string& message) {
+    DecodeResult* r = new DecodeResult();
+    r->width = 0;
+    r->height = 0;
+    r->orientation = 0;
+    r->plane = 0;
+    r->stride = 0;
+    r->exif = 0;
+    r->exif_len = 0;
+    r->error_store = new std::vector<char>(message.begin(), message.end());
+    r->error = r->error_store->empty() ? 0 : (uint32_t)(uintptr_t)r->error_store->data();
+    r->error_len = (uint32_t)r->error_store->size();
+    r->img = nullptr;
+    r->ctx = nullptr;
+    r->exif_store = nullptr;
+    return r;
 }
+
+DecodeResult* decode_raw(const uint8_t* bytes, size_t len) {
+    if (bytes == nullptr || len == 0) {
+        return make_error("Empty decode input");
+    }
+
+    heif_context* ctx = heif_context_alloc();
+    if (!ctx) {
+        return make_error("Failed to allocate heif context");
+    }
+
+    // Cap memory libheif itself allocates for one (possibly adversarial)
+    // file, well below the 1.23.x default of 32768^2 pixels.
+    heif_security_limits* limits = heif_context_get_security_limits(ctx);
+    if (limits) {
+        limits->max_image_size_pixels = kMaxDecodePixels;
+    }
+
+    heif_error err = heif_context_read_from_memory_without_copy(ctx, bytes, len, nullptr);
+    if (err.code != heif_error_Ok) {
+        heif_context_free(ctx);
+        return make_error(heif_error_to_string(err));
+    }
+
+    heif_image_handle* handle = nullptr;
+    err = heif_context_get_primary_image_handle(ctx, &handle);
+    if (err.code != heif_error_Ok) {
+        heif_context_free(ctx);
+        return make_error(heif_error_to_string(err));
+    }
+
+    g_max_progress = 0;
+    heif_decoding_options* options = heif_decoding_options_alloc();
+    options->start_progress = [](enum heif_progress_step, int max_progress, void*) {
+        g_max_progress = max_progress;
+    };
+    options->on_progress = [](enum heif_progress_step, int progress, void*) {
+        if (g_max_progress > 0) {
+            call_js_progress((double)progress / (double)g_max_progress * 100.0);
+        }
+    };
+    options->progress_user_data = nullptr;
+    call_js_progress(0.0);
+
+    heif_image* img = nullptr;
+    err = heif_decode_image(handle, &img, heif_colorspace_RGB, heif_chroma_interleaved_RGBA, options);
+
+    // Orientation policy:
+    // - `irot`/`imir` display transforms are applied by libheif during
+    //   decode (dimensions come back swapped), so files carrying those
+    //   boxes must never be rotated further — Apple-style files have both
+    //   irot and EXIF tag 274, and reading EXIF unconditionally would
+    //   double-rotate them.
+    // - Otherwise honor the EXIF orientation tag (274) from the Exif
+    //   item: the file class written by editors that only rewrite EXIF
+    //   metadata; browsers honor it, so we must too.
+    // The irot/imir check is a whole-container fourcc scan: conservative
+    // by design, the worst case is "not rotated" (pre-fix behavior),
+    // never "double-rotated".
+    //
+    // The raw Exif *bytes* are read regardless of the fourcc guard (for
+    // metadata preservation in converted output): files that both carry
+    // irot and hold EXIF should still be able to preserve the block —
+    // only the orientation value is guarded.
+    int orientation = 1;
+    std::vector<uint8_t> exif_block;
+    if (err.code == heif_error_Ok) {
+        const bool pending_transform =
+            contains_fourcc(bytes, len, "irot") || contains_fourcc(bytes, len, "imir");
+        int n_blocks = heif_image_handle_get_number_of_metadata_blocks(handle, "Exif");
+        if (n_blocks > kMaxMetadataBlocks) {
+            n_blocks = kMaxMetadataBlocks;
+        }
+        if (n_blocks > 0) {
+            std::vector<heif_item_id> ids((size_t)n_blocks);
+            int got = heif_image_handle_get_list_of_metadata_block_IDs(
+                handle, "Exif", ids.data(), n_blocks);
+            for (int i = 0; i < got; ++i) {
+                if (!exif_block.empty() && (pending_transform || orientation != 1)) {
+                    break; // have everything we came for
+                }
+                size_t msize = heif_image_handle_get_metadata_size(handle, ids[i]);
+                if (msize < 8 || msize > kMaxExifParseBytes) {
+                    continue;
+                }
+                std::vector<uint8_t> buf(msize);
+                heif_error merr = heif_image_handle_get_metadata(handle, ids[i], buf.data());
+                if (merr.code != heif_error_Ok) {
+                    continue;
+                }
+                if (exif_block.empty()) {
+                    exif_block = normalize_exif_item(buf.data(), msize);
+                }
+                if (!pending_transform && orientation == 1) {
+                    orientation = parse_exif_orientation(buf.data(), msize);
+                }
+            }
+        }
+    }
+
+    heif_image_handle_release(handle);
+    heif_decoding_options_free(options);
+
+    if (err.code != heif_error_Ok) {
+        heif_context_free(ctx);
+        return make_error(heif_error_to_string(err));
+    }
+
+    int width = heif_image_get_width(img, heif_channel_interleaved);
+    int height = heif_image_get_height(img, heif_channel_interleaved);
+
+    // Trust nothing returned by the decoder: validate dimensions in
+    // 64-bit arithmetic *before* allocating (width*height*4 overflows
+    // int above ~2^29 pixels), then reject anything beyond our caps.
+    if (width <= 0 || height <= 0 ||
+        width > kMaxDecodeDimension || height > kMaxDecodeDimension ||
+        (uint64_t)width * (uint64_t)height > kMaxDecodePixels) {
+        heif_image_release(img);
+        heif_context_free(ctx);
+        return make_error("Decoded image dimensions " + std::to_string(width) + "x" +
+                          std::to_string(height) +
+                          " exceed the supported limits (" +
+                          std::to_string(kMaxDecodeDimension) + "px per side, " +
+                          std::to_string(kMaxDecodePixels / (1024 * 1024)) + "MP total)");
+    }
+
+    int stride = 0;
+    const uint8_t* p = heif_image_get_plane_readonly(img, heif_channel_interleaved, &stride);
+    const uint64_t row_bytes = (uint64_t)width * 4;
+    if (p == nullptr || stride < (int)row_bytes) {
+        heif_image_release(img);
+        heif_context_free(ctx);
+        return make_error("Failed to access decoded pixel plane");
+    }
+
+    call_js_progress(100.0);
+
+    // The image and context stay alive until JS has copied the plane (one
+    // copy, same as the old embind path did on the C++ side);
+    // heic_result_free ends them. Until then this is the only owner, so the
+    // plane/exif pointers JS reads are stable for the duration.
+    DecodeResult* r = new DecodeResult();
+    r->width = width;
+    r->height = height;
+    r->orientation = orientation;
+    r->plane = (uint32_t)(uintptr_t)p;
+    r->stride = (uint32_t)stride;
+    r->error = 0;
+    r->error_len = 0;
+    r->error_store = nullptr;
+    r->img = img;
+    r->ctx = ctx;
+    if (!exif_block.empty()) {
+        r->exif_store = new std::vector<uint8_t>(std::move(exif_block));
+        r->exif = (uint32_t)(uintptr_t)r->exif_store->data();
+        r->exif_len = (uint32_t)r->exif_store->size();
+    } else {
+        r->exif_store = nullptr;
+        r->exif = 0;
+        r->exif_len = 0;
+    }
+    return r;
+}
+
+} // namespace
+
+extern "C" {
+
+// heap_ptr must reference `len` bytes of a file already placed in the WASM
+// heap by the caller (malloc + HEAPU8.set). Returns a heap-allocated result;
+// the caller MUST call heic_result_free exactly once after copying the data.
+DecodeResult* heic_decode(uintptr_t heap_ptr, uint32_t len) {
+    const uint8_t* ptr = reinterpret_cast<const uint8_t*>(heap_ptr);
+    if (heap_ptr == 0 || ptr == nullptr || len == 0) {
+        return make_error("Empty decode input");
+    }
+    return decode_raw(ptr, static_cast<size_t>(len));
+}
+
+void heic_result_free(DecodeResult* r) {
+    if (r == nullptr) {
+        return;
+    }
+    if (r->img) {
+        heif_image_release(r->img);
+    }
+    if (r->ctx) {
+        heif_context_free(r->ctx);
+    }
+    delete r->exif_store;
+    delete r->error_store;
+    delete r;
+}
+
+} // extern "C"

@@ -448,7 +448,7 @@ class LibheifDecoder implements IHeicDecoder {
 | Method | Guarantees |
 | --- | --- |
 | `initialize()` | Loads the glue chunk and instantiates the module. The load promise is memoized, so concurrent calls load at most once per instance; a failed load is retryable. Rejects are surfaced by the callers as `decoder_init_failed` |
-| `decode(data, onProgress?)` | Decodes to raw RGBA. Callable without a prior `initialize()` (it initializes on demand) and callable again after `free()` (it transparently re-initializes). Progress values are normalized to `0`–`100`, and a throwing callback is contained — it never unwinds through embind or aborts the module |
+| `decode(data, onProgress?)` | Decodes to raw RGBA. Callable without a prior `initialize()` (it initializes on demand) and callable again after `free()` (it transparently re-initializes). Progress values are normalized to `0`–`100`, and a throwing callback is contained — it never reaches the WASM module or aborts it |
 | `free()` | Releases the module and instance. Idempotent, safe while `initialize()` is in flight (the in-flight load is discarded), and clears the fault mark because a fresh module means a fresh heap |
 
 If a decode traps inside the module (`WebAssembly.RuntimeError`, abort), the instance is marked faulted — its emmalloc arena is unusable afterwards — and the error is reported as a typed `decode_failed` with the original on `cause`. `convertMany({ reuseDecoders: true })` uses that mark to free a poisoned instance instead of leasing it to the next item.

@@ -159,8 +159,8 @@ else
   # correctly makes the exclusion structural. WITH_LIBSHARPYUV stays ON: inert
   # (its find_package never resolves) and never validated off against the goldens.
   # -DLIBHEIF_BOX_EMSCRIPTEN_H compiles out libheif's own EMSCRIPTEN_BINDINGS block
-  # (heif_emscripten.h): main.cpp binds its own class, so that table is dead weight
-  # worth 5,451 B gz on top of -Oz.
+  # (heif_emscripten.h): main.cpp exports a plain C ABI and links without --bind,
+  # so that table is dead weight worth 5,451 B gz on top of -Oz.
   emmake make -j\$(nproc)
   # Guard: no third-party codec may be linked in. libheif compiles plugin wrappers
   # in whenever its find_package resolves, so check the cache instead of trusting
@@ -182,8 +182,11 @@ echo 'Compiling WebAssembly wrapper...'
 
 # Compile to WASM with strict CSP (-s DYNAMIC_EXECUTION=0).
 # Must be preserved (see AGENTS.md): DYNAMIC_EXECUTION=0, ALLOW_MEMORY_GROWTH=1,
-# EXPORT_ES6=1, MODULARIZE=1, ENVIRONMENT, --bind, link-level -O3, MALLOC=emmalloc,
-# FILESYSTEM=0, and the post-link wasm-opt pass.
+# EXPORT_ES6=1, MODULARIZE=1, ENVIRONMENT, MALLOC=emmalloc, FILESYSTEM=0,
+# link-level -O3, the exported raw C ABI (_heic_decode/_heic_result_free —
+# main.cpp is designed for a --bind-less link; re-adding --bind re-ships
+# embind's ~13.7 KB gz of tables + glue runtime for nothing), and the
+# post-link wasm-opt pass.
 # Size also depends on the two build-time libheif patches — the neutralizer
 # (diagnostic printers stubbed) and the -include shim (sstream faked) above —
 # plus the link-map guard below that fails the build when they stop biting.
@@ -194,14 +197,17 @@ echo 'Compiling WebAssembly wrapper...'
 # the archives at -Oz above.
 #
 # FILESYSTEM=0 is safe because decoding is memory-only (read_from_memory_without_copy
-# in, embind RGBA out; the lone fopen in libde265 sits inside #if 0). Emscripten
-# links syscall stubs instead of MEMFS, halving the glue with a byte-identical
-# module; a libheif that truly needed the filesystem would abort on first decode.
+# in, raw RGBA plane out via DecodeResult; the lone fopen in libde265 sits inside
+# #if 0). Emscripten links syscall stubs instead of MEMFS, halving the glue with a
+# byte-identical module; a libheif that truly needed the filesystem would abort on
+# first decode.
 #
-# -fexceptions/-fcxx-exceptions: main.cpp's try/catch keeps a throwing JS progress
-#   callback from unwinding through libheif.
-# EXPORTED_FUNCTIONS/EXPORTED_RUNTIME_METHODS: the decodeFromPointer fast path in
-#   src/wasm/wrapper.ts.
+# -fexceptions/-fcxx-exceptions: exception support for the wrapper TU's own std::
+#   allocations (strings, vectors). Host progress throws are contained in the
+#   EM_JS trampoline in main.cpp, never by unwinding through libheif.
+# EXPORTED_FUNCTIONS/EXPORTED_RUNTIME_METHODS: the pointer protocol in
+#   src/wasm/wrapper.ts — JS uploads the file via _malloc, calls _heic_decode,
+#   reads the DecodeResult header, and releases it with _heic_result_free.
 emcc ${WRAPPER_SRC} \\
     -o /src/build-wasm/wrapper/heic-decoder.js \\
     -I/src/build-wasm/src/libheif/libheif/api \\
@@ -215,12 +221,12 @@ emcc ${WRAPPER_SRC} \\
     -s MODULARIZE=1 \\
     -s ENVIRONMENT=\"web,worker,node\" \\
     -s EXPORT_NAME=\"createHeicDecoderModule\" \\
-    -s EXPORTED_FUNCTIONS=_malloc,_free \\
+    -s EXPORTED_FUNCTIONS=_malloc,_free,_heic_decode,_heic_result_free \\
     -s EXPORTED_RUNTIME_METHODS=HEAPU8 \\
     -s MALLOC=emmalloc \\
     -s FILESYSTEM=0 \\
     -fexceptions -fcxx-exceptions \\
-    -O3 --bind \\
+    -O3 \\
     -Wl,-Map=/src/build-wasm/wrapper/heic-decoder.map
 
 # Post-link size pass: binaryen runs on the emitted module after the glue is final,
