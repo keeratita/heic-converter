@@ -5,6 +5,14 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **The decoder sheds embind for a raw C ABI.** `build-wasm/wrapper/main.cpp` now exports `heic_decode`/`heic_result_free` and a static-asserted 36-byte `DecodeResult` header; `src/wasm/wrapper.ts` uploads the file via `_malloc`, reads the struct through a `DataView`, and copies the pixels/exif out on the JS side. embind's marshalling tables and glue runtime cost **13.7 KB gz combined**: the packaged binary is 649,290 → 638,059 raw (247,431 → 242,873 gz) and the lazy glue chunk drops to a third of its size (28,657 → 9,084 minified / 10,215 → 3,762 gz). First-decode payload 265,693 → **254,806 B gz**. CSP is unchanged — `-s DYNAMIC_EXECUTION=0` stands, the EM_JS progress trampoline compiles to a plain glue function, and the eval-scan gate passes.
+- **Decode is byte-identical at timing parity** (1.02× geomean, host-node median over the fixtures incl. 12 MP) — pinned by `wasm-golden.test.ts` (exact RGBA per fixture + the 66-input mutation table), the mocked-glue suite, and the browser E2E. The progress contract is event-sequence-equal to the embind path.
+- The container fourcc scan (`irot`/`imir`) adopts the memchr-driven variant: 2.8× the naive per-byte loop on the adversarial full-container pass, ~0.1% of decode time typical either way.
+
 ## [0.6.1] - 2026-11-01
 
 ### Changed

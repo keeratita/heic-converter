@@ -6,10 +6,8 @@ import { clearFaulted, markFaulted } from './fault';
 // Single source of truth for the glue surface — see the d.ts header. A local
 // duplicate of these interfaces drifted from main.cpp once already.
 import type {
-  HeicDecoderInstance,
   HeicDecoderModule,
   HeicDecoderModuleOptions,
-  HeicDecoderResult,
 } from './wrapper/heic-decoder.js';
 
 export interface LibheifDecoderOptions {
@@ -36,6 +34,20 @@ export interface LibheifDecoderOptions {
   moduleOverrides?: Record<string, unknown>;
 }
 
+// JS-visible header of the C++ DecodeResult (build-wasm/wrapper/main.cpp):
+// nine 4-byte little-endian fields at fixed offsets, static_asserted there.
+// Read through a DataView over the live heap after each decode.
+const RESULT_HEADER_BYTES = 36;
+const RESULT_WIDTH = 0; // Int32; 0 => error, read ERROR/ERROR_LEN
+const RESULT_HEIGHT = 4; // Int32
+const RESULT_ORIENTATION = 8; // Int32, 1..8 as parsed
+const RESULT_PLANE = 12; // Uint32 heap address of RGBA rows
+const RESULT_STRIDE = 16; // Uint32 row pitch in bytes
+const RESULT_EXIF = 20; // Uint32 heap address of "Exif\0\0"+TIFF, or 0
+const RESULT_EXIF_LEN = 24; // Uint32
+const RESULT_ERROR = 28; // Uint32 heap address of utf8 detail, or 0
+const RESULT_ERROR_LEN = 32; // Uint32
+
 /**
  * libheif builds some error strings from raw container bytes (fourccs, mime
  * types, item names), so the detail returned by `decode()` is untrusted input
@@ -55,17 +67,16 @@ function sanitizeDecoderDetail(detail: string): string {
 export class LibheifDecoder implements IHeicDecoder {
   private options?: LibheifDecoderOptions;
   private module: HeicDecoderModule | null = null;
-  private decoderInstance: HeicDecoderInstance | null = null;
   /**
    * Memoized module-loading promise so concurrent initialize()/decode() calls
    * on the same instance never instantiate (or mutate) the module twice.
-   * Resolves null when a concurrent free() discarded the freshly created
-   * instance (see initGeneration).
+   * Resolves null when a concurrent free() discarded the freshly loaded
+   * module (see initGeneration).
    */
   private initPromise: Promise<HeicDecoderModule | null> | null = null;
   /**
    * Generation counter for init/free races: a load that finishes after a
-   * concurrent free() must not resurrect module/decoderInstance.
+   * concurrent free() must not resurrect module.
    */
   private initGeneration = 0;
 
@@ -74,7 +85,7 @@ export class LibheifDecoder implements IHeicDecoder {
   }
 
   /**
-   * Initializes the WebAssembly module and instantiates the HEIC decoder.
+   * Initializes the WebAssembly module (the raw C-ABI decoder surface).
    * Safe to call concurrently: the module is loaded at most once per instance.
    */
   async initialize(): Promise<void> {
@@ -97,31 +108,29 @@ export class LibheifDecoder implements IHeicDecoder {
           createHeicDecoderModule(moduleArgs)
         )
         .then((module) => {
-          const instance = new module.HeicDecoder();
           if (generation !== this.initGeneration) {
             // free() ran during the load: drop it instead of resurrecting.
-            instance.delete();
             return null;
           }
-          // Verify the pointer API once, here instead of re-probing per call:
-          // the pinned build always exports it, so its absence means the
-          // glue/WASM pair does not come from this release (tampered, or a
-          // partial dist/ upload) — a load-stage verdict, not a decode one.
+          // Verify the C-ABI exports once, here instead of re-probing per
+          // call: the pinned build always exports them, so their absence
+          // means the glue/WASM pair does not come from this release
+          // (tampered, or a partial dist/ upload) — a load-stage verdict,
+          // not a decode one.
           const missing = [
-            typeof instance.decodeFromPointer === 'function' ? null : 'decodeFromPointer',
+            typeof module._heic_decode === 'function' ? null : '_heic_decode',
+            typeof module._heic_result_free === 'function' ? null : '_heic_result_free',
             typeof module._malloc === 'function' ? null : '_malloc',
             typeof module._free === 'function' ? null : '_free',
             module.HEAPU8 instanceof Uint8Array ? null : 'HEAPU8',
           ].filter((name): name is string => name !== null);
           if (missing.length > 0) {
-            instance.delete();
             throw new HeicConverterError(
               'decoder_init_failed',
               Messages.GlueApiMissing(missing.join(', '))
             );
           }
           this.module = module;
-          this.decoderInstance = instance;
           return module;
         })
         .catch((error) => {
@@ -147,16 +156,19 @@ export class LibheifDecoder implements IHeicDecoder {
     data: Uint8Array,
     onProgress?: (percent: number) => void
   ): Promise<DecodedImage> {
-    if (!this.module || !this.decoderInstance) {
+    if (!this.module) {
       await this.initialize();
     }
-    if (!this.module || !this.decoderInstance) {
-      // A concurrent free() (or a raced initialization) dropped the instance.
+    const module = this.module;
+    if (!module) {
+      // A concurrent free() (or a raced initialization) dropped the module.
       throw new HeicConverterError('decode_failed', Messages.DecoderFreedDuringDecode);
     }
 
-    // Contain host progress exceptions (unwinding through embind would abort
-    // the module) and normalize values to the documented [0, 100] range.
+    // Contain host progress exceptions (they must never reach the C++
+    // boundary) and normalize values to the documented [0, 100] range. A
+    // throw disables the remaining events of this decode — the same
+    // containment the embind path gave with its per-call callback.
     let progressError: unknown;
     const wrappedProgress = onProgress
       ? (percent: number): void => {
@@ -164,34 +176,103 @@ export class LibheifDecoder implements IHeicDecoder {
             onProgress(clampPercent(percent));
           } catch (error) {
             progressError = progressError ?? error;
+            module.__progressCb = null;
           }
         }
       : null;
 
-    const module = this.module;
-    const instance = this.decoderInstance;
-    const heapBuffer = module.HEAPU8.buffer;
-    let result: HeicDecoderResult | string | null;
+    // Input already backed by the heap would overlap the _malloc slot
+    // HEAPU8.set writes into — copy it out first. (Caller-reachable via a
+    // leaked module ref.)
+    const input = data.buffer === module.HEAPU8.buffer ? new Uint8Array(data) : data;
 
+    let decoded: DecodedImage;
+    let inputPtr = 0;
+    let resultPtr = 0;
     try {
-      // Pointer fast path (verified present at initialize()): one HEAPU8.set
-      // instead of embind's per-byte std::string marshalling. Input already
-      // backed by the heap would overlap the _malloc slot HEAPU8.set writes
-      // into — copy it out first. (Caller-reachable via a leaked module ref;
-      // the pinned C++ wrapper guarantees JS-owned *outputs*.)
-      const input = data.buffer === heapBuffer ? new Uint8Array(data) : data;
-      const ptr = module._malloc(input.byteLength);
-      if (ptr === 0) {
+      inputPtr = module._malloc(input.byteLength);
+      if (inputPtr === 0) {
         throw new HeicConverterError(
           'decode_failed',
           Messages.DecodeInputAllocFailed(input.byteLength)
         );
       }
+      module.HEAPU8.set(input, inputPtr);
+
+      // The progress slot is installed and consumed within ONE synchronous
+      // task: JS's single thread serializes decode() calls that share the
+      // module, so one decode's events never interleave with another, and
+      // save/restore keeps even a host callback that re-enters decode()
+      // wired to its own events.
+      const previousProgressCb = module.__progressCb ?? null;
+      module.__progressCb = wrappedProgress;
       try {
-        module.HEAPU8.set(input, ptr);
-        result = instance.decodeFromPointer(ptr, input.byteLength, wrappedProgress);
+        resultPtr = module._heic_decode(inputPtr, input.byteLength);
       } finally {
-        module._free(ptr);
+        module.__progressCb = previousProgressCb;
+      }
+
+      // Re-read the heap: ALLOW_MEMORY_GROWTH may have replaced it during
+      // the decode.
+      const heap = module.HEAPU8;
+      if (resultPtr === 0) {
+        // The C++ only returns 0 when even the result allocation failed —
+        // a broken module, same class as a trap. TypeError (not a
+        // HeicConverterError) so the fault path below takes it.
+        throw new TypeError('heic_decode returned a null result');
+      }
+      const header = new DataView(heap.buffer, resultPtr, RESULT_HEADER_BYTES);
+      const width = header.getInt32(RESULT_WIDTH, true);
+      if (width === 0) {
+        const errorPtr = header.getUint32(RESULT_ERROR, true);
+        const errorLen = header.getUint32(RESULT_ERROR_LEN, true);
+        const detail =
+          errorPtr !== 0
+            ? new TextDecoder().decode(heap.subarray(errorPtr, errorPtr + errorLen))
+            : '';
+        throw new HeicConverterError(
+          'decode_failed',
+          detail
+            ? Messages.DecodeFailedWithDetail(sanitizeDecoderDetail(detail), data.byteLength)
+            : Messages.DecodeFailed(data.byteLength)
+        );
+      }
+      const height = header.getInt32(RESULT_HEIGHT, true);
+      // C++ enforces the dimension caps before it ever returns a success
+      // header; only the EXIF orientation range is re-validated before it
+      // is exposed. Outside EXIF's 1-8 range is identity, and only a
+      // genuinely pending rotation sets the field (backwards-compatible
+      // result shape).
+      const rawOrientation = header.getInt32(RESULT_ORIENTATION, true);
+      const orientation =
+        rawOrientation >= 1 && rawOrientation <= 8 ? rawOrientation : 1;
+      const plane = header.getUint32(RESULT_PLANE, true);
+      const stride = header.getUint32(RESULT_STRIDE, true);
+
+      // The plane dies with heic_result_free, so DecodedImage.data is
+      // always an owned copy — one bulk copy for tightly packed rows,
+      // stride-aware row copies otherwise (the copy budget the old C++
+      // side paid before handing JS an array).
+      const rowBytes = width * 4;
+      const pixels = new Uint8ClampedArray(rowBytes * height);
+      if (stride === rowBytes) {
+        pixels.set(heap.subarray(plane, plane + rowBytes * height));
+      } else {
+        for (let y = 0; y < height; y++) {
+          pixels.set(heap.subarray(plane + y * stride, plane + y * stride + rowBytes), y * rowBytes);
+        }
+      }
+      decoded = { width, height, data: pixels };
+      if (orientation > 1) {
+        decoded.orientation = orientation;
+      }
+      // Same ownership rule as `data`: copy out before releasing the
+      // result. Require the 6-byte "Exif\0\0" marker plus a minimal TIFF
+      // header to be useful.
+      const exifPtr = header.getUint32(RESULT_EXIF, true);
+      const exifLen = header.getUint32(RESULT_EXIF_LEN, true);
+      if (exifPtr !== 0 && exifLen >= 14) {
+        decoded.exif = heap.slice(exifPtr, exifPtr + exifLen);
       }
     } catch (error) {
       // A decoder fault (bad heap write, OOM, unreachable) traps inside the
@@ -205,16 +286,21 @@ export class LibheifDecoder implements IHeicDecoder {
       throw new HeicConverterError('decode_failed', Messages.DecodeFaulted(data.byteLength), {
         cause: error
       });
-    }
-
-    if (typeof result === 'string') {
-      throw new HeicConverterError(
-        'decode_failed',
-        Messages.DecodeFailedWithDetail(sanitizeDecoderDetail(result), data.byteLength)
-      );
-    }
-    if (!result) {
-      throw new HeicConverterError('decode_failed', Messages.DecodeFailed(data.byteLength));
+    } finally {
+      module.__progressCb = null;
+      // Release the library's resources. On a faulted module these calls can
+      // trap again — the module is being discarded, so cleanup failure must
+      // never replace the typed error already in flight.
+      try {
+        if (resultPtr !== 0) {
+          module._heic_result_free(resultPtr);
+        }
+        if (inputPtr !== 0) {
+          module._free(inputPtr);
+        }
+      } catch {
+        /* module faulted; markFaulted above already retired it */
+      }
     }
 
     if (progressError !== undefined) {
@@ -222,70 +308,21 @@ export class LibheifDecoder implements IHeicDecoder {
       throw progressCallbackError(progressError);
     }
 
-    const width = result.width;
-    const height = result.height;
-
-    // Validate the reported orientation before exposing it: outside EXIF's 1-8
-    // range (or absent on an older glue) is identity. Only set the field when
-    // a rotation is actually pending, keeping the result shape backwards
-    // compatible.
-    const rawOrientation = result.orientation;
-    const orientation =
-      typeof rawOrientation === 'number' &&
-      Number.isInteger(rawOrientation) &&
-      rawOrientation >= 1 &&
-      rawOrientation <= 8
-        ? rawOrientation
-        : 1;
-
-    // DecodedImage.data must outlive free(): the C++ wrapper allocates pixels
-    // as a JS array, so wrap without copying when the *live* HEAPU8 proves it
-    // is not a heap view (ALLOW_MEMORY_GROWTH may have replaced it during the
-    // decode); otherwise copy.
-    const postDecodeHeap = module.HEAPU8.buffer;
-    const clampedData =
-      result.data.buffer !== postDecodeHeap
-        ? new Uint8ClampedArray(result.data.buffer, result.data.byteOffset, result.data.byteLength)
-        : new Uint8ClampedArray(result.data);
-
-    const decoded: DecodedImage = {
-      width,
-      height,
-      data: clampedData,
-    };
-    if (orientation > 1) {
-      decoded.orientation = orientation;
-    }
-    // Same ownership rule as `data`: the block must outlive free(), so copy
-    // only when HEAPU8 shows a live heap view (the C++ wrapper hands back a
-    // JS-allocated array — normally a zero-copy wrap). Require a marker plus a
-    // minimal TIFF header to be useful.
-    const rawExif = result.exif;
-    if (rawExif instanceof Uint8Array && rawExif.length >= 14) {
-      decoded.exif =
-        rawExif.buffer !== postDecodeHeap
-          ? new Uint8Array(rawExif.buffer, rawExif.byteOffset, rawExif.byteLength)
-          : new Uint8Array(rawExif);
-    }
     return decoded;
   }
 
   /**
-   * Cleans up the WebAssembly decoder instance and resources.
+   * Cleans up the WebAssembly decoder resources.
    * Idempotent: safe to call multiple times. After free(), the next
    * initialize() — or decode() directly, which re-initializes transparently
    * — loads a fresh module.
    *
    * free() is also safe to call while initialize() is in flight: a load that
-   * completes after free() discards its fresh instance instead of leaking it.
+   * completes after free() discards itself instead of resurrecting state.
    */
   free(): void {
     // Invalidate any in-flight initialization so it cannot resurrect state.
     this.initGeneration += 1;
-    if (this.decoderInstance) {
-      this.decoderInstance.delete();
-      this.decoderInstance = null;
-    }
     this.module = null;
     clearFaulted(this); // a fresh module means a fresh heap
     // Release the module so a later initialize() loads a fresh one.

@@ -38,10 +38,14 @@ const DEFERRED_MODULES: Array<{ prefix: string; min: number }> = [
 // Deliberately loose (~15-20%): these catch a dropped build flag, not version
 // drift. Losing -s FILESYSTEM=0 trips the glue ceilings; losing the -Oz archives
 // or the codec exclusions trips the WASM one.
-const GLUE_MAX_BYTES = 40_000;
-const GLUE_MAX_GZ = 14_000;
-const WASM_MAX_GZ = 340_000;
-const FIRST_DECODE_MAX_GZ = 380_000;
+// Raw C ABI (no --bind, see build-wasm/wrapper/main.cpp): measured pair
+// 2026-11-01 — glue chunk 9,084 raw / 3,762 gz, wasm 242,873 gz, first-decode
+// 254,806 gz. The ceilings sit well under the embind shapes (28,657 raw /
+// 10,215 gz glue; 265,693 first-decode), so a re-added --bind trips them.
+const GLUE_MAX_BYTES = 14_000;
+const GLUE_MAX_GZ = 6_000;
+const WASM_MAX_GZ = 300_000;
+const FIRST_DECODE_MAX_GZ = 300_000;
 
 function chunkFile(prefix: string, ext = '.mjs'): string {
   const file = readdirSync(DIST).find((name) => name.startsWith(`${prefix}-`) && name.endsWith(ext));
