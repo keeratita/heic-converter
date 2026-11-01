@@ -227,9 +227,14 @@ emcc ${WRAPPER_SRC} \\
 # so it cannot desynchronize imports the way emcc's link-level size flags do.
 # --zero-filled-memory drops the all-zero data segments (~110 KB section); with
 # MALLOC=emmalloc the pair is worth 7.5 KB gz / 5.8 KB brotli.
+# Separate statements, NOT `wasm-opt && mv`: set -e does not fire on a failing
+# command before the final && of a list, and the SIMD experiment proved a failed
+# wasm-opt here would silently ship the unoptimized module (pinned by
+# test/unit/build-wasm-script.test.ts).
 # Do NOT add --minify-imports* (the glue references the current import names), -Oz,
 # or --strip-target-features: the last two increase gz/brotli despite shrinking raw.
-/emsdk/upstream/bin/wasm-opt /src/build-wasm/wrapper/heic-decoder.wasm -o /src/build-wasm/wrapper/heic-decoder.wasm.opt -O3 --zero-filled-memory && mv /src/build-wasm/wrapper/heic-decoder.wasm.opt /src/build-wasm/wrapper/heic-decoder.wasm
+/emsdk/upstream/bin/wasm-opt /src/build-wasm/wrapper/heic-decoder.wasm -o /src/build-wasm/wrapper/heic-decoder.wasm.opt -O3 --zero-filled-memory
+mv /src/build-wasm/wrapper/heic-decoder.wasm.opt /src/build-wasm/wrapper/heic-decoder.wasm
 
 # Guard: the diagnostics shim must actually bite. iostream/new_helpers in the
 # link map mean something still constructs a std stream — exactly what a
