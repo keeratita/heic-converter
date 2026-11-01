@@ -131,6 +131,21 @@ jobs:
           exit 1
         fi
 
+    - name: Resolve npm dist-tag
+      id: dist-tag
+      # npm refuses to publish a prerelease without an explicit --tag — its
+      # own guard so a prerelease can never silently become what
+      # `npm install @keeratita/heic-converter` resolves to. Policy: stable
+      # versions take npm's default (`latest`); prereleases are pinned to
+      # `next`. A prerelease never reaches `latest` — the final release must
+      # drop the suffix.
+      run: |
+        PKG="$(node -p "require('./package.json').version")"
+        case "$PKG" in
+          *-*) echo 'args=--tag next' >> "$GITHUB_OUTPUT" ;;
+          *)   echo 'args=' >> "$GITHUB_OUTPUT" ;;
+        esac
+
     - name: Publish to npm (OIDC trusted publishing)
       # Registry hardcoded: publishConfig.registry is honoured by npm publish,
       # so a commit could otherwise repoint the release (and the gate below)
@@ -142,7 +157,9 @@ jobs:
       # If a lifecycle script that *produces* package content (prepack) is ever
       # added, it must move to the verify job and be covered by the artifact
       # step there, not silently skipped by this flag.
-      run: npm publish --access public --ignore-scripts --registry https://registry.npmjs.org
+      env:
+        PUBLISH_ARGS: ${{ steps.dist-tag.outputs.args }}
+      run: npm publish --access public --ignore-scripts --registry https://registry.npmjs.org ${PUBLISH_ARGS}
 
     # Trusted publishing loses the attestation silently if the OIDC token is
     # unavailable, so read the registry's own record back and fail loudly.
