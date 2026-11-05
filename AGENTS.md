@@ -17,7 +17,7 @@ Key design constraints:
 
 | Command | Description |
 | --- | --- |
-| `npm run build` | TS → `dist/` — tsup CJS+ESM, `.d.ts` via `tsc --emitDeclarationOnly` (not tsup's DTS pass — it injects the TS 6-deprecated `baseUrl`), then gzip/brotli the WASM |
+| `npm run build` | TS → `dist/` — tsup CJS+ESM incl. its DTS pass (viable since tsup 9 dropped the injected TS 6-deprecated `baseUrl`), then gzip/brotli the WASM |
 | `npm run build:wasm` | Rebuild the WASM decoder (`build-scripts/build-wasm.sh`) — **requires Docker** |
 | `npm run verify:wasm` | Verify committed glue + WASM against the SHA-256s in `build-scripts/wasm-artifacts.json` and scan the glue for `eval`/`new Function` |
 | `npm run wasm:hashes` | Regenerate `wasm-artifacts.json` — **must run and commit after every `build:wasm`** or CI fails |

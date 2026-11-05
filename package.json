@@ -26,7 +26,7 @@
     "node": ">=20.0.0"
   },
   "scripts": {
-    "build": "tsup && tsc -p tsconfig.json --emitDeclarationOnly && node build-scripts/compress-wasm.mjs",
+    "build": "tsup && node build-scripts/compress-wasm.mjs",
     "build:wasm": "bash build-scripts/build-wasm.sh",
     "verify:wasm": "node build-scripts/verify-wasm-artifacts.mjs",
     "wasm:hashes": "node build-scripts/verify-wasm-artifacts.mjs --write",
