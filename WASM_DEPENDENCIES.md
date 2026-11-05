@@ -46,7 +46,7 @@ Every `npm run build:wasm` resets the libheif submodule (`git submodule update -
 2. **Diagnostic neutralization** (`build-scripts/neutralize-libheif-diagnostics.py`) — stubs the debug-only printers (`dump` / `dump_children` / `dump_to_string` / `get_debug_info` / `get_debug_message` / `debug_dump*`) and drops the one live `std::cerr`. They are virtual (vtable-pinned) and their bodies are what pull libc++ iostream+locale into the module (~118 KB raw on 1.23.7); the decode path never calls them.
 3. **`<sstream>` shim** (`build-scripts/libheif-no-streams.h`, `-include`d into every libheif TU) — replaces `std::(o|i)stringstream` with a non-logging fake. Error codes and control flow survive; streamed detail text becomes empty (already untrusted: `sanitizeDecoderDetail()` strips control chars and clamps it before `error.message`).
 
-The guards fail **closed**: the neutralizer asserts a `box.cc` stub and a ≥100-stub floor (pinned by `test/unit/libheif-diagnostics.test.ts`), and `build-wasm.sh` aborts when the linker map shows libc++ `iostream`/`new_helpers`. Decoded output is pinned byte-exact by `test/unit/wasm-golden.test.ts` and the browser E2E.
+The guards fail **closed**: the neutralizer asserts a `box.cc` stub and a ≥100-stub floor (pinned by `test/unit/libheif-diagnostics.test.ts`), and `build-wasm.sh` aborts when the linker map shows libc++ stream members (`iostream`/`ostream`/`strstream`). Decoded output is pinned byte-exact by `test/unit/wasm-golden.test.ts` and the browser E2E.
 
 ## Cloning
 

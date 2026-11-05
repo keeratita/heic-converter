@@ -83,6 +83,14 @@ describe.skipIf(!hasArtifacts && !isCI)('LibheifDecoder (real WASM)', () => {
     decoder.free();
   });
 
+  it('should reject an invalid wasmBinary at initialize() (never hang)', async () => {
+    // Compiles up front, so a bad binary rejects through initialize() — the
+    // glue offers no async failure channel.
+    const decoder = new LibheifDecoder({ wasmBinary: new Uint8Array([0, 1, 2, 3]) });
+    await expect(decoder.initialize()).rejects.toThrow(WebAssembly.CompileError);
+    decoder.free();
+  });
+
   it('should decode example.heic successfully', async () => {
     const decoder = new LibheifDecoder({ wasmBinary });
 

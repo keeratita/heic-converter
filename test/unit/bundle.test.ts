@@ -39,8 +39,9 @@ const DEFERRED_MODULES: Array<{ prefix: string; min: number }> = [
 // drift. Losing -s FILESYSTEM=0 trips the glue ceilings; losing the -Oz archives
 // or the codec exclusions trips the WASM one.
 // Raw C ABI (no --bind, see build-wasm/wrapper/main.cpp): measured pair
-// 2026-11-01 — glue chunk 9,084 raw / 3,762 gz, wasm 242,873 gz, first-decode
-// 254,806 gz. The ceilings sit well under the embind shapes (28,657 raw /
+// 2026-11-05 (emsdk 6.0.13) — glue chunk 7,867 raw / 3,287 gz, wasm
+// 241,008 gz, first-decode 252,516 gz. The ceilings sit well under the
+// embind shapes (28,657 raw /
 // 10,215 gz glue; 265,693 first-decode), so a re-added --bind trips them.
 const GLUE_MAX_BYTES = 14_000;
 const GLUE_MAX_GZ = 6_000;

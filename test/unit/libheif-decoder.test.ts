@@ -184,6 +184,10 @@ vi.mock('../../src/wasm/wrapper/heic-decoder.js', () => ({
 }));
 
 describe('LibheifDecoder (mocked glue)', () => {
+  // Smallest valid WASM module (magic + version): the wrapper compiles
+  // wasmBinary now, so option tests need real bytes, not an ArrayBuffer stub.
+  const MINIMAL_WASM = new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
+
   beforeEach(() => {
     mockState.factory.mockReset();
     mockState.factory.mockResolvedValue(mockState.state.module);
@@ -206,11 +210,14 @@ describe('LibheifDecoder (mocked glue)', () => {
     });
 
     it('should create module with wasmBinary option', async () => {
-      const wasmBinary = new ArrayBuffer(100);
-      const decoder = new LibheifDecoder({ wasmBinary });
+      const decoder = new LibheifDecoder({ wasmBinary: MINIMAL_WASM });
       await decoder.initialize();
 
-      expect(mockState.factory).toHaveBeenCalledWith({ wasmBinary });
+      // Emscripten >=4 glue ignores Module.wasmBinary; the wrapper supplies
+      // the bytes via instantiateWasm.
+      expect(mockState.factory).toHaveBeenCalledWith({
+        instantiateWasm: expect.any(Function),
+      });
     });
 
     it('should create module with locateFile option', async () => {
@@ -222,12 +229,14 @@ describe('LibheifDecoder (mocked glue)', () => {
     });
 
     it('should create module with both options', async () => {
-      const wasmBinary = new ArrayBuffer(100);
       const locateFile = (path: string) => `https://cdn.example.com/${path}`;
-      const decoder = new LibheifDecoder({ wasmBinary, locateFile });
+      const decoder = new LibheifDecoder({ wasmBinary: MINIMAL_WASM, locateFile });
       await decoder.initialize();
 
-      expect(mockState.factory).toHaveBeenCalledWith({ wasmBinary, locateFile });
+      expect(mockState.factory).toHaveBeenCalledWith({
+        instantiateWasm: expect.any(Function),
+        locateFile,
+      });
     });
 
     it('should not reinitialize if already initialized', async () => {
@@ -702,23 +711,29 @@ describe('LibheifDecoder (mocked glue)', () => {
     });
 
     it('should pass wasmBinary to module factory', async () => {
-      const wasmBinary = new ArrayBuffer(1024);
-      const decoder = new LibheifDecoder({ wasmBinary });
+      const decoder = new LibheifDecoder({ wasmBinary: MINIMAL_WASM });
       await decoder.initialize();
 
-      expect(mockState.factory).toHaveBeenCalledWith({ wasmBinary });
+      const [moduleArgs] = mockState.factory.mock.calls[0];
+      expect(moduleArgs.wasmBinary).toBeUndefined();
+      // The shim instantiates the prepared binary and hands the instance to
+      // the glue's receiveInstance callback.
+      const instance = await new Promise((resolve) =>
+        moduleArgs.instantiateWasm({}, resolve)
+      );
+      expect(instance).toBeInstanceOf(WebAssembly.Instance);
     });
 
     it('should pass moduleOverrides through to the module factory', async () => {
       const decoder = new LibheifDecoder({
         moduleOverrides: { print: () => undefined },
-        wasmBinary: new ArrayBuffer(4),
+        wasmBinary: MINIMAL_WASM,
       });
       await decoder.initialize();
 
       const [moduleArgs] = mockState.factory.mock.calls[0];
       expect(moduleArgs.print).toBeInstanceOf(Function);
-      expect(moduleArgs.wasmBinary).toBeInstanceOf(ArrayBuffer);
+      expect(moduleArgs.instantiateWasm).toBeInstanceOf(Function);
     });
 
     it('should handle undefined options', async () => {

@@ -50,7 +50,12 @@ export interface HeicDecoderModule {
 
 export interface HeicDecoderModuleOptions {
   locateFile?: (path: string, prefix: string) => string;
+  /** Dead option in Emscripten >=4 glue — the wrapper supplies wasmBinary through instantiateWasm. */
   wasmBinary?: ArrayBuffer | ArrayBufferView;
+  instantiateWasm?: (
+    info: WebAssembly.Imports,
+    receiveInstance: (instance: WebAssembly.Instance) => unknown
+  ) => unknown;
   [key: string]: unknown;
 }
 

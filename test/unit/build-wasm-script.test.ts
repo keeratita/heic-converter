@@ -24,12 +24,12 @@ describe('build-wasm.sh failure semantics', () => {
   });
 
   it('fails closed when the linker map is missing', () => {
-    // A missing map must not let the grep's exit code 2 read as "no iostream".
+    // A missing map must not let the grep's exit code 2 read as "no streams".
     expect(script).toContain('[ ! -s /src/build-wasm/wrapper/heic-decoder.map ]');
   });
 
   it('fails closed when libc++ iostream objects get linked (diagnostics shim guard)', () => {
-    expect(script).toContain("(iostream|new_helpers)");
+    expect(script).toContain("(iostream|ostream|strstream)");
     expect(script).toContain('Build complete!');
   });
 });

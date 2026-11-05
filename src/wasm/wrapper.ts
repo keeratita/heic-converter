@@ -98,15 +98,24 @@ export class LibheifDecoder implements IHeicDecoder {
       if (this.options?.locateFile) {
         moduleArgs.locateFile = this.options.locateFile;
       }
-      if (this.options?.wasmBinary) {
-        moduleArgs.wasmBinary = this.options.wasmBinary;
-      }
 
       // Lazy-load the glue so it is fetched on first decode, not on import.
       const promise = import('./wrapper/heic-decoder.js')
-        .then(({ default: createHeicDecoderModule }) =>
-          createHeicDecoderModule(moduleArgs)
-        )
+        .then(async ({ default: createHeicDecoderModule }) => {
+          if (this.options?.wasmBinary) {
+            // Emscripten >=4 glue dropped Module.wasmBinary; instantiateWasm
+            // is the hook both generations honor. Compile up front so a bad
+            // binary rejects initialize() normally — the callback has no
+            // async failure channel. The cast: TS's BufferSource excludes
+            // SAB-backed views, which WebAssembly rejects anyway.
+            const prepared = await WebAssembly.compile(
+              this.options.wasmBinary as BufferSource
+            );
+            moduleArgs.instantiateWasm = (info, receiveInstance) =>
+              receiveInstance(new WebAssembly.Instance(prepared, info));
+          }
+          return createHeicDecoderModule(moduleArgs);
+        })
         .then((module) => {
           if (generation !== this.initGeneration) {
             // free() ran during the load: drop it instead of resurrecting.
