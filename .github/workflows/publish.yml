@@ -68,7 +68,7 @@ jobs:
         test -f dist/index.mjs
         test -f dist/index.js
 
-    # Coverage thresholds (vitest.config.ts) are enforced here, so the bytes
+    # Coverage thresholds (vitest.config.mjs) are enforced here, so the bytes
     # that ship are the bytes the coverage gate accepted — same as CI.
     - name: Run Unit Tests (coverage thresholds enforced)
       run: npm run test:coverage

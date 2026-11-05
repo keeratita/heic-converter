@@ -24,7 +24,7 @@ Key design constraints:
 | `npm run wasm:goldens` | Verify the WASM decode goldens against the built decoder; `-- --write` regenerates the `MUTATION_GOLDENS` block — **run after every `build:wasm` whose behavior changed** |
 | `npm run check:scripts` | Enforce the dev-tree install-script allowlist in `build-scripts/install-scripts.json` — `-- --write` regenerates after review |
 | `npm run verify:provenance` | Post-publish check: SLSA provenance attestation, `gitHead`, registry-hosted tarball |
-| `npm test` / `test:watch` / `test:coverage` | Unit tests (Vitest, Node); coverage thresholds in `vitest.config.ts` are 100% on all axes — unreachable guards carry `/* v8 ignore */` with a reason |
+| `npm test` / `test:watch` / `test:coverage` | Unit tests (Vitest, Node); coverage thresholds in `vitest.config.mjs` are 100% on all axes — unreachable guards carry `/* v8 ignore */` with a reason |
 | `npm run test:e2e` | Playwright browser E2E (CSP sandbox + GitHub Pages demo) — needs `npx playwright install chromium` once |
 | `npm run sandbox` | Interactive CSP sandbox at `http://localhost:3000` (`test/browser/server.mjs`) |
 | `npm run lint` | ESLint (also runs via `pre-commit`) |
