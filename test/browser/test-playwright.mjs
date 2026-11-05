@@ -31,10 +31,8 @@ async function waitForServer(timeoutMs = 20000) {
   throw new Error('CSP sandbox server did not start in time');
 }
 
-/**
- * CSP sandbox (test/browser/index.html): every conversion must produce a real
- * blob with the requested format, a valid resolution, and a non-zero size.
- */
+// CSP sandbox (`test/browser/index.html`): every conversion must produce a
+// real blob — requested format, valid resolution, non-zero size.
 async function runSandboxConversions(page) {
   const runConversion = async (fileName, format, quality, expectedResolution) => {
     console.log(`\n--- Sandbox: ${fileName} -> ${format.toUpperCase()} (quality=${quality ?? 'default'}) ---`);
@@ -53,8 +51,8 @@ async function runSandboxConversions(page) {
       return lines.some((line) => line.textContent && line.textContent.includes('Conversion successful!'));
     }, { timeout: 30000 });
 
-    // #outResolution is written from previewImage.onload, which runs in a later
-    // task than the success log — wait for it instead of racing it.
+    // `#outResolution` is written by `previewImage.onload` — a task after the
+    // success log, so wait for it instead of racing.
     await page.waitForFunction(() => {
       const m = /^(\d+)\s*x\s*(\d+)$/.exec(document.querySelector('#outResolution')?.textContent || '');
       return m && Number(m[1]) > 0 && Number(m[2]) > 0;
@@ -91,17 +89,15 @@ async function runSandboxConversions(page) {
   await runConversion('colors-with-alpha.heic', 'png');
   await runConversion('example.heic', 'jpeg', 0.5);
   await runConversion('colors-no-alpha.heic', 'svg');
-  // Orientation: the EXIF-only file must be emitted upright PORTRAIT (the
-  // canvas layer applies tag 274); the irot file proves libheif's applied
-  // transform is never stacked with the EXIF tag (no double rotation).
+  // Orientation regressions: the EXIF-only file must come out upright PORTRAIT
+  // (the canvas applies tag 274); the `irot` file guards double rotation —
+  // libheif's applied transform must never stack with the EXIF tag.
   await runConversion('exif-orientation-6.heic', 'jpeg', undefined, '1200x1600');
   await runConversion('irot-orientation-6.heic', 'png', undefined, '1200x1600');
 }
 
-/**
- * Run one conversion on the GitHub Pages demo and wait for it to settle.
- * Returns the rendered preview width for follow-up assertions.
- */
+// Run one conversion on the GitHub Pages demo and wait for it to settle.
+// Returns the rendered preview width for follow-up assertions.
 async function convertOnDemo(page, { format, quality, maxWidth, worker } = {}) {
   if (format !== undefined) {
     await page.selectOption('#format', format);
@@ -119,7 +115,7 @@ async function convertOnDemo(page, { format, quality, maxWidth, worker } = {}) {
 
   await page.waitForFunction(() =>
     document.querySelector('#status')?.textContent?.includes('Conversion complete.'), { timeout: 30000 });
-  // The preview is rendered via an <img> that loads the blob URL asynchronously.
+  // The preview `<img>` loads its blob URL asynchronously.
   await page.waitForFunction(() => {
     const img = document.querySelector('#previewImg');
     return img && img.naturalWidth > 0;
@@ -127,20 +123,16 @@ async function convertOnDemo(page, { format, quality, maxWidth, worker } = {}) {
   return page.locator('#previewImg').evaluate((img) => img.naturalWidth);
 }
 
-/**
- * GitHub Pages demo (docs/): the same asset set that gets deployed. Asserts a
- * real conversion end-to-end (preview, output meta, download link) plus the
- * non-HEIC rejection path and stale-state clearing.
- */
+// GitHub Pages demo (`docs/`, the deployed asset set): asserts a real
+// conversion end-to-end (preview, output meta, download link), the non-HEIC
+// rejection path, and stale-state clearing.
 async function runDemoConversions(page) {
   console.log('\n--- Demo (docs/): PNG conversion + rejection path ---');
 
-  // Trailing slash matters: the demo page resolves "./demo.js" relative to its
-  // directory, so it must be served as /demo/, not /demo.
+  // Trailing slash: the page resolves `./demo.js` relative to its directory.
   await page.goto(`${BASE_URL}/demo/`);
 
-  // Happy path: select fixture, convert to PNG on the main thread (the
-  // worker path is exercised later; the select defaults to Web Worker).
+  // Main-thread PNG (the select defaults to Web Worker; that path runs later).
   await page.locator('#fileInput').setInputFiles(path.join(ROOT_DIR, 'test/fixtures', 'example.heic'));
   await page.waitForFunction(() =>
     document.querySelector('#status')?.textContent?.includes('File ready'));
@@ -183,8 +175,8 @@ async function runDemoConversions(page) {
     fail('file meta must be hidden after a rejected file');
   }
 
-  // Content sniffing: a .heic extension over non-HEIC bytes must be rejected
-  // by the ftyp/HEIF brand check, not just the file name.
+  // Content sniffing: a `.heic` name over non-HEIC bytes must be rejected by
+  // the ftyp/HEIF brand check, not just the file name.
   await page.locator('#fileInput').setInputFiles({
     name: 'fake.heic',
     mimeType: 'image/heic',
@@ -206,7 +198,6 @@ async function runDemoConversions(page) {
 
   console.log('✅ Demo rejection path OK: stale state cleared, re-selection works');
 
-  // Verify a WebP conversion with quality on the demo, and its download name.
   await convertOnDemo(page, { format: 'webp', quality: 0.5 });
 
   const webpDownloadAttr = await page.locator('#download').getAttribute('download');
@@ -219,24 +210,24 @@ async function runDemoConversions(page) {
   }
   console.log('✅ Demo WebP conversion OK');
 
-  // Resize: convert with maxWidth 400 and assert the output is bounded.
   const resizedWidth = await convertOnDemo(page, { format: 'png', maxWidth: 400 });
   if (resizedWidth <= 0 || resizedWidth > 400) {
     fail(`resize: expected width <= 400, got ${resizedWidth}`);
   }
   console.log(`✅ Demo resize OK: output width ${resizedWidth}`);
 
-  // Worker: convert with the Web Worker execution option.
+  // Worker path — `maxWidth` stays at 400 from the previous step, so the
+  // bound must hold through the worker too.
   const workerWidth = await convertOnDemo(page, { worker: 'worker' });
   if (workerWidth <= 0 || workerWidth > 400) {
     fail(`worker: expected width <= 400, got ${workerWidth}`);
   }
   console.log(`✅ Demo worker conversion OK: output width ${workerWidth}`);
 
-  // Cancel: a running conversion must surface the Cancel control, and
-  // cancelling must restore the form. A fast conversion may finish before
-  // the click lands, so accept either terminal state — but never a form
-  // stuck disabled or a Cancel control stuck visible.
+  // Cancel: a running conversion must surface the Cancel control and
+  // cancelling must restore the form. A fast conversion may beat the click,
+  // so accept either terminal state — never a stuck-disabled form or a
+  // permanently visible Cancel.
   if (!(await page.locator('#cancel').isHidden())) {
     fail('cancel control must be hidden while idle');
   }
@@ -259,13 +250,10 @@ async function runDemoConversions(page) {
   console.log('✅ Demo cancel/recovery OK');
 }
 
-/**
- * API tests (test/browser/api-test.html): exercises the public APIs against a
- * real browser — resize bounds, batch conversion, the full worker message
- * protocol with a real module worker, and the 0.5.0 feature set (avif
- * graceful support, output shapes, continueOnError, abort, crop,
- * preserveExif, worker batches, pooled decoders).
- */
+// API tests (`test/browser/api-test.html`): public APIs in a real browser —
+// resize bounds, batch, the full worker protocol (module worker), and the
+// 0.5.0 set: AVIF graceful support, output shapes, continueOnError, abort,
+// crop, preserveExif, worker batches, pooled decoders.
 async function runApiTests(page) {
   console.log('\n--- API tests: core + 0.5.0 features ---');
 
@@ -364,7 +352,7 @@ async function runTest() {
     console.log(`Navigating to ${BASE_URL}...`);
     await page.goto(BASE_URL);
 
-    // Fail fast if :3000 is not our sandbox (e.g. an unrelated dev server).
+    // Fail fast if `:3000` is not our sandbox (e.g. an unrelated dev server).
     await page.waitForSelector('#formatSelect', { timeout: 5000 });
 
     await runSandboxConversions(page);

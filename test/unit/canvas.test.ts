@@ -2,7 +2,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderAndEncode } from '../../src/render/canvas';
 import { DecodedImage } from '../../src/types';
 
-// Mock test image data
 const createMockDecodedImage = (width: number, height: number): DecodedImage => ({
   width,
   height,
@@ -17,12 +16,10 @@ describe('renderAndEncode Unit Tests', () => {
   let originalImageData: typeof ImageData;
 
   beforeEach(() => {
-    // Save originals
     originalDocument = global.document;
     originalOffscreenCanvas = global.OffscreenCanvas;
     originalImageData = global.ImageData;
 
-    // Mock canvas
     mockCtx = {
       putImageData: vi.fn(),
       createImageData: vi.fn(),
@@ -36,12 +33,11 @@ describe('renderAndEncode Unit Tests', () => {
       toBlob: vi.fn(),
     } as unknown as HTMLCanvasElement;
 
-    // Mock document.createElement
     global.document = {
       createElement: vi.fn().mockReturnValue(mockCanvas),
     } as unknown as typeof document;
 
-    // Mock OffscreenCanvas as undefined to test fallback
+    // Undefined `OffscreenCanvas` forces the `HTMLCanvasElement` fallback path.
     global.OffscreenCanvas = undefined as unknown as typeof OffscreenCanvas;
     global.ImageData = class MockImageData {
       data: Uint8ClampedArray;
@@ -56,7 +52,6 @@ describe('renderAndEncode Unit Tests', () => {
   });
 
   afterEach(() => {
-    // Restore originals
     global.document = originalDocument;
     global.OffscreenCanvas = originalOffscreenCanvas;
     global.ImageData = originalImageData;
@@ -155,8 +150,8 @@ describe('renderAndEncode Unit Tests', () => {
       expect(svgContent).toContain('<svg');
       expect(svgContent).toContain('xmlns="http://www.w3.org/2000/svg"');
       expect(svgContent).toContain('viewBox="0 0 100 100"');
-      // The embedded copy is the real PNG blob bytes through the one
-      // arrayBuffer+btoa path (btoa('png-data')).
+      // The embedded copy is the real PNG blob bytes through the single
+      // `arrayBuffer` + `btoa` path (`btoa('png-data')`).
       expect(svgContent).toContain('data:image/png;base64,cG5nLWRhdGE=');
     });
 
@@ -185,9 +180,8 @@ describe('renderAndEncode Unit Tests', () => {
 
       const canvasWidthAtBase64: Array<number> = [];
       mockPngBlob.arrayBuffer = vi.fn(() => {
-        // The canvas must already be released (width zeroed) while the
-        // base64 round-trip runs, so the encoded copy is the only thing
-        // pinning pixel memory at this point.
+        // The canvas must already be released (width zeroed) while the base64
+        // round-trip runs, so the encoded copy alone pins pixel memory.
         canvasWidthAtBase64.push(mockCanvas.width);
         return Blob.prototype.arrayBuffer.call(mockPngBlob);
       });
@@ -357,8 +351,8 @@ describe('renderAndEncode Unit Tests', () => {
       const result = await renderAndEncode(decoded, 'jpeg', 0.92);
 
       expect(result).toBeInstanceOf(Blob);
-      // Release must drop the backing store: close() (OffscreenCanvas) or
-      // zeroing dimensions (HTMLCanvasElement) is how we free pixel memory
+      // Release must drop the backing store: `close()` (OffscreenCanvas) or
+      // zeroing dimensions (HTMLCanvasElement) is how pixel memory is freed
       // before the base64/download path runs.
       expect(closeMock).toHaveBeenCalledTimes(1);
     });
@@ -373,15 +367,14 @@ describe('renderAndEncode Unit Tests', () => {
         callback(mockBlob);
       });
 
-      // Empty buffer => btoa('') yields an empty payload, proving the bytes
-      // came from arrayBuffer() (a fixed data URL would say otherwise).
+      // An empty buffer makes `btoa('')` yield an empty payload, proving the
+      // bytes came from `arrayBuffer()` (a fixed data URL would say otherwise).
       mockBlob.arrayBuffer = vi.fn().mockResolvedValue(new ArrayBuffer(0));
 
       const result = await renderAndEncode(decoded, 'svg', 1);
 
       const svgContent = await result.text();
       expect(svgContent).toContain('data:image/png;base64,');
-      // Empty buffer => empty base64 payload, proving the btoa path ran.
       expect(svgContent).toContain('base64," />');
     });
   });
@@ -444,7 +437,7 @@ describe('renderAndEncode Unit Tests', () => {
       const decoded = createMockDecodedImage(100, 100);
 
       mockCanvas.toBlob = vi.fn((callback: (blob: Blob | null) => void) => {
-        callback(null); // Simulate failure
+        callback(null); // engine encoding failure
       });
 
       await expect(renderAndEncode(decoded, 'jpeg', 0.92)).rejects.toThrow(
@@ -483,11 +476,10 @@ describe('renderAndEncode Unit Tests', () => {
 
   describe('Data validation', () => {
     it('should throw error when data length does not match dimensions', async () => {
-      // Create decoded image with mismatched data length
       const decoded: DecodedImage = {
         width: 100,
         height: 100,
-        data: new Uint8ClampedArray(100), // Wrong size: should be 40000
+        data: new Uint8ClampedArray(100), // wrong size: should be 40000
       };
 
       await expect(renderAndEncode(decoded, 'jpeg', 0.92)).rejects.toThrow(
@@ -562,13 +554,13 @@ describe('renderAndEncode Unit Tests', () => {
       const decoded: DecodedImage = {
         width: 1,
         height: 1,
-        data: new Uint8ClampedArray([255, 0, 0, 255]), // Red pixel
+        data: new Uint8ClampedArray([255, 0, 0, 255]), // red pixel
       };
       const mockBlob = new Blob(['jpeg-data'], { type: 'image/jpeg' });
 
-      // releaseCanvas() zeroes the canvas after encoding, so capture the
-      // dimensions at encode time (inside toBlob) rather than asserting on
-      // the canvas afterwards.
+      // `releaseCanvas()` zeroes the canvas after encoding, so capture the
+      // dimensions at encode time (inside `toBlob`) rather than asserting on the
+      // canvas afterwards.
       let sizeAtEncode: { width: number; height: number } | null = null;
       mockCanvas.toBlob = vi.fn((callback: (blob: Blob | null) => void) => {
         sizeAtEncode = { width: mockCanvas.width, height: mockCanvas.height };
@@ -579,7 +571,7 @@ describe('renderAndEncode Unit Tests', () => {
 
       expect(result).toBeInstanceOf(Blob);
       expect(sizeAtEncode).toEqual({ width: 1, height: 1 });
-      // And the canvas is released afterwards.
+      // The canvas is released afterwards.
       expect(mockCanvas.width).toBe(0);
     });
 
@@ -593,8 +585,8 @@ describe('renderAndEncode Unit Tests', () => {
       };
       const mockBlob = new Blob(['jpeg-data'], { type: 'image/jpeg' });
 
-      // Capture dimensions at encode time: releaseCanvas() zeroes the canvas
-      // after toBlob returns.
+      // As in the 1x1 test: `releaseCanvas()` zeroes the canvas after `toBlob`
+      // returns, so the dimensions must be captured at encode time.
       let sizeAtEncode: { width: number; height: number } | null = null;
       mockCanvas.toBlob = vi.fn((callback: (blob: Blob | null) => void) => {
         sizeAtEncode = { width: mockCanvas.width, height: mockCanvas.height };
@@ -617,8 +609,8 @@ describe('renderAndEncode Unit Tests', () => {
       };
       const mockBlob = new Blob(['jpeg-data'], { type: 'image/jpeg' });
 
-      // Capture dimensions at encode time: releaseCanvas() zeroes the canvas
-      // after toBlob returns.
+      // As in the 1x1 test: `releaseCanvas()` zeroes the canvas after `toBlob`
+      // returns, so the dimensions must be captured at encode time.
       let sizeAtEncode: { width: number; height: number } | null = null;
       mockCanvas.toBlob = vi.fn((callback: (blob: Blob | null) => void) => {
         sizeAtEncode = { width: mockCanvas.width, height: mockCanvas.height };
@@ -641,8 +633,8 @@ describe('renderAndEncode Unit Tests', () => {
       };
       const mockBlob = new Blob(['jpeg-data'], { type: 'image/jpeg' });
 
-      // Capture dimensions at encode time: releaseCanvas() zeroes the canvas
-      // after toBlob returns.
+      // As in the 1x1 test: `releaseCanvas()` zeroes the canvas after `toBlob`
+      // returns, so the dimensions must be captured at encode time.
       let sizeAtEncode: { width: number; height: number } | null = null;
       mockCanvas.toBlob = vi.fn((callback: (blob: Blob | null) => void) => {
         sizeAtEncode = { width: mockCanvas.width, height: mockCanvas.height };
@@ -673,7 +665,7 @@ describe('renderAndEncode Unit Tests', () => {
       const decoded: DecodedImage = {
         width: 100,
         height: 100,
-        data: new Uint8ClampedArray(1000), // Should be 40000
+        data: new Uint8ClampedArray(1000), // should be 40000
       };
 
       await expect(renderAndEncode(decoded, 'jpeg', 0.92)).rejects.toThrow(
@@ -685,7 +677,7 @@ describe('renderAndEncode Unit Tests', () => {
       const decoded: DecodedImage = {
         width: 100,
         height: 100,
-        data: new Uint8ClampedArray(50000), // Should be 40000
+        data: new Uint8ClampedArray(50000), // should be 40000
       };
 
       await expect(renderAndEncode(decoded, 'jpeg', 0.92)).rejects.toThrow(
@@ -733,11 +725,10 @@ describe('renderAndEncode Unit Tests', () => {
       const decoded = createMockDecodedImage(100, 100);
       const mockBlob = new Blob(['jpeg-data'], { type: 'image/jpeg' });
 
-      // Set OffscreenCanvas to undefined to force HTMLCanvasElement fallback
+      // Undefined `OffscreenCanvas` forces the `HTMLCanvasElement` fallback.
       const originalOffscreenCanvas = global.OffscreenCanvas;
       global.OffscreenCanvas = undefined as unknown as typeof OffscreenCanvas;
 
-      // Mock document.createElement to provide fallback
       const fallbackCanvas = {
         width: 100,
         height: 100,
@@ -753,11 +744,9 @@ describe('renderAndEncode Unit Tests', () => {
         createElement: vi.fn().mockReturnValue(fallbackCanvas),
       } as unknown as typeof document;
 
-      // The code should use HTMLCanvasElement when OffscreenCanvas is not available
       const result = await renderAndEncode(decoded, 'jpeg', 0.92);
       expect(result).toBeInstanceOf(Blob);
 
-      // Restore original OffscreenCanvas
       global.OffscreenCanvas = originalOffscreenCanvas;
     });
 

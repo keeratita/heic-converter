@@ -11,10 +11,10 @@ import {
 } from '../../build-scripts/wasm-golden-table.mjs';
 
 /**
- * The golden-table generator and the CLI that rewrites MUTATION_GOLDENS share
- * these functions, so the table the suite asserts against is produced by code
- * under test rather than by an untested script (same arrangement as
- * compress-wasm.test.ts and install-scripts.test.ts).
+ * The golden-table generator and the CLI that rewrites `MUTATION_GOLDENS`
+ * share these functions, so the asserted table is produced by code under test
+ * rather than an untested script (same arrangement as `compress-wasm.test.ts`
+ * and `install-scripts.test.ts`).
  */
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -45,7 +45,8 @@ describe('buildMutations', () => {
     const first = mutate((name) => files.get(name) as Uint8Array);
     const labels = first.map(([label]) => label);
 
-    // 3 fixtures x (full + 4 truncations + empty + garbage + headeronly + 14 flips) = 66
+    // 3 fixtures x (full + 4 truncations + empty + garbage + headeronly + 14
+    // flips) = 66.
     expect(labels).toHaveLength(66);
     expect(new Set(labels).size, 'labels must be unique').toBe(66);
     for (const name of FIXTURE_NAMES) {
@@ -63,7 +64,7 @@ describe('buildMutations', () => {
     }
 
     // Same seed, same order: a second pass must be indistinguishable, or a
-    // regenerated table would re-label inputs the assertions never meant to move.
+    // regenerated table would re-label inputs the assertions never moved.
     const second = mutate((name) => files.get(name) as Uint8Array);
     expect(second.map(([label]) => label)).toEqual(labels);
     for (let i = 0; i < second.length; i++) {
@@ -180,10 +181,10 @@ describe('the committed MUTATION_GOLDENS block', () => {
   });
 
   it('is machine-formatted: the CLI can rewrite it byte for byte', () => {
-    // The block is generated output. Prose belongs in the tests, not inside it,
-    // because a hand-written comment would be destroyed by the next regeneration
-    // — this asserts the bytes are exactly what renderTable would emit, so a
-    // hand-edit (reordered row, stray comment, reformatted entry) fails here.
+    // The block is generated output — prose belongs in the tests, since
+    // regeneration destroys comments inside it. Asserting the bytes are exactly
+    // what `renderTable` emits fails hand-edits (reordered row, stray comment,
+    // reformatted entry).
     const body = source.slice(start + TABLE_START.length + 1, end);
     expect(parseTable(body).size, 'every row must parse as a label/outcome pair').toBe(66);
     expect(body).not.toMatch(/\/\/|\/\*/);

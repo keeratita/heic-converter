@@ -188,8 +188,8 @@ describe('convertHeic - Decoder Lifecycle', () => {
 
       const result = await convertHeic(new Uint8Array([1]), { decoder: garbageDecoder });
 
-      // convertHeic does not re-validate decoded output; validation happens in
-      // renderAndEncode (covered directly in canvas.test.ts).
+      // `convertHeic` does not re-validate decoded output; validation happens
+      // in `renderAndEncode` (covered directly in `canvas.test.ts`).
       expect(result).toBeInstanceOf(Blob);
       expect(mockState.renderAndEncodeMock).toHaveBeenCalledWith(
         expect.objectContaining({ width: -1, height: -1 }),
@@ -209,7 +209,7 @@ describe('convertHeic - Decoder Lifecycle', () => {
       try {
         await convertHeic(new Uint8Array([1]), { decoder: customDecoder });
       } catch {
-        // Expected
+        // The rejection is expected.
       }
 
       expect(customDecoder.free).not.toHaveBeenCalled();
@@ -232,7 +232,7 @@ describe('convertHeic - Decoder Lifecycle', () => {
     });
 
     it('should free the default decoder when decode throws', async () => {
-      // Configure the failure before starting: convertHeic reaches the
+      // Configure the failure before starting: `convertHeic` reaches the
       // decoder only after an awaited input-resolution step, so the mock
       // instance does not exist yet when convertHeic() returns its promise.
       mockState.decodeImpl = async () => {

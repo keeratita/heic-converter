@@ -1,9 +1,7 @@
 import { convertHeic } from '../../dist/index.mjs';
 
-// State
 let selectedFile = null;
 
-// Elements
 const dropzone = document.getElementById('dropzone');
 const fileInput = document.getElementById('fileInput');
 const fileDetails = document.getElementById('fileDetails');
@@ -29,14 +27,13 @@ const progressContainer = document.getElementById('progressContainer');
 const progressBar = document.getElementById('progressBar');
 const statusRegion = document.getElementById('sandboxStatus');
 
-// Status announcements for assistive tech (replaces blocking alert() dialogs).
+// Status announcements for assistive tech (replaces blocking `alert()` dialogs).
 function announceStatus(message) {
   if (statusRegion) {
     statusRegion.textContent = message;
   }
 }
 
-// Logging helpers
 function log(message, type = 'info') {
   const time = new Date().toLocaleTimeString([], { hour12: false, fractionalSecondDigits: 3 });
 
@@ -53,7 +50,7 @@ function log(message, type = 'info') {
 
   const messageEl = document.createElement('span');
   messageEl.className = 'log-message';
-  // textContent (not innerHTML): file names are user-controlled and must
+  // `textContent` (not `innerHTML`): file names are user-controlled and must
   // never be parsed as HTML.
   messageEl.textContent = message;
 
@@ -64,7 +61,6 @@ function log(message, type = 'info') {
 
 log('CSP sandbox loaded. Ready to test HEIC conversion.');
 
-// Event Listeners
 dropzone.addEventListener('click', () => fileInput.click());
 
 // Keyboard operability: the dropzone doubles as the file picker button.
@@ -117,7 +113,6 @@ clearLogsBtn.addEventListener('click', () => {
   log('Logs cleared.');
 });
 
-// Handle uploaded file
 function handleFileSelect(file) {
   const isHeic = file.name.toLowerCase().endsWith('.heic') || file.name.toLowerCase().endsWith('.heif');
   if (!isHeic) {
@@ -145,15 +140,14 @@ function formatBytes(bytes) {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
 
-// Run Conversion
 let conversionSeq = 0;
 let currentObjectUrl = null;
 
 convertBtn.addEventListener('click', async () => {
   if (!selectedFile) return;
 
-  // Identify this run; a newer run (or re-selection) makes earlier results
-  // stale so they can never overwrite the preview/output of the latest one.
+  // Sequence tag: results from a superseded run (new conversion or
+  // re-selection) must never overwrite the latest preview/output.
   const seq = ++conversionSeq;
   const convertedFile = selectedFile;
 
@@ -170,8 +164,7 @@ convertBtn.addEventListener('click', async () => {
 
   try {
     log('Loading file data into buffer...');
-    
-    // Convert to Blob options
+
     const options = {
       to: targetFormat,
       quality: quality,
@@ -198,17 +191,16 @@ convertBtn.addEventListener('click', async () => {
     log(`Conversion successful! Completed in ${duration}ms.`, 'success');
     announceStatus(`Conversion successful. Output ${formatBytes(resultBlob.size)} ${targetFormat.toUpperCase()}.`);
 
-    // Create Object URL for preview & download; drop the previous one so
-    // blob bytes from earlier conversions are not pinned for the page's life.
+    // Revoke the previous object URL first so blobs from earlier
+    // conversions are not pinned for the page's lifetime.
     if (currentObjectUrl) {
       URL.revokeObjectURL(currentObjectUrl);
     }
     const url = URL.createObjectURL(resultBlob);
     currentObjectUrl = url;
     
-    // Hide placeholder and show image preview
     previewPlaceholder.style.display = 'none';
-    // Wire onload before assigning src: a cached blob URL can complete
+    // Wire `onload` before assigning `src`: a cached blob URL can complete
     // synchronously and miss the handler otherwise.
     previewImage.onload = () => {
       outResolution.textContent = `${previewImage.naturalWidth} x ${previewImage.naturalHeight}`;
@@ -217,13 +209,11 @@ convertBtn.addEventListener('click', async () => {
     previewImage.src = url;
     previewImage.style.display = 'block';
 
-    // Update stats
     outSize.textContent = formatBytes(resultBlob.size);
     outTime.textContent = `${duration}ms`;
     outFormat.textContent = resultBlob.type.split('/')[1]?.toUpperCase() || targetFormat.toUpperCase();
     outputInfo.classList.add('active');
 
-    // Configure download button
     downloadBtn.href = url;
     downloadBtn.download = `converted_${Date.now()}.${targetFormat === 'jpeg' ? 'jpg' : targetFormat}`;
     downloadBtn.style.display = 'flex';

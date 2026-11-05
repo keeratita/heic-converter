@@ -12,7 +12,6 @@ describe('blobToBase64', () => {
   it('encodes bytes supplied via arrayBuffer()', async () => {
     const blob = new Blob(['test'], { type: 'image/png' });
 
-    // Mock arrayBuffer to return known bytes
     const mockArrayBuffer = new ArrayBuffer(4);
     const view = new Uint8Array(mockArrayBuffer);
     view.set([116, 101, 115, 116]); // "test"

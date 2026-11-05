@@ -15,11 +15,11 @@ const wasmPath = path.join(distDir, 'heic-decoder.wasm');
 /**
  * Returns a problem message, or null when both sidecars decompress to `raw`.
  *
- * A CDN configured with gzip_static/brotli_static serves these bytes verbatim,
- * so a truncated or mis-configured sidecar breaks decoding for exactly those
- * visitors and nobody else — invisible to the browser E2E suite, which fetches
- * the raw binary. Exported so the check itself is tested, like the other
- * supply-chain gates in this directory.
+ * A CDN with gzip_static/brotli_static serves these bytes verbatim, so a
+ * truncated or mis-configured sidecar breaks decoding for exactly those visitors
+ * and nobody else — invisible to the browser E2E suite, which fetches the raw
+ * binary. Exported so the check itself is tested, like the other supply-chain
+ * gates in this directory.
  */
 export function verifySidecars(raw, sidecars) {
   const cases = [

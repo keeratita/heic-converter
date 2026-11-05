@@ -12,9 +12,9 @@ import {
 } from '../../src/wasm/native';
 
 /**
- * The native Strategy's host APIs (createImageBitmap, OffscreenCanvas) do
- * not exist in Node, so every case stubs them; the convert-level selection/
- * fallback behavior lives in convert.native.test.ts.
+ * The native Strategy's host APIs (`createImageBitmap`, `OffscreenCanvas`) do
+ * not exist in Node, so every case stubs them; the convert-level
+ * selection/fallback behavior lives in `convert.native.test.ts`.
  */
 
 interface FakeBitmap {
@@ -110,8 +110,8 @@ describe('NativeHeicDecoder', () => {
     expect(bitmaps[0].close).toHaveBeenCalledOnce();
   });
 
-  // Both cap tests stub a counting OffscreenCanvas + a createImageBitmap that
-  // returns the given declared size, then assert no canvas was ever constructed.
+  // Both cap tests stub a counting `OffscreenCanvas` + a `createImageBitmap`
+  // returning the given declared size, then assert no canvas was ever built.
   function stubCapProbe(width: number, height: number): { boots: number } {
     const counter = { boots: 0 };
     vi.stubGlobal(
@@ -137,22 +137,22 @@ describe('NativeHeicDecoder', () => {
 
   it('bails on absurd declared dimensions before allocating a canvas', async () => {
     // Container-declared size is attacker-controlled: the canvas + ImageData
-    // pair would allocate outside the WASM heap (uncatchable), so the cap
-    // must fire before OffscreenCanvas is ever constructed.
+    // pair would allocate outside the WASM heap (uncatchable), so the cap must
+    // fire before `OffscreenCanvas` is ever constructed.
     const probe = stubCapProbe(99999, 8);
 
     const error = await new NativeHeicDecoder().decode(INPUT).catch((e) => e);
     expect((error as HeicConverterError).code).toBe('decode_failed');
     expect((error as Error).message).toContain(`${MAX_NATIVE_DECODE_DIMENSION}px per side`);
-    expect(probe.boots).toBe(0); // never allocated
-    expect(bitmaps[0].close).toHaveBeenCalledOnce(); // the bitmap itself is released
+    expect(probe.boots).toBe(0);
+    expect(bitmaps[0].close).toHaveBeenCalledOnce();
     expect(isNativeHeicRefused()).toBe(false); // input property, not a realm verdict
   });
 
   it('bails on absurd declared total pixels before allocating a canvas', async () => {
     // 16384x4097 passes each side check but is 64.02MP: without the total
     // budget the canvas + ImageData pair would allocate ~256 MB outside the
-    // WASM heap. Same budget as main.cpp's kMaxDecodePixels.
+    // WASM heap. Same budget as `main.cpp`'s `kMaxDecodePixels`.
     const probe = stubCapProbe(16384, 4097);
 
     const error = await new NativeHeicDecoder().decode(INPUT).catch((e) => e);
@@ -160,7 +160,7 @@ describe('NativeHeicDecoder', () => {
     expect((error as Error).message).toContain(
       `${MAX_NATIVE_DECODE_PIXELS / (1024 * 1024)}MP total`
     );
-    expect(probe.boots).toBe(0); // never allocated
+    expect(probe.boots).toBe(0);
     expect(bitmaps[0].close).toHaveBeenCalledOnce();
     expect(isNativeHeicRefused()).toBe(false); // input property, not a realm verdict
   });
@@ -188,10 +188,10 @@ describe('NativeHeicDecoder', () => {
   });
 
   it('copies SharedArrayBuffer-backed input before Blob-ing it', async () => {
-    // Browser Blob construction rejects SAB-backed parts (DataCloneError);
-    // Node's does NOT throw, so reading the bytes back cannot prove the copy —
-    // inspect the actual part handed to the Blob constructor instead.
-    // A plain function returns the fake blob; `new` keeps the returned object.
+    // Browsers reject SAB-backed Blob parts (DataCloneError); Node does not
+    // throw, so reading the bytes back cannot prove the copy — inspect the part
+    // handed to the Blob constructor instead. A plain function returns the fake
+    // blob; `new` keeps the returned object.
     const blobCtor = vi.fn(function (this: unknown, parts: unknown[]) {
       return { __parts: parts };
     });
@@ -210,7 +210,7 @@ describe('NativeHeicDecoder', () => {
 
   it('skips the copy check entirely when the realm lacks SharedArrayBuffer', async () => {
     // Node always has it; browser realms without SAB must not pay an
-    // instanceof against an undeclared global.
+    // `instanceof` against an undeclared global.
     vi.stubGlobal('SharedArrayBuffer', undefined);
     await expect(new NativeHeicDecoder().decode(INPUT)).resolves.toMatchObject({ width: 10 });
   });
@@ -220,7 +220,7 @@ describe('NativeHeicDecoder', () => {
   });
 
   it('keeps the decode caps in sync with the canvas and C++ caps', () => {
-    // native.ts copies the numbers to stay out of the render module graph
+    // `native.ts` copies the numbers to stay out of the render module graph
     // (lazy-chunk purity); these are the sync gates for both duplications.
     expect(MAX_NATIVE_DECODE_DIMENSION).toBe(MAX_CANVAS_DIMENSION);
 

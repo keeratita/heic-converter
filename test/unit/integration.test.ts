@@ -25,7 +25,8 @@ const isCI = typeof process !== 'undefined' && !!process.env.CI;
 if (!hasWasm || !hasFixture) {
   if (isCI) {
     // CI must never silently skip the real-WASM pipeline: a missing build or
-    // artifact would hide regressions. Let beforeAll crash the suite instead.
+    // artifact would hide the regressions this suite exists to catch. Let
+    // `beforeAll` crash the suite instead.
     console.error(
       '[integration] dist/heic-decoder.wasm or test fixtures are missing in CI — this suite will FAIL.'
     );
@@ -36,21 +37,18 @@ if (!hasWasm || !hasFixture) {
   }
 }
 
-/**
- * Integration tests exercising the real WASM decoder with a real HEIC fixture.
- *
- * These run in Node, which can decode but not canvas-encode (see the last
- * test). Outside CI they are skipped automatically when build artifacts or
- * fixtures are missing (run `npm run build` first); on CI they fail hard.
- */
+// Integration coverage of the real WASM decoder against real HEIC fixtures.
+// Runs in Node, which can decode but not canvas-encode (see the last test).
+// Outside CI it skips automatically when build artifacts or fixtures are
+// missing (run `npm run build` first); on CI it fails hard.
 describe.skipIf((!hasWasm || !hasFixture) && !isCI)('Integration Tests - Real WASM Pipeline', () => {
   let heicBytes: Uint8Array;
   let wasmBinary: ArrayBuffer;
 
   beforeAll(() => {
     heicBytes = new Uint8Array(fs.readFileSync(FIXTURE_PATH));
-    // In Node the WASM must be provided explicitly (no fetch); the browser
-    // loads it via locateFile/fetch instead.
+    // In Node the WASM must be provided explicitly (no fetch); the browser loads
+    // it via `locateFile`/fetch instead.
     wasmBinary = fs.readFileSync(WASM_PATH).buffer;
   });
 
@@ -67,8 +65,8 @@ describe.skipIf((!hasWasm || !hasFixture) && !isCI)('Integration Tests - Real WA
   });
 
   it('should instantiate from a shared compiled module via moduleOverrides.instantiateWasm', async () => {
-    // Backs the API.md recipe: compile once, instantiate per decoder. If the
-    // glue ignored the override it would fetch/compile itself, so the spy
+    // Backs the `API.md` recipe: compile once, instantiate per decoder. A glue
+    // that ignored the override would fetch and compile itself, so the spy
     // proves the override is honoured.
     const compileSpy = vi.spyOn(WebAssembly, 'compile');
     const compiled = await WebAssembly.compile(wasmBinary);
@@ -82,9 +80,9 @@ describe.skipIf((!hasWasm || !hasFixture) && !isCI)('Integration Tests - Real WA
           receiveInstance: (instance: WebAssembly.Instance) => void
         ) => {
           instantiateCalls += 1;
-          // Synchronous, and must RETURN the exports: `wasmExports` is
-          // assigned from createWasm()'s return value, and returning
-          // undefined clobbers what receiveInstance just stored.
+          // Synchronous, and must return the exports: `wasmExports` is assigned
+          // from `createWasm()`'s return value, so returning undefined clobbers
+          // what `receiveInstance` just stored.
           return receiveInstance(new WebAssembly.Instance(compiled, imports));
         },
       },
@@ -94,7 +92,7 @@ describe.skipIf((!hasWasm || !hasFixture) && !isCI)('Integration Tests - Real WA
 
     expect(decoded.width).toBeGreaterThan(0);
     expect(instantiateCalls).toBe(1);
-    expect(compileSpy).not.toHaveBeenCalled(); // the glue compiled nothing itself
+    expect(compileSpy).not.toHaveBeenCalled();
     decoder.free();
     compileSpy.mockRestore();
   });
@@ -106,7 +104,8 @@ describe.skipIf((!hasWasm || !hasFixture) && !isCI)('Integration Tests - Real WA
 
     decoder.free();
 
-    // The data must stay fully readable after the decoder (and its WASM heap) is freed.
+    // The data must stay fully readable after the decoder and its WASM heap are
+    // freed.
     expect(decoded.data.length).toBe(decoded.width * decoded.height * 4);
     expect(decoded.data.every((byte) => byte >= 0 && byte <= 255)).toBe(true);
   });
@@ -119,12 +118,12 @@ describe.skipIf((!hasWasm || !hasFixture) && !isCI)('Integration Tests - Real WA
 
       const first = await decoder.decode(heicBytes);
 
-      // Byte-identical fingerprint of the first result. (A snapshot via
-      // Array.from + toEqual deep-compares millions of boxed numbers; under
-      // CI runner contention that alone blew the 5s test timeout. FNV-1a +
-      // byte-sum over the whole buffer still catches any heap-reuse
-      // corruption — the exact regression this test pins: a future main.cpp
-      // returning a typed_memory_view over the heap would change these.)
+      // Byte-identical fingerprint of the first result. Never deep-compare a
+      // large buffer here: an `Array.from` snapshot with `toEqual` walks
+      // millions of boxed numbers and alone blew the 5s timeout under CI runner
+      // contention. FNV-1a + byte-sum over the whole buffer still catches
+      // heap-reuse corruption — the regression this pins is a future `main.cpp`
+      // returning a `typed_memory_view` over the heap.
       const fingerprint = (bytes: Uint8ClampedArray): string => {
         let fnv = 0x811c9dc5;
         let sum = 0;
@@ -153,9 +152,9 @@ describe.skipIf((!hasWasm || !hasFixture) && !isCI)('Integration Tests - Real WA
     await decoder.initialize();
     const decoded = await decoder.decode(new Uint8Array(fs.readFileSync(ALPHA_FIXTURE_PATH)));
 
-    // 64x64 fixture; assert the alpha channel is wired and varied: at least one
-    // fully opaque pixel and one semitransparent pixel. A channel-order or
-    // alpha-plane regression (WASM rebuild) would fail this.
+    // 64x64 fixture. The alpha channel must be wired and varied — at least one
+    // fully opaque and one semitransparent pixel — so a channel-order or
+    // alpha-plane regression from a WASM rebuild fails here.
     expect(decoded.width).toBe(64);
     expect(decoded.height).toBe(64);
     let opaque = 0;
@@ -183,17 +182,17 @@ describe.skipIf((!hasWasm || !hasFixture) && !isCI)('Integration Tests - Real WA
     expect(progressValues[progressValues.length - 1]).toBe(100);
     progressValues.forEach((value) => {
       expect(Number.isFinite(value)).toBe(true);
-      // Documented onProgress contract: normalized into [0, 100].
+      // Documented `onProgress` contract: normalized into [0, 100].
       expect(value).toBeGreaterThanOrEqual(0);
       expect(value).toBeLessThanOrEqual(100);
     });
   });
 
   it('reports EXIF orientation 6 for a file whose only display transform is the Exif tag', async () => {
-    // Fixture: stored 1600x1200 landscape, EXIF tag 274 = 6, no irot/imir
-    // boxes — the class produced by editors that only rewrite EXIF. libheif
-    // cannot apply a transform the container does not carry, so the wrapper
-    // surfaces the tag and the canvas layer applies it during rendering.
+    // Fixture: stored 1600x1200 landscape with EXIF tag 274 = 6 and no
+    // `irot`/`imir` boxes — the class editors produce when they only rewrite
+    // EXIF. libheif cannot apply a transform the container does not carry, so
+    // the wrapper surfaces the tag and the canvas layer applies it at render.
     const decoder = new LibheifDecoder({ wasmBinary });
     await decoder.initialize();
     const decoded = await decoder.decode(new Uint8Array(fs.readFileSync(ORIENTED_FIXTURE_PATH)));
@@ -205,9 +204,10 @@ describe.skipIf((!hasWasm || !hasFixture) && !isCI)('Integration Tests - Real WA
   });
 
   it('reports no pending orientation when libheif already applied the irot transform', async () => {
-    // Fixture: same content stored landscape with an irot 90 box (+ EXIF tag).
-    // libheif applies irot at decode (dimensions come back swapped); the
-    // wrapper must not stack the EXIF tag on top — double-rotation guard.
+    // Fixture: same content stored landscape with an `irot` 90 box (plus the
+    // EXIF tag). libheif applies `irot` at decode, so dimensions come back
+    // swapped; the wrapper must not stack the EXIF tag on top — the
+    // double-rotation guard.
     const decoder = new LibheifDecoder({ wasmBinary });
     await decoder.initialize();
     const decoded = await decoder.decode(new Uint8Array(fs.readFileSync(IROT_FIXTURE_PATH)));
@@ -246,8 +246,8 @@ describe.skipIf((!hasWasm || !hasFixture) && !isCI)('Integration Tests - Real WA
     it('exposes the normalized "Exif\\0\\0"+TIFF block for Exif-item files', async () => {
       const { decoder, decoded } = await decodeFixture(ORIENTED_FIXTURE_PATH);
       const block = expectExifBlock(decoded.exif);
-      // The fixture carries orientation 6: the 0x0112 entry must be inside
-      // the preserved TIFF (byte order per the TIFF header).
+      // The fixture carries orientation 6, so the `0x0112` entry must be inside
+      // the preserved TIFF, byte order per the TIFF header.
       const le = block[6] === 0x49;
       const tag = le ? [0x12, 0x01] : [0x01, 0x12];
       const found = Array.from(block).some(
@@ -258,9 +258,9 @@ describe.skipIf((!hasWasm || !hasFixture) && !isCI)('Integration Tests - Real WA
     });
 
     it('reports the Exif block even when irot already drove orientation (preservation is unguarded)', async () => {
-      // Apple-style fixture: irot/imir present means orientation stays
+      // Apple-style fixture: `irot`/`imir` present means orientation stays
       // undefined, but the Exif item still exists and must be exposed for
-      // preserveExif consumers.
+      // `preserveExif` consumers.
       const { decoder, decoded } = await decodeFixture(IROT_FIXTURE_PATH);
       expect(decoded.orientation).toBeUndefined();
       expectExifBlock(decoded.exif);
@@ -278,15 +278,15 @@ describe.skipIf((!hasWasm || !hasFixture) && !isCI)('Integration Tests - Real WA
       const copy = decoded.exif ? Array.from(decoded.exif) : undefined;
       decoder.free();
 
-      // Owned copy: still matches what was read before free(), never a
-      // dangling WASM-heap view (which would read zeros after memory reuse).
+      // Owned copy: still matches what was read before `free()`, never a dangling
+      // WASM-heap view (which would read zeros after memory reuse).
       expect(decoded.exif && Array.from(decoded.exif)).toEqual(copy);
       expect(copy && copy.length).toBeGreaterThanOrEqual(14);
     });
 
     it('normalizes the real fixture orientation tag to 1 without mutating the source', async () => {
-      // Guards normalizeOrientationTag against the production TIFF: real
-      // IFD offsets, real entry table, byte order as libheif emits it.
+      // Guards `normalizeOrientationTag` against the production TIFF: real IFD
+      // offsets, a real entry table, byte order as libheif emits it.
       const { decoder, decoded } = await decodeFixture(ORIENTED_FIXTURE_PATH);
       const block = expectExifBlock(decoded.exif);
 
@@ -319,10 +319,10 @@ describe.skipIf((!hasWasm || !hasFixture) && !isCI)('Integration Tests - Real WA
   });
 
   it('should reject convertHeic in Node.js environments (no canvas) with a clear error', async () => {
-    // convertHeic needs canvas APIs for encoding, which Node.js lacks — this is
-    // documented behavior: Node users decode raw RGBA and encode externally.
-    // The environment probe runs before decoding, so the injected decoder must
-    // not even be initialized (fail fast, no wasted WASM load/decode).
+    // Documented behavior: Node decodes raw RGBA and encodes externally, so
+    // `convertHeic` needs canvas APIs Node lacks. The environment probe runs
+    // before decoding, so the injected decoder is never initialized — fail fast,
+    // no wasted WASM load or decode.
     const decoder = new LibheifDecoder({ wasmBinary });
     const initSpy = vi.spyOn(decoder, 'initialize');
 

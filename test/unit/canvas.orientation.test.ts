@@ -27,8 +27,8 @@ const decodedImage = (width: number, height: number, orientation?: number): Deco
 describe('renderAndEncode - Orientation', () => {
   let mockCtx: MockContext;
   let createdCanvases: MockCanvasObject[];
-  // Canvas geometry captured at encode time: releaseCanvas() zeroes the
-  // target after toBlob, so post-await width/height reads would be 0.
+  // Canvas geometry captured at encode time: `releaseCanvas()` zeroes the
+  // target after `toBlob`, so post-await width/height reads would be 0.
   let encodeDims: Array<{ w: number; h: number }>;
   let toBlobImpl: (
     callback: (blob: Blob | null) => void,
@@ -58,7 +58,7 @@ describe('renderAndEncode - Orientation', () => {
       callback(new Blob(['blob'], { type: 'image/jpeg' }));
     };
 
-    // Same per-canvas stub strategy as canvas.resize.test.ts: target canvas
+    // Same per-canvas stub strategy as `canvas.resize.test.ts`: target canvas
     // is created first, the full-resolution source canvas second.
     global.document = {
       createElement: vi.fn(() => {
@@ -96,15 +96,15 @@ describe('renderAndEncode - Orientation', () => {
     const result = await renderAndEncode(decodedImage(1600, 1200, 6), 'jpeg', 0.92);
 
     expect(result.type).toBe('image/jpeg');
-    // Target canvas is sized to the *display* geometry (portrait).
+    // The target canvas is sized to the *display* geometry (portrait).
     expect(encodeDims).toEqual([{ w: 1200, h: 1600 }]);
-    // Pixels were written at the stored (landscape) geometry…
+    // Pixels were written at the stored (landscape) geometry.
     expect(mockCtx.putImageData).toHaveBeenCalledWith(
       expect.objectContaining({ width: 1600, height: 1200 }),
       0,
       0
     );
-    // …and drawn into the target through the orientation transform.
+    // They were then drawn into the target through the orientation transform.
     expect(mockCtx.setTransform).toHaveBeenCalledWith(0, 1, -1, 0, 1200, 0);
     expect(mockCtx.drawImage).toHaveBeenCalledWith(expect.any(Object), 0, 0);
   });
@@ -162,8 +162,8 @@ describe('renderAndEncode - Orientation', () => {
   });
 
   it('orientation 7 with a resize bound scales the swapped display size', async () => {
-    // Stored 1600x1200 landscape, orientation 7 (swaps): display 1200x1600;
-    // maxHeight 800 → ratio 0.5 → target 600x800.
+    // Stored geometry is 1600x1200 landscape with orientation 7 (swaps):
+    // display 1200x1600; `maxHeight` 800 → ratio 0.5 → target 600x800.
     await renderAndEncode(decodedImage(1600, 1200, 7), 'jpeg', 0.92, { maxHeight: 800 });
 
     expect(encodeDims).toEqual([{ w: 600, h: 800 }]);

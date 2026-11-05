@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 
-// When the lazy worker chunk cannot be fetched, these entry points must reject with
-// a HeicConverterError carrying a machine-readable code, not a raw module-load error.
+// When the lazy worker chunk cannot be fetched, these entry points must reject
+// with a `HeicConverterError` carrying a machine-readable code, not a raw
+// module-load error.
 vi.mock('../../src/worker', () => {
   throw new Error('Failed to fetch dynamically imported module .../dist/worker-XXXX.js');
 });

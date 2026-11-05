@@ -4,9 +4,9 @@ import { fileURLToPath } from 'node:url';
 
 // The README error table is the only place a caller can learn which `code`
 // values exist, and it drifted silently before (a row sat below the table and
-// rendered as literal text; `worker_load_failed` was missing entirely). Both
-// sides are parsed from source here, so a code added to `src/errors.ts`
-// without a README row — or a row for a code that does not exist — fails.
+// rendered as literal text; `worker_load_failed` was missing). Both sides are
+// parsed from source, so a code in `src/errors.ts` without a README row — or a
+// row for a nonexistent code — fails.
 
 const readme = readFileSync(
   fileURLToPath(new URL('../../README.md', import.meta.url)),
@@ -53,8 +53,8 @@ describe('README error table', () => {
   });
 
   it('keeps every row in one contiguous block', () => {
-    // Guards the bug where a row was pasted below an intervening paragraph and
-    // rendered as literal pipe characters instead of a table row.
+    // Guards the past bug: a row pasted below an intervening paragraph rendered
+    // as literal pipes instead of a table row.
     const lines = errorSectionLines();
     const rows = lines.map((line) => line.startsWith('|'));
     const first = rows.indexOf(true);

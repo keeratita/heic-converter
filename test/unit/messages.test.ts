@@ -4,12 +4,12 @@ import { WorkerMessages } from '../../src/messages/worker';
 
 /**
  * Message builders are the single source of user-facing error text. These
- * tests pin the template contracts (including the optional-detail branches
- * of the worker diagnostics) so callers' message assertions stay stable.
+ * tests pin the template contracts (including the optional-detail branches of
+ * the worker diagnostics) so callers' message assertions stay stable.
  *
- * The split between `Messages` (main-thread) and `WorkerMessages` (lazy worker
- * chunk) is what keeps the worker-only text out of the bundle every consumer
- * pays for, so the boundary itself is asserted below.
+ * The `Messages` / `WorkerMessages` split is what keeps worker-only text out
+ * of the bundle every consumer pays for, so the boundary itself is asserted
+ * below.
  */
 describe('Messages', () => {
   describe('bundle-size boundary', () => {
@@ -39,7 +39,7 @@ describe('Messages', () => {
       );
       expect(Messages.ConvertManyExtraFailures(4, 5)).toBe(' (4 of 5 items failed in total)');
       expect(Messages.ConvertManyOtherErrors(['a', 'b'])).toBe('; other errors: a | b');
-      // Reached only from v8-ignored dead tails in batch.ts, so pin them here.
+      // Reached only from v8-ignored dead tails in `batch.ts`, so pin them here.
       expect(Messages.BatchItemProducedNoResult(1, 3)).toBe(
         'Conversion of item 1 of 3 failed: item produced no result'
       );
@@ -170,8 +170,8 @@ describe('Messages', () => {
     });
 
     it('owns the worker-only option validation text', () => {
-      // Only src/worker.ts throws these, so the strings must stay in this chunk;
-      // bundle.test.ts asserts they never appear in the eagerly loaded graph.
+      // Only `src/worker.ts` throws these, so the strings must stay in this
+      // chunk; `bundle.test.ts` asserts they never appear in the eager graph.
       expect(WorkerMessages.MaxConcurrentWorkersInvalid(1.5, 64)).toContain(
         'maxConcurrentWorkers must be an integer between 1 and 64, got: 1.5'
       );

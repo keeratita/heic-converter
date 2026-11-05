@@ -6,9 +6,9 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 // The neutralizer is a fail-closed supply-chain guard: silent failure ships a
-// ~55 KB-gz regression. Test it like a security control on synthetic trees —
-// must stub, must refuse, must stay byte-stable. Synthetic so CI can run it
-// without submodules (same discipline as install-scripts.test.ts).
+// ~55 KB-gz regression. Test it like a security control on synthetic trees
+// (so CI runs it without submodules; same discipline as
+// `install-scripts.test.ts`): must stub, must refuse, must stay byte-stable.
 
 const SCRIPT = fileURLToPath(
   new URL('../../build-scripts/neutralize-libheif-diagnostics.py', import.meta.url),
@@ -20,7 +20,7 @@ function runNeutralizer(cwd: string) {
   return res;
 }
 
-/** Realistic diagnostic definitions: string/comment braces test match_body. */
+/** Realistic diagnostic definitions: string/comment braces test `match_body`. */
 function dumpDefs(count: number, start = 0): string {
   return Array.from(
     { length: count },
@@ -48,9 +48,9 @@ const HEIF_IMAGE_CC = `void heif_image_create()
 `;
 
 interface Tree {
-  /** dir to pass as cwd: the script's ROOTS entry 'libheif' resolves under it */
+  /** Dir to pass as `cwd`: the script's `ROOTS` entry 'libheif' resolves under it. */
   cwd: string;
-  /** the located tree root (cwd/libheif) */
+  /** The located tree root (`cwd/libheif`). */
   root: string;
 }
 
@@ -60,7 +60,7 @@ function makeTree(opts: {
   extra?: Record<string, string>;
 }): Tree {
   const cwd = mkdtempSync(path.join(tmpdir(), 'neutralize-'));
-  const root = path.join(cwd, 'libheif'); // ROOTS: 'libheif' + 'libheif/box.cc'
+  const root = path.join(cwd, 'libheif'); // `ROOTS`: 'libheif' + 'libheif/box.cc'
   const write = (rel: string, content: string) => {
     const target = path.join(root, rel);
     mkdirSync(path.dirname(target), { recursive: true });
@@ -79,7 +79,8 @@ describe('neutralize-libheif-diagnostics.py', () => {
   let healthy: Tree;
 
   beforeAll(() => {
-    // 100 defs in box.cc: exactly the MIN_STUBS floor, all from the sanity file.
+    // 100 defs in `box.cc`: exactly the `MIN_STUBS` floor, all from the sanity
+    // file.
     healthy = makeTree({ boxCc: dumpDefs(99) + DEBUG_INFO_DEFS });
     tmpDirs.push(healthy.cwd);
     const res = runNeutralizer(healthy.cwd);
@@ -103,7 +104,7 @@ describe('neutralize-libheif-diagnostics.py', () => {
     const boxCc = readFileSync(path.join(healthy.root, 'libheif/box.cc'), 'utf-8');
     expect(boxCc).toContain('void Box_0::dump(std::ostream& s, Indent& indent, bool full_log) const\n{\n}');
     expect(boxCc).toContain('std::string Box_meta::get_debug_info() const\n{\n  return "";\n}');
-    // stream-heavy bodies (including the brace-in-string/comment payloads) are gone
+    // Stream-heavy bodies (brace-in-string/comment payloads included) are gone.
     expect(boxCc).not.toContain('stringstream');
     expect(boxCc).not.toMatch(/box \d+ \{/);
   });
@@ -129,8 +130,8 @@ describe('neutralize-libheif-diagnostics.py', () => {
   });
 
   it('refuses when box.cc contributes no stubs (sanity guard)', () => {
-    // 100 defs live in another file; box.cc holds only declarations, which
-    // must also survive untouched (trailing ';' never matches HEADER).
+    // 100 defs live in another file; `box.cc` holds only declarations, which
+    // must also survive untouched (trailing ';' never matches `HEADER`).
     const declarations = 'void Box_decl::dump(std::ostream&, Indent&, bool) const;\n';
     const { tree, status, stderr } = fresh({
       boxCc: declarations,
@@ -148,8 +149,8 @@ describe('neutralize-libheif-diagnostics.py', () => {
   });
 
   it('exits loudly on a definition without any body or a braceless body', () => {
-    // Both safety-net branches: str.find('{') returning -1 (the branch that
-    // used to test against None and could not fire) and match_body returning
+    // Both safety-net branches: `str.find('{')` returning -1 (the branch that
+    // used to test against None and could not fire) and `match_body` returning
     // None on an unclosed body.
     const noBody = fresh({ boxCc: dumpDefs(99) + 'void Box_ghost::dump() const\n' });
     expect(noBody.status).toBe(1);

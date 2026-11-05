@@ -7,8 +7,8 @@ import {
 import { EXIF_BLOCK, TIFF } from './helpers/exif-fixtures';
 
 // --- fixtures -------------------------------------------------------------
-// The TIFF/EXIF block is shared with the render-stage tests (helpers/exif-fixtures);
-// the JPEG/PNG scaffolding below is specific to the injectors.
+// The TIFF/EXIF block is shared with the render-stage tests
+// (`helpers/exif-fixtures`); the JPEG/PNG scaffolding below is injector-specific.
 
 const concat = (...parts: Uint8Array[]): Uint8Array => {
   const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
@@ -35,8 +35,10 @@ const DQT = segment(0xdb, [0x00, 0x01]);
 
 const jpeg = (...segments: Uint8Array[]): Uint8Array => concat(SOI, ...segments, EOI);
 
-/** Bitwise CRC-32 (PNG polynomial) — deliberately independent of the
- * implementation under test (which uses a table). */
+/**
+ * Bitwise CRC-32 (PNG polynomial), deliberately independent of the
+ * implementation under test, which uses a table.
+ */
 function crc32Bitwise(bytes: Uint8Array): number {
   let crc = 0xffffffff;
   for (const byte of bytes) {
@@ -110,7 +112,7 @@ describe('injectExifIntoJpeg', () => {
     const segLen = (out[4] << 8) | out[5];
     expect(segLen).toBe(EXIF_BLOCK.length + 2);
     expect(contains(out, EXIF_BLOCK)).toBe(true);
-    // Original content preserved: still ends with the SOS + EOI tail.
+    // Original content preserved: the output still ends with the SOS + EOI tail.
     expect(out.subarray(6 + EXIF_BLOCK.length)).toEqual(jpeg(SOS).subarray(2));
   });
 
@@ -118,8 +120,7 @@ describe('injectExifIntoJpeg', () => {
     const out = injectExifIntoJpeg(jpeg(JFIF_APP0, COM, SOS), EXIF_BLOCK);
 
     expect(out.subarray(0, 2)).toEqual(SOI);
-    // Scan marker sequence: APP0, APP1(Exif), COM stays before APP1? No —
-    // APP1 is inserted after the whole skippable run: APP0, COM, APP1, SOS.
+    // APP1 lands after the whole skippable run: APP0, COM, APP1, SOS.
     const markers: number[] = [];
     let pos = 2;
     while (pos + 2 <= out.length) {
@@ -176,14 +177,14 @@ describe('injectExifIntoJpeg', () => {
   it('refuses payloads that do not fit the 16-bit APP1 length field', () => {
     const huge = new Uint8Array(65534 - 2 + 1 + EXIF_BLOCK.length);
     huge.set(EXIF_BLOCK, 0); // still marker-prefixed and TIFF-headed
-    // Pad so total length exceeds 65533 (segment length field limit).
+    // Padded so the payload exceeds 65533 — the 16-bit APP1 length-field limit.
     const jpegBytes = jpeg(SOS);
     expect(injectExifIntoJpeg(jpegBytes, huge)).toBe(jpegBytes);
   });
 
   it('walks past 0xFF fill bytes and still inserts after the APP0 run', () => {
     // Fill bytes before a marker are legal and do occur; treating them as a
-    // desynchronized stream would silently drop metadata instead of inserting.
+    // desynchronized stream would silently drop metadata instead of inserting it.
     const filled = concat(SOI, new Uint8Array([0xff]), JFIF_APP0, SOF0, EOI);
     const out = injectExifIntoJpeg(filled, EXIF_BLOCK);
     const afterLeading = SOI.length + 1 + JFIF_APP0.length; // SOI + fill + APP0
@@ -213,7 +214,7 @@ describe('injectExifIntoPng', () => {
     const chunks = parseChunks(out);
     expect(chunks.map((c) => c.type)).toEqual(['IHDR', 'eXIf', 'IDAT', 'IEND']);
     const exifChunk = chunks[1];
-    // PNG eXIf carries the TIFF WITHOUT the JPEG "Exif\0\0" marker.
+    // PNG `eXIf` carries the TIFF without the JPEG `Exif\0\0` marker.
     expect(Array.from(exifChunk.data)).toEqual(Array.from(TIFF));
     expect(exifChunk.crcOk).toBe(true);
     // Other chunks survived intact.
@@ -221,9 +222,8 @@ describe('injectExifIntoPng', () => {
   });
 
   it('computes a spec-correct CRC for a known chunk (independent cross-check)', () => {
-    // Known-answer vector: CRC-32 of the bytes 'IHDR' for a zero-length
-    // chunk data is 0xc4…? Use the bitwise helper as the oracle instead of
-    // hardcoding, applied to the exact chunk the injector produced.
+    // Cross-checked against the independent bitwise helper as the oracle rather
+    // than a hardcoded constant.
     const out = injectExifIntoPng(png(IHDR, IDAT, IEND), EXIF_BLOCK);
     const pos = PNG_SIGNATURE.length + IHDR.length;
     const lenField = (out[pos] << 24) | (out[pos + 1] << 16) | (out[pos + 2] << 8) | out[pos + 3];
@@ -263,7 +263,7 @@ describe('injectExifIntoPng', () => {
     const wrongIhdr = concat(PNG_SIGNATURE, pngChunk('IHDR'.replace('IHDR', 'IHDR'), new Uint8Array(12)));
     expect(injectExifIntoPng(wrongIhdr, EXIF_BLOCK)).toBe(wrongIhdr);
 
-    // Chunk length claiming more bytes than the buffer holds.
+    // Chunk length claims more bytes than the buffer holds.
     const lyingChunk = concat(
       PNG_SIGNATURE,
       IHDR,
@@ -271,8 +271,8 @@ describe('injectExifIntoPng', () => {
     );
     expect(injectExifIntoPng(lyingChunk, EXIF_BLOCK)).toBe(lyingChunk);
 
-    // Mid-range lie: the length fits within png.length but pushes the walk
-    // past the buffer, so the next "chunk boundary" lands beyond the end.
+    // Mid-range lie: the length fits within `png.length` but pushes the walk
+    // past the buffer, so the next chunk boundary lands beyond the end.
     const truncatedAncillary = concat(
       PNG_SIGNATURE,
       IHDR,
@@ -287,8 +287,9 @@ describe('injectExifIntoPng', () => {
   });
 
   it('refuses a container whose first chunk is not a 13-byte IHDR', () => {
-    // eXIf anchors after IHDR, so a misdeclared length or a mistyped first chunk
-    // means the anchor is unlocatable: refuse rather than write into a bad file.
+    // `eXIf` anchors after `IHDR`, so a misdeclared length or a mistyped first
+    // chunk means the anchor is unlocatable: refuse rather than write into a bad
+    // file.
     const wrongLength = png(pngChunk('IHDR', new Uint8Array(12)), IDAT, IEND);
     expect(injectExifIntoPng(wrongLength, EXIF_BLOCK)).toBe(wrongLength);
 
@@ -299,7 +300,7 @@ describe('injectExifIntoPng', () => {
 
 // --- normalizeOrientationTag ----------------------------------------------
 
-/** Absolute index of the orientation value field inside EXIF_BLOCK. */
+/** Absolute index of the orientation value field inside `EXIF_BLOCK`. */
 const ORIENT_AT = 6 + 18; // "Exif\0\0" (6) + TIFF IFD0 entry value field
 
 describe('normalizeOrientationTag', () => {
@@ -411,12 +412,10 @@ describe('normalizeOrientationTag', () => {
 
 const MARKER_BYTES = [0x45, 0x78, 0x69, 0x66, 0x00, 0x00]; // "Exif\0\0"
 
-/**
- * All three injectors start by validating the `"Exif\0\0" + TIFF` header, where a
- * lax check corrupts an image rather than merely losing metadata. A short header
- * is refused by hasExifMarker first, so isTiffHeader's own bounds guard stays as
- * defence in depth.
- */
+// All three injectors start by validating the `"Exif\0\0" + TIFF` header, where a
+// lax check corrupts an image rather than merely losing metadata. A short header
+// is refused by `hasExifMarker` first, so `isTiffHeader`'s own bounds guard stays
+// as defence in depth.
 describe('a malformed EXIF header is refused by every injector', () => {
   const cases: Array<[string, Uint8Array]> = [
     ['shorter than marker plus TIFF header', new Uint8Array(MARKER_BYTES.slice(0, 4))],
@@ -446,11 +445,9 @@ describe('a malformed EXIF header is refused by every injector', () => {
   });
 });
 
-/**
- * Catch-all contract: a surprise while splicing returns the original bytes
- * untouched. Overriding the view methods the splice relies on reaches those
- * catches without touching production code.
- */
+// Catch-all contract: a surprise while splicing returns the original bytes
+// untouched. Overriding the view methods the splice relies on reaches those
+// catches without touching production code.
 describe('the catch-alls return the original bytes when splicing throws', () => {
   class HostileSubarray extends Uint8Array {
     override subarray(): never {
@@ -463,9 +460,9 @@ describe('the catch-alls return the original bytes when splicing throws', () => 
     }
   }
 
-  // Hostile bytes go through Sub.from(), not `new Sub(...bytes)`: the
-  // inherited constructor reads a numeric first arg as *length* and yields
-  // zeros the magic-byte guards reject — a vacuously green catch.
+  // Hostile bytes go through `Sub.from()`, not `new Sub(...bytes)`: the inherited
+  // constructor reads a numeric first arg as *length* and yields zeros the
+  // magic-byte guards reject — a vacuously green catch.
   it('injectExifIntoJpeg returns the original JPEG unchanged', () => {
     const hostile = HostileSubarray.from(jpeg(SOS));
     expect(injectExifIntoJpeg(hostile, EXIF_BLOCK)).toBe(hostile);
@@ -477,7 +474,7 @@ describe('the catch-alls return the original bytes when splicing throws', () => 
   });
 
   it('normalizeOrientationTag returns the original block unchanged', () => {
-    // EXIF_BLOCK carries orientation 6, so the rewrite reaches block.slice()
+    // `EXIF_BLOCK` carries orientation 6, so the rewrite reaches `block.slice()`
     // — the copy it can never complete must fall back to the input itself.
     const hostile = HostileSlice.from(EXIF_BLOCK);
     expect(normalizeOrientationTag(hostile)).toBe(hostile);

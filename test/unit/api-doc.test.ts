@@ -3,11 +3,11 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 // API.md is the reference consumers (and coding agents) actually read, and it
-// duplicates two facts that live in code: the HeicConverterErrorCode union and
-// the set of names the entry point publishes. Both drift silently — a code can
-// be added without a row, a row can sit below the table and render as literal
-// pipes, an export can ship undocumented — so both sides are parsed from source
-// here, the same discipline test/unit/readme.test.ts applies to the README.
+// duplicates two facts that live in code — the HeicConverterErrorCode union and
+// the entry point's exported names. Both drift silently (a code added without a
+// row, a row sitting below the table rendering as literal pipes, an export
+// shipping undocumented), so both sides are parsed from source here — the same
+// discipline test/unit/readme.test.ts applies to the README.
 
 const apiDoc = readFileSync(fileURLToPath(new URL('../../API.md', import.meta.url)), 'utf8');
 const errorsSource = readFileSync(
@@ -99,9 +99,8 @@ describe('API.md error table', () => {
   });
 
   it('keeps every row in one contiguous block', () => {
-    // A row pasted below an intervening paragraph renders as literal pipe
-    // characters instead of a table row — the failure the README guard exists
-    // for, and one a hand-edited second copy is equally prone to.
+    // The same stranded-row failure the README guard exists for — a
+    // hand-edited second copy is equally prone to it.
     const stranded = errorTableRows().below.findIndex((line) => /^\|\s*`[a-z_]+`\s*\|/.test(line));
     expect(stranded, `row stranded below the table: ${errorTableRows().below[stranded] ?? ''}`).toBe(-1);
   });
@@ -116,8 +115,8 @@ describe('API.md export coverage', () => {
   });
 
   it('is not vacuous — the entry point publishes a substantial surface', () => {
-    // Guards the extraction itself: a regex that stopped matching would make
-    // the coverage check above pass by comparing against an empty list.
+    // Guards the extraction itself: a regex that stopped matching would make the
+    // coverage check pass against an empty list.
     expect(publicExports().length).toBeGreaterThan(20);
   });
 });

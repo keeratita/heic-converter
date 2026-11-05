@@ -64,8 +64,8 @@ describe('convertHeic - Input Types', () => {
     expect(mockState.decoderInstances).toHaveLength(1);
     const [decodeInput, decodeProgress] = mockState.decoderInstances[0].decode.mock.calls[0];
     expect(decodeInput).toBeInstanceOf(Uint8Array);
-    // The callback passed to decode() is the library's normalizing wrapper
-    // around the user callback, so assert the user callback got the percent.
+    // `decode()` receives the library's normalizing wrapper around the user
+    // callback, so assert the user callback got the percent.
     expect(decodeProgress).toBeInstanceOf(Function);
     decodeProgress(100);
     expect(progress).toHaveBeenCalledWith(100);
@@ -85,7 +85,7 @@ describe('convertHeic - Input Types', () => {
     const progress = vi.fn();
     resetConvertMocks({
       decodeImpl: async (_data, onProgress) => {
-        onProgress?.(150); // clamps to 100, but 100% is withheld...
+        onProgress?.(150); // clamps to 100, but 100% is withheld
         onProgress?.(-20); // -> 0
         onProgress?.(Number.NaN); // -> 0
         onProgress?.(100); // end-of-decode value: also withheld
@@ -159,7 +159,7 @@ describe('convertHeic - Input Types', () => {
     });
 
     // Mid-decode throws are recorded, not thrown, so the conversion can
-    // finish; the recorded non-Error must be stringified at complete().
+    // finish; the recorded non-Error must be stringified at `complete()`.
     const error = await convertHeic(new Uint8Array([1]), {
       onProgress: (percent) => {
         if (percent < 100) {
@@ -199,7 +199,7 @@ describe('convertHeic - Input Types', () => {
 
   it('should accept cross-realm Blob-likes via duck typing', async () => {
     // A Blob from another realm fails `instanceof Blob` but exposes
-    // arrayBuffer(); the library must still accept it.
+    // `arrayBuffer()`; the library must still accept it.
     const crossRealmBlobLike = {
       arrayBuffer: async () => new Uint8Array([4, 5, 6]).buffer,
     } as unknown as Blob;
@@ -212,9 +212,9 @@ describe('convertHeic - Input Types', () => {
   });
 
   it('should reject blob-likes whose arrayBuffer() resolves to a non-ArrayBuffer', async () => {
-    // Duck typing accepts any object with arrayBuffer(); if the resolved
-    // value is not an ArrayBuffer the input must fall through to the
-    // unsupported-type error instead of decoding undefined.
+    // Duck typing accepts any object with `arrayBuffer()`; a non-ArrayBuffer
+    // resolution must fall through to the unsupported-type error instead of
+    // decoding undefined.
     const brokenBlobLike = {
       arrayBuffer: async () => 'not-an-arraybuffer',
     } as unknown as Blob;
@@ -252,8 +252,8 @@ describe('convertHeic - Input Types', () => {
     view.setUint8(1, 8);
     view.setUint8(2, 9);
 
-    // No cast: HeicInput declares ArrayBufferView, so the typecheck itself
-    // pins that DataView is a supported input surface.
+    // No cast: `HeicInput` declares `ArrayBufferView`, so the typecheck itself
+    // pins that `DataView` is a supported input surface.
     const result = await convertHeic(view);
 
     expect(result).toBeInstanceOf(Blob);
@@ -262,9 +262,8 @@ describe('convertHeic - Input Types', () => {
   });
 
   it('reads non-Uint8Array views by byteOffset/byteLength (Uint16Array)', async () => {
-    // Element type and view range are the contract: the decoder must see the
-    // raw byte range only — no element reinterpretation, no leading/trailing
-    // bytes from the backing buffer.
+    // The contract is the view's raw byte range: no element reinterpretation,
+    // no leading/trailing bytes from the backing buffer.
     const buffer = new ArrayBuffer(8);
     new Uint8Array(buffer).set([0, 0, 1, 2, 3, 4, 0, 0]);
     const view = new Uint16Array(buffer, 2, 2); // bytes 2..6 = [1, 2, 3, 4]
@@ -283,7 +282,7 @@ describe('convertHeic - Input Types', () => {
     const decodedInput = mockState.decoderInstances[0].decode.mock.calls[0][0];
     expect(decodedInput).toBeInstanceOf(Uint8Array);
     expect(Array.from(decodedInput)).toEqual([10, 20, 30, 40, 50]);
-    // Fast path: the Uint8Array is handed to decode() without a copy.
+    // Fast path: the `Uint8Array` is handed to `decode()` without a copy.
     expect(decodedInput).toBe(input);
   });
 

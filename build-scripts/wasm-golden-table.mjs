@@ -8,12 +8,10 @@ const FIXTURE_DIR = path.join(rootDir, 'test/fixtures');
 const GOLDEN_TEST = path.join(rootDir, 'test/unit/wasm-golden.test.ts');
 const DIST_DIR = path.join(rootDir, 'dist');
 
-/**
- * Region of `test/unit/wasm-golden.test.ts` this script owns. Everything from
- * the opening brace to the closing one is regenerated wholesale, which is why
- * the table carries no hand-written comments: prose belongs in the tests, the
- * table is machine-owned data.
- */
+// Region of `test/unit/wasm-golden.test.ts` this script owns: everything from
+// the opening brace to the closing one is regenerated wholesale, which is why
+// the table carries no hand-written comments — prose belongs in the tests and
+// the table is machine-owned data.
 const TABLE_START = 'const MUTATION_GOLDENS: Record<string, string> = {';
 
 const MUTATED_FIXTURES = ['example.heic', 'colors-with-alpha.heic', 'exif-orientation-6.heic'];
@@ -22,12 +20,12 @@ const FLIPS_PER_FIXTURE = 14;
 const FLIP_SEED = 0x5eed;
 
 /**
- * Builds the mutated inputs behind MUTATION_GOLDENS: a single deterministic LCG
- * seeded with 0x5eed, consumed in a fixed order, so every `flipN@<offset>` label
- * is reproducible across machines and runs.
+ * Builds the mutated inputs behind `MUTATION_GOLDENS`: a single deterministic
+ * LCG seeded with `0x5eed`, consumed in a fixed order, so every `flipN@<offset>`
+ * label is reproducible across machines and runs.
  *
- * Lives here, next to the generator that writes the table, rather than inside the
- * test file: the one operation that must use the *identical* generator is
+ * Lives here, next to the generator that writes the table, rather than inside
+ * the test file: the one operation that must use the *identical* generator is
  * regeneration, and having it in two places is how a regenerated table silently
  * re-labels inputs the assertions never intended to re-check. `readFile` is
  * injectable so the shape of the table can be tested without the fixtures.

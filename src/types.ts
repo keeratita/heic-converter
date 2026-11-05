@@ -2,40 +2,37 @@ export interface DecodedImage {
   width: number;
   height: number;
   /**
-   * RGBA pixel data, interleaved, row-major, 4 bytes per pixel.
-   *
-   * The buffer is always a plain `ArrayBuffer` owned by the returned array
-   * (never a view into the WASM heap), so it stays valid after
-   * `LibheifDecoder.free()` and can be passed directly to
-   * `new ImageData(...)` / `putImageData` — including the `ImageData`
-   * overload that requires `Uint8ClampedArray<ArrayBuffer>` under TS >= 5.7.
+   * RGBA pixel data, interleaved, row-major, 4 bytes per pixel. Always a
+   * plain `ArrayBuffer` owned by the returned array — never a WASM-heap
+   * view — so it stays valid after `LibheifDecoder.free()` and passes
+   * directly to `new ImageData(...)` / `putImageData`, including the
+   * `ImageData` overload that requires `Uint8ClampedArray<ArrayBuffer>`
+   * under TS >= 5.7.
    */
   data: Uint8ClampedArray;
 
   /**
    * Raw EXIF block copied from the source file, normalized to the JPEG APP1
-   * payload form: `"Exif\0\0"` followed by the TIFF structure. Present when
-   * the file carries an Exif item — including files where libheif already
-   * applied `irot`/`imir` (the block is reported independently of
-   * {@link DecodedImage.orientation}).
-   *
-   * `convertHeic` re-injects this block into JPEG (APP1) and PNG (`eXIf`)
-   * output when `preserveExif: true`; raw-decode consumers can attach it to
-   * their own encoder output (e.g. `sharp`'s `.withMetadata({ exif })`).
-   * Owned by the returned object; never a WASM-heap view.
+   * payload form: `"Exif\0\0"` followed by the TIFF structure. Present
+   * whenever the file carries an Exif item — including files where libheif
+   * already applied `irot`/`imir` (reported independently of
+   * {@link DecodedImage.orientation}). `convertHeic` re-injects it into
+   * JPEG (APP1) and PNG (`eXIf`) output when `preserveExif: true`;
+   * raw-decode consumers can attach it to their own encoder output (e.g.
+   * `sharp`'s `.withMetadata({ exif })`). Owned by the returned object,
+   * never a WASM-heap view.
    */
   exif?: Uint8Array;
 
   /**
    * EXIF orientation of the **stored** pixels (1–8, EXIF tag 274 semantics;
-   * 1 = upright). Absent or 1 means no rotation is pending.
-   *
-   * libheif already applies `irot`/`imir` container transforms during
-   * decode — for those files this is 1 and the pixels are upright. A value
-   * > 1 means the orientation comes only from the Exif item: `convertHeic`
-   * applies it automatically (unless `applyOrientation: false`), while raw
-   * `decode()` consumers get stored pixels and must apply it themselves.
-   * Decoders that do not report orientation may omit this field.
+   * 1 = upright). Absent or 1 means no rotation is pending. libheif applies
+   * `irot`/`imir` container transforms at decode — for those files this is
+   * 1 and the pixels are upright. A value > 1 means the orientation comes
+   * only from the Exif item: `convertHeic` applies it automatically unless
+   * `applyOrientation: false`; raw `decode()` consumers get stored pixels
+   * and must apply it themselves. Decoders that do not report orientation
+   * may omit this field.
    */
   orientation?: number;
 }
@@ -45,37 +42,33 @@ export interface DecodedImage {
  * {@link ConvertManyOptions.decoder} and implemented by `LibheifDecoder`.
  *
  * Lifecycle rules followed by the library (implementations may rely on them):
- * - `initialize()` is called before every `decode()`; implementations must
- *   make repeated/concurrent calls cheap (e.g. memoize the load promise).
+ * - `initialize()` is called before every `decode()`; repeated/concurrent
+ *   calls must be cheap (e.g. memoize the load promise).
  * - `decode()` is awaited before the library calls `free()`; the returned
  *   `DecodedImage` must therefore not reference decoder-owned memory that
  *   `free()` releases (copy pixels out, as `LibheifDecoder` does).
- * - `free()` is called at most once per conversion. Decoders **injected** via
- *   options are never freed by the library — the caller owns their lifetime.
+ * - `free()` is called at most once per conversion. Decoders **injected**
+ *   via options are never freed by the library — the caller owns their
+ *   lifetime.
  *
  * Concurrency: with `convertMany`, a single injected decoder is shared by
  * all concurrent conversions, so `decode()` must be safe to call concurrently
  * on one instance (no shared mutable state across in-flight decodes).
  */
 export interface IHeicDecoder {
-  /**
-   * Initializes the decoder (e.g., loading WebAssembly module).
-   */
+  /** Initializes the decoder (e.g. loading the WebAssembly module). */
   initialize(): Promise<void>;
 
   /**
-   * Decodes HEIC binary data into raw RGBA pixel data.
-   * @param data The HEIC file as a Uint8Array.
-   * @param onProgress Optional progress callback that receives the progress percentage.
+   * Decodes HEIC binary data into raw RGBA pixel data; `onProgress`
+   * receives the progress percentage.
    */
   decode(
     data: Uint8Array,
     onProgress?: (percent: number) => void
   ): Promise<DecodedImage>;
 
-  /**
-   * Cleans up allocated resources. Idempotent: safe to call multiple times.
-   */
+  /** Cleans up allocated resources. Idempotent: safe to call multiple times. */
   free(): void;
 }
 
@@ -96,16 +89,16 @@ export const SUPPORTED_FORMATS: readonly ImageFormat[] = [
   'avif',
 ];
 
-/** Default JPEG/WebP encoding quality used when `quality` is not provided. */
+/** Default encoding quality used when `quality` is not provided. */
 export const DEFAULT_QUALITY = 0.92;
 
 /**
  * Accepted input for every convert entry point. `ArrayBufferView` is a
- * declared (tested) surface: DataView and non-Uint8 typed arrays are read as
- * raw bytes (byteOffset/byteLength), including SharedArrayBuffer-backed
- * views. Cross-realm Blob-likes (anything exposing `arrayBuffer()`, e.g. a
- * Blob from another frame) are accepted at runtime even though `instanceof
- * Blob` cannot see them.
+ * declared (tested) surface: `DataView` and non-Uint8 typed arrays are read
+ * as raw bytes via byteOffset/byteLength, SharedArrayBuffer-backed views
+ * included. Cross-realm Blob-likes (anything exposing `arrayBuffer()`, e.g.
+ * a Blob from another frame) are accepted at runtime even though
+ * `instanceof Blob` cannot see them.
  */
 export type HeicInput = Blob | ArrayBuffer | ArrayBufferView;
 
@@ -143,65 +136,60 @@ export type ConvertItemResult<T = Blob> =
 
 export interface ResizeOptions {
   /**
-   * Maximum width in pixels. The image is downscaled to fit within this
-   * bound while preserving the aspect ratio. Images smaller than the bound
-   * are never upscaled.
+   * Maximum width in pixels; downscaled to fit while preserving the aspect
+   * ratio. Images smaller than the bound are never upscaled.
    */
   maxWidth?: number;
 
   /**
-   * Maximum height in pixels. The image is downscaled to fit within this
-   * bound while preserving the aspect ratio. Images smaller than the bound
-   * are never upscaled.
+   * Maximum height in pixels; downscaled to fit while preserving the aspect
+   * ratio. Images smaller than the bound are never upscaled.
    */
   maxHeight?: number;
 
   /**
-   * Uniform scale factor applied to both dimensions (e.g. 0.5 halves the
-   * image). Takes precedence over `maxWidth` and `maxHeight` when set.
+   * Uniform scale factor for both dimensions (e.g. 0.5 halves the image).
+   * Takes precedence over `maxWidth`/`maxHeight` when set.
    */
   scale?: number;
 }
 
 export interface ConvertOptions extends ResizeOptions {
   /**
-   * Target format for the conversion. Must be one of the values in
-   * {@link SUPPORTED_FORMATS}; an unknown value is rejected up front,
-   * before the input is decoded.
+   * Target format; must be one of {@link SUPPORTED_FORMATS}. An unknown
+   * value is rejected up front, before the input is decoded.
    * @default 'jpeg'
    */
   to?: ImageFormat;
 
   /**
-   * Quality of the converted image, between 0.0 and 1.0 (inclusive).
-   * Applicable for 'jpeg', 'jpg', 'webp', and 'avif' formats — but validated
-   * for every format: passing an out-of-range value (e.g. `90` from a 0-100
-   * scale) throws regardless of `to`.
+   * Quality between 0.0 and 1.0 (inclusive). Applies to `'jpeg'`, `'jpg'`,
+   * `'webp'` and `'avif'` but is validated for every format: an out-of-range
+   * value (e.g. `90` from a 0-100 scale) throws regardless of `to`.
    * @default 0.92
    */
   quality?: number;
 
   /**
-   * Optional custom decoder implementation to inject.
-   * If not provided, a default LibheifDecoder is used.
+   * Custom decoder to inject; a default `LibheifDecoder` is used otherwise.
    * The library never calls `free()` on an injected decoder.
    */
   decoder?: IHeicDecoder;
 
   /**
-   * Optional progress callback that receives the progress percentage during
-   * decoding. Values are normalized and clamped to the range 0 to 100; the
-   * final 100% is emitted only when the conversion succeeds. A callback that
-   * throws rejects the conversion with `progress_callback_failed`.
+   * Progress callback receiving percentages normalized and clamped to
+   * 0–100; the final 100% is emitted only when the conversion succeeds. A
+   * callback that throws rejects the conversion with
+   * `progress_callback_failed`.
    */
   onProgress?: (percent: number) => void;
 
   /**
-   * Rotate/flip the output so it matches the source's EXIF orientation
-   * (applied as a canvas transform during rendering; `irot`/`imir` container
-   * transforms are already applied by the decoder and never stacked on top).
-   * Set `false` to keep the exact stored-pixel geometry. A non-boolean value
-   * is rejected up front with `invalid_input`.
+   * Rotate/flip the output to match the source's EXIF orientation, applied
+   * as a canvas transform during rendering; `irot`/`imir` container
+   * transforms are already applied by the decoder and never stacked on top.
+   * `false` keeps the exact stored-pixel geometry. A non-boolean value is
+   * rejected up front with `invalid_input`.
    * @default true
    */
   applyOrientation?: boolean;
@@ -213,11 +201,11 @@ export interface ConvertOptions extends ResizeOptions {
   output?: OutputShape;
 
   /**
-   * AbortSignal that cancels the conversion. Cancellation is checked at
-   * stage boundaries (input read, decoder init, before/after decode,
-   * before encode) and aborts `convertHeicInWorker` calls immediately by
-   * terminating the worker; the synchronous WASM decode itself cannot be
-   * preempted mid-call. An aborted signal rejects with code `aborted`.
+   * Cancels the conversion at stage boundaries (input read, decoder init,
+   * before/after decode, before encode). `convertHeicInWorker` aborts
+   * immediately by terminating the worker; the synchronous WASM decode
+   * itself cannot be preempted mid-call. An aborted signal rejects with
+   * code `aborted`.
    */
   signal?: AbortSignal;
 
@@ -231,8 +219,8 @@ export interface ConvertOptions extends ResizeOptions {
 
   /**
    * Copy the source HEIC's EXIF block into JPEG (APP1) and PNG (`eXIf`
-   * chunk) output so converted files keep camera metadata (orientation,
-   * GPS, timestamps). Note this **preserves private data** like GPS — set
+   * chunk) output so converted files keep camera metadata (orientation, GPS,
+   * timestamps). This **preserves private data** like GPS — set
    * deliberately. Ignored for `webp`/`svg` output.
    * @default false
    */
@@ -243,7 +231,6 @@ export interface ConvertOptions extends ResizeOptions {
    * Safari/iOS, Edge, Windows) instead of the bundled libheif WASM decoder,
    * skipping its ~300 KB payload. Hosts without native HEIC support fall
    * back to libheif on the same conversion; the refusal is cached per realm.
-   *
    * Ignored (libheif used) with an injected `decoder`, `preserveExif: true`
    * or `applyOrientation: false`. Native output is upright and progress
    * fires only at completion (tile progress is a libheif feature).
@@ -260,24 +247,22 @@ export interface ConvertManyOptions extends Omit<ConvertOptions, 'onProgress'> {
   concurrency?: number;
 
   /**
-   * Optional progress callback that receives the item index (0-based) and
-   * its progress percentage (normalized to 0 to 100) during decoding.
+   * Progress callback receiving the 0-based item index and its percentage
+   * (normalized to 0–100) during decoding.
    */
   onProgress?: (index: number, percent: number) => void;
 
   /**
-   * Optional custom decoder implementation to inject. When provided, the
-   * same instance is shared by all concurrent conversions, so it must be
-   * safe for concurrent `decode()` calls (see {@link IHeicDecoder}). If not
-   * provided, a fresh default LibheifDecoder is created per item.
+   * Custom decoder to inject; the same instance is shared by all concurrent
+   * conversions, so it must be safe for concurrent `decode()` calls (see
+   * {@link IHeicDecoder}). A fresh default `LibheifDecoder` is created per
+   * item otherwise.
    */
   decoder?: IHeicDecoder;
 
   /**
-   * Resolve with per-item results instead of rejecting the whole batch on
-   * the first failure: the promise fulfills with `ConvertItemResult[]` in
-   * input order, each item `{ index, ok: true, result }` or
-   * `{ index, ok: false, error }`. All items always run to completion.
+   * Resolve with `ConvertItemResult[]` in input order instead of rejecting
+   * the whole batch on the first failure; all items run to completion.
    * Up-front option validation failures still reject normally (a typo is a
    * caller bug, not an item failure).
    * @default false

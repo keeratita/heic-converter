@@ -1,15 +1,13 @@
 /**
- * Post-encode EXIF re-injection for JPEG (APP1 segment) and PNG (eXIf chunk).
- *
- * Canvas encoding drops all source metadata; when `preserveExif: true` these
- * helpers splice the decoded `DecodedImage.exif` block back into the encoded
- * bytes. Both injectors are fail-safe by design: any surprise while parsing
- * the encoded output (or a malformed EXIF block) returns the original bytes
- * untouched — losing metadata is always preferable to emitting a corrupt
- * image.
+ * Post-encode EXIF re-injection for JPEG (APP1 segment) and PNG (`eXIf`
+ * chunk): canvas encoding drops all source metadata, so `preserveExif: true`
+ * splices the decoded `DecodedImage.exif` block back into the encoded bytes.
+ * Both injectors are fail-safe — any surprise while parsing the encoded
+ * output (or a malformed EXIF block) returns the original bytes untouched:
+ * losing metadata always beats emitting a corrupt image.
  */
 
-/** "Exif\0\0" — the marker preceding the TIFF structure in JPEG APP1. */
+// The marker preceding the TIFF structure in JPEG APP1: "Exif\0\0".
 const EXIF_MARKER = new Uint8Array([0x45, 0x78, 0x69, 0x66, 0x00, 0x00]);
 
 const PNG_SIGNATURE = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -52,12 +50,11 @@ function readU32BE(bytes: Uint8Array, at: number): number {
 
 /**
  * Rewrite the TIFF orientation tag (274) in a `"Exif\0\0" + TIFF` block to
- * `1` (normal) and return a modified copy. Needed because the converted
- * raster is already upright — the EXIF/orientation transform was applied at
- * render (or by libheif for `irot`/`imir` files) — so carrying the source
- * tag verbatim would tell EXIF-respecting consumers to rotate the image a
- * second time. Fail-safe: anything malformed returns the block untouched,
- * and the input array is never mutated.
+ * `1` (normal), returning a modified copy. The converted raster is already
+ * upright — the orientation transform was applied at render, or by libheif
+ * for `irot`/`imir` files — so the source tag would tell EXIF-respecting
+ * consumers to rotate a second time. Fail-safe: anything malformed returns
+ * the block untouched; the input is never mutated.
  */
 export function normalizeOrientationTag(block: Uint8Array): Uint8Array {
   try {
@@ -65,7 +62,7 @@ export function normalizeOrientationTag(block: Uint8Array): Uint8Array {
       return block;
     }
     const tiff = EXIF_MARKER.length;
-    const littleEndian = block[tiff] === 0x49; // 'II' (MM handled by hasExifMarker)
+    const littleEndian = block[tiff] === 0x49; // 'II' (`MM` handled by `hasExifMarker`)
     const u16 = (at: number): number =>
       littleEndian
         ? block[at] | (block[at + 1] << 8)
@@ -115,12 +112,12 @@ export function normalizeOrientationTag(block: Uint8Array): Uint8Array {
 }
 
 /**
- * Insert the EXIF block as a JPEG APP1 segment, positioned after SOI and any
- * leading APPn/COM segments (the conventional slot right after the JFIF
- * APP0). Returns the original bytes unchanged when the JPEG does not parse,
- * the block is malformed, or the block exceeds the 16-bit segment length
- * field (EXIF payloads >64 KB are rare in HEIC items and splitting across
- * multiple APP1 segments is out of scope).
+ * Insert the EXIF block as a JPEG APP1 segment after SOI and any leading
+ * APPn/COM segments (the conventional slot right after the JFIF APP0).
+ * Returns the original bytes when the JPEG does not parse, the block is
+ * malformed, or it exceeds the 16-bit segment length field: >64 KB EXIF
+ * payloads are rare in HEIC items, and splitting across multiple APP1
+ * segments is out of scope.
  */
 export function injectExifIntoJpeg(jpeg: Uint8Array, exifBlock: Uint8Array): Uint8Array {
   try {
@@ -191,7 +188,7 @@ function getCrcTable(): Uint32Array {
   return crcTable;
 }
 
-/** CRC-32 (PNG polynomial), computed over type+data as the spec requires. */
+// CRC-32 (PNG polynomial), computed over the chunk's `type`+`data` as the spec requires.
 function crc32(bytes: Uint8Array): number {
   const table = getCrcTable();
   let crc = 0xffffffff;
@@ -212,10 +209,9 @@ function chunkTypeEquals(bytes: Uint8Array, at: number, type: string): boolean {
 
 /**
  * Insert the EXIF TIFF structure as a PNG `eXIf` chunk (PNG Extensions
- * registry: chunk data is the raw TIFF without the "Exif\0\0" JPEG marker).
- * Positioned after IHDR and before the first IDAT (or IEND when there is no
- * IDAT); an existing eXIf chunk wins untouched. Fail-safe: unparsable PNG
- * input is returned unchanged.
+ * registry: chunk data is the raw TIFF without the "Exif\0\0" JPEG marker),
+ * after IHDR and before the first IDAT (or IEND when there is no IDAT). An
+ * existing `eXIf` chunk wins untouched; unparsable PNG is returned unchanged.
  */
 export function injectExifIntoPng(png: Uint8Array, exifBlock: Uint8Array): Uint8Array {
   try {

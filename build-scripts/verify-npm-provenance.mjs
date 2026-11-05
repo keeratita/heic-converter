@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Publish gate (ESM). Run via `npm run verify:provenance [version]`.
 //
-// Publishing goes through .github/workflows/publish.yml, which gets an npm
+// Publishing goes through `.github/workflows/publish.yml`, which gets an npm
 // attestation from OIDC trusted publishing. That attestation is what lets
 // consumers (and scanners such as Socket) tie the tarball to this repository's
 // CI — but it fails *silently*: a manual `npm publish` from a laptop, a missing
@@ -12,7 +12,7 @@
 // so the gate reads the attestation it points at and checks the statement
 // itself: right package and version, SLSA provenance, and a GitHub Actions build
 // type — which is what a laptop publish cannot produce. The registry URL is
-// hardcoded: honouring publishConfig.registry would let a commit point both
+// hardcoded: honouring `publishConfig.registry` would let a commit point both
 // `npm publish` and this check at a host that will say anything.
 
 import { readFileSync } from 'node:fs';
@@ -116,14 +116,13 @@ async function main() {
     }
     if (attempt < ATTEMPTS) {
       // Growing waits, capped: a just-published version can 404 on the
-      // registry's version endpoint for minutes (observed >2.5 min for
-      // v0.6.1 while the tarball was already live), and a false red here is
-      // unrecoverable — npm refuses a re-publish of the same version, so the
-      // job cannot simply be retried. Every problem (a lagging read *and* a
-      // validation mismatch) therefore gets the full window; a slow red is
-      // acceptable, a wrong one is not. The whole loop (~10 min worst case,
-      // every request hanging) stays inside the publish job's 15 minute
-      // timeout.
+      // registry's version endpoint for minutes (observed >2.5 min for v0.6.1
+      // while the tarball was already live), and a false red here is
+      // unrecoverable — npm refuses a re-publish of the same version, so the job
+      // cannot simply be retried. Every problem (a lagging read *and* a
+      // validation mismatch) therefore gets the full window: a slow red is
+      // acceptable, a wrong one is not. The whole loop (~10 min worst case, every
+      // request hanging) stays inside the publish job's 15 minute timeout.
       const waitMs = Math.min(WAIT_MS * 2 ** (attempt - 1), MAX_WAIT_MS);
       console.log(`Attempt ${attempt}/${ATTEMPTS}: ${problems[0]} — retrying in ${waitMs}ms`);
       await new Promise((resolve) => setTimeout(resolve, waitMs));

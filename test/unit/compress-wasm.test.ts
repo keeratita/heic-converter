@@ -3,7 +3,7 @@ import { brotliCompressSync, gzipSync } from 'node:zlib';
 import { verifySidecars } from '../../build-scripts/compress-wasm.mjs';
 
 // `npm run build` refuses to ship sidecars that do not decompress: a CDN with
-// gzip_static/brotli_static serves those bytes verbatim, so a corrupt one
+// `gzip_static`/`brotli_static` serves those bytes verbatim, so a corrupt one
 // breaks decoding only for visitors that get the precompressed response —
 // invisible to the E2E suite, which fetches the raw binary.
 

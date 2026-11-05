@@ -1,10 +1,10 @@
 import os
 import sys
 
-# libheif >= 1.21 moved grid tile decoding from context.cc to
-# image-items/grid.cc and added native start/on/end progress callbacks
-# there, so those versions need no patching. Libs pinned by build-wasm.sh
-# since 1.23.1 ship this, so the patch normally no-ops.
+# libheif >= 1.21 decodes grid tiles in image-items/grid.cc (moved from
+# context.cc) and has native start/on/end progress callbacks there, so it needs
+# no patching. Every version build-wasm.sh has pinned since 1.23.1 ships them,
+# so this normally no-ops.
 ROOTS = [
     'build-wasm/src/libheif',
     'libheif',
@@ -39,10 +39,9 @@ def main():
             break
 
     if not filepath:
-        # Neither the native hooks (>= 1.21 grid.cc) nor the pre-1.21 patch
-        # target (context.cc) exists: the checkout is broken or an unexpected
-        # layout. Fail loudly instead of shipping a WASM build silently
-        # without progress callbacks.
+        # Neither the native hooks (>= 1.21 grid.cc) nor the pre-1.21 patch target
+        # (context.cc): a broken checkout or an unexpected layout. Fail loudly
+        # instead of shipping a WASM build silently without progress callbacks.
         print("Error: neither native progress callbacks (image-items/grid.cc) nor the",
               file=sys.stderr)
         print("patch target (libheif/context.cc) were found under any of:", file=sys.stderr)
@@ -63,7 +62,7 @@ def main():
 
     print("Patching libheif context.cc for progress callbacks...")
 
-    # 1. Patch start_progress callback before the loop
+    # 1. Patch the start_progress callback before the loop.
     target_start = 'uint32_t tile_width=0;'
     replacement_start = (
         'if (options.start_progress) {\n'
@@ -76,7 +75,7 @@ def main():
         sys.exit(1)
     content = content.replace(target_start, replacement_start, 1)
 
-    # 2. Patch on_progress callback inside the loop
+    # 2. Patch the on_progress callback inside the loop.
     target_on = (
         '        err = decode_and_paste_tile_image(tileID, img, x0, y0, options);\n'
         '        if (err) {\n'
@@ -97,8 +96,9 @@ def main():
         sys.exit(1)
     content = content.replace(target_on, replacement_on, 1)
 
-    # 3. Patch end_progress callback at the end of decode_full_grid_image
-    # We locate the specific `return Error::Ok;` right before `Error HeifContext::decode_and_paste_tile_image`
+    # 3. Patch the end_progress callback at the end of decode_full_grid_image.
+    # The anchor is the specific `return Error::Ok;` right before
+    # `Error HeifContext::decode_and_paste_tile_image`.
     target_end = (
         '  return Error::Ok;\n'
         '}\n'

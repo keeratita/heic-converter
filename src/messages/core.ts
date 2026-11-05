@@ -1,21 +1,18 @@
 /**
- * Centralized error message templates used across the library.
+ * All user-facing error strings, grouped by the file that throws them —
+ * static ones are plain strings, dynamic ones are template functions called
+ * at the throw site. Do not inline new strings at call sites.
  *
- * Static messages are plain strings; dynamic messages are template
- * functions that produce the final string at the call site. Keep all
- * user-facing error strings here (grouped by the file that throws them)
- * instead of inlining new ones.
- *
- * This module holds the strings the eagerly loaded graph throws — anything
+ * This module holds the strings the eagerly loaded graph throws: anything
  * `src/index.ts`, `src/validate.ts` or the render path touches. `Messages` is
- * one object literal, so an unused entry cannot be tree-shaken out of it:
- * worker-only strings live in `./worker` (`WorkerMessages`) and stay inside the
- * chunk a caller pays for only when they use those APIs. The rule is which
- * *chunk* throws the text, not which API it mentions — `WorkerChunkLoadFailed`
- * is here because `src/index.ts` throws it before the worker chunk exists.
+ * one object literal esbuild cannot tree-shake per property, so worker-only
+ * text lives in `./worker` (`WorkerMessages`) — inside the chunk a caller
+ * pays for only when using those APIs. The rule is which *chunk* throws,
+ * not which API is mentioned: `WorkerChunkLoadFailed` is here because
+ * `src/index.ts` throws it before the worker chunk exists.
  */
 export const Messages = {
-  // index.ts
+  // Grouped by throwing file: `index.ts`.
   QualityInvalid: (value: unknown): string =>
     `Quality must be a number between 0.0 and 1.0, got: ${value}`,
   BooleanOptionInvalid: (name: string, value: unknown): string =>
@@ -54,7 +51,7 @@ export const Messages = {
   ConvertManyOtherErrors: (messages: string[]): string =>
     `; other errors: ${messages.join(' | ')}`,
 
-  // render/canvas.ts
+  // Grouped by throwing file: `render/canvas.ts`.
   ExifChunkLoadWarning:
     '@keeratita/heic-converter: the EXIF injector chunk could not be loaded — converted without ' +
     'metadata; serve every file in dist/ together, with dist/exif-*.mjs as JavaScript.',
@@ -97,7 +94,7 @@ export const Messages = {
     `crop ${width}x${height} at (${x}, ${y}) exceeds the ${displayWidth}x${displayHeight} image ` +
     '(crop coordinates are in post-orientation display pixels)',
 
-  // wasm/wrapper.ts
+  // Grouped by throwing file: `wasm/wrapper.ts`.
   GlueApiMissing: (missing: string): string =>
     `The bundled decoder glue is missing required APIs (${missing}) — deploy every file in dist/ ` +
     'from the same release; heic-decoder.wasm and its glue chunk must come from one build.',

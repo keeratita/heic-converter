@@ -49,7 +49,7 @@ async function runWorkerTest() {
   results.worker = out.size > 0;
 }
 
-// --- 0.5.0 feature coverage -------------------------------------------------
+// The checks below cover the 0.5.0 feature set.
 
 async function runAvifTest() {
   const blob = await fetchFixture('colors-with-alpha.heic');
@@ -61,7 +61,8 @@ async function runAvifTest() {
     results.avif = 'supported';
   } catch (error) {
     if (error && error.code === 'format_unsupported') {
-      // Graceful degradation path (e.g. Safari): expected alternative.
+      // Graceful degradation (e.g. Safari): unsupported is an expected
+      // alternative, not a failure.
       results.avif = 'unsupported';
     } else {
       throw error;
@@ -141,9 +142,9 @@ async function runPreserveExifTest() {
     throw new Error('preserveExif: APP1 Exif segment missing');
   }
 
-  // The fixture is EXIF-orientation-6 and the raster is rendered upright:
-  // the injected tag must read 1, not the source's 6 — otherwise
-  // EXIF-respecting consumers would rotate the output a second time.
+  // The fixture is EXIF-orientation-6 rendered upright: the injected tag
+  // must read 1, not the source's 6 — otherwise EXIF-respecting consumers
+  // would rotate the output a second time.
   const markerAt = keptBytes.findIndex((_, i) => WITH.every((b, j) => keptBytes[i + j] === b));
   const le = keptBytes[markerAt + 6] === 0x49;
   const u16 = (at) => (le ? keptBytes[at] | (keptBytes[at + 1] << 8) : (keptBytes[at] << 8) | keptBytes[at + 1]);
@@ -195,9 +196,10 @@ async function runWorkerBatchTest() {
 }
 
 async function runWorkerReuseTest() {
-  // Sequential items behind one slot must adopt the live worker, not boot one
-  // per item — and the id protocol must survive real park/adopt cycles.
-  // Unique workerUrl so earlier cases cannot share the pool.
+  // Sequential items behind one slot must adopt the live worker, not boot
+  // one per item — and the request-`id` protocol must survive real
+  // park/adopt cycles. A unique `workerUrl` keeps earlier cases from
+  // sharing this pool.
   const blob = await fetchFixture('colors-with-alpha.heic');
   const RealWorker = Worker;
   let booted = 0;
@@ -250,8 +252,8 @@ Promise.all([
   runWorkerBatchTest(),
   runPooledBatchTest(),
 ])
-  // After every other case: runWorkerReuseTest patches window.Worker, so no
-  // other conversion may be in flight while it counts boots.
+  // Last: `runWorkerReuseTest` patches `window.Worker`, so no other
+  // conversion may be in flight while it counts boots.
   .then(() => runWorkerReuseTest())
   .then(() => {
     document.getElementById('results').textContent = JSON.stringify(results);

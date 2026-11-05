@@ -24,7 +24,7 @@ const decodedImage = (width: number, height: number, orientation?: number): Deco
 });
 
 /**
- * setTransform composition (stored → display → crop translate → resize
+ * `setTransform` composition (stored → display → crop translate → resize
  * scale): A=a·sx, B=b·sy, C=c·sx, D=d·sy, E=sx·(e−x), F=sy·(f−y).
  */
 describe('renderAndEncode - Crop', () => {
@@ -96,13 +96,13 @@ describe('renderAndEncode - Crop', () => {
     await renderAndEncode(decodedImage(1600, 1200), 'jpeg', 0.92, undefined, true, crop);
 
     expect(encodeDims).toEqual([{ w: 200, h: 150 }]);
-    // Pixels are written at full stored resolution…
+    // Pixels are written at full stored resolution, then drawn through the
+    // crop translation.
     expect(mockCtx.putImageData).toHaveBeenCalledWith(
       expect.objectContaining({ width: 1600, height: 1200 }),
       0,
       0
     );
-    // …then drawn through the crop translation.
     expect(mockCtx.setTransform).toHaveBeenCalledWith(1, 0, 0, 1, -100, -50);
     expect(mockCtx.drawImage).toHaveBeenCalledWith(expect.any(Object), 0, 0);
   });
@@ -118,7 +118,7 @@ describe('renderAndEncode - Crop', () => {
   });
 
   it('resize downscale applies to the cropped region, not the full image', async () => {
-    // Crop 600x400 out of 1200x800, then maxWidth 300 → ratio 0.5 on the
+    // Crop 600x400 out of 1200x800, then `maxWidth` 300 → ratio 0.5 on the
     // *crop* dimensions → target 300x200; sx=sy=0.5 and the translation is
     // scaled too: E = 0.5·(0 − 100) = −50.
     const crop: CropOptions = { x: 100, y: 50, width: 600, height: 400 };
@@ -142,7 +142,7 @@ describe('renderAndEncode - Crop', () => {
   });
 
   it('crop + orientation + resize compose into a single transform', async () => {
-    // Display 1200x1600; crop 600x800 at origin; maxHeight 400 → ratio 0.5
+    // Display 1200x1600; crop 600x800 at origin; `maxHeight` 400 → ratio 0.5
     // → target 300x400; sx = 0.5, sy = 0.5:
     // A=0, B=1·0.5, C=−1·0.5, D=0, E=0.5·(1200−0)=600, F=0.5·(0−0)=0.
     const crop: CropOptions = { x: 0, y: 0, width: 600, height: 800 };
@@ -153,7 +153,8 @@ describe('renderAndEncode - Crop', () => {
   });
 
   it('applyOrientation: false crops the stored geometry instead', async () => {
-    // Orientation 6 pending but ignored: crop operates on stored 1600x1200.
+    // Orientation 6 is pending but ignored: the crop operates on the stored
+    // 1600x1200.
     const crop: CropOptions = { x: 100, y: 50, width: 200, height: 150 };
     await renderAndEncode(decodedImage(1600, 1200, 6), 'jpeg', 0.92, undefined, false, crop);
 

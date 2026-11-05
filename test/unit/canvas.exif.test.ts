@@ -49,10 +49,10 @@ const decodedImage = (exif?: Uint8Array): DecodedImage => ({
 });
 
 /**
- * preserveExif wiring at the render layer: the mocked canvas "encoder"
- * returns fixed JPEG/PNG bytes; renderAndEncode must splice the decoded
- * EXIF block into them (and leave them alone when the flag is off or the
- * bytes do not parse).
+ * `preserveExif` wiring at the render layer: the mocked canvas "encoder"
+ * returns fixed JPEG/PNG bytes, and `renderAndEncode` must splice the decoded
+ * EXIF block into them — leaving them alone when the flag is off or the bytes
+ * do not parse.
  */
 describe('renderAndEncode - preserveExif', () => {
   let createdCanvases: MockCanvasObject[];
@@ -150,7 +150,7 @@ describe('renderAndEncode - preserveExif', () => {
 
     const hasEIfChunk = containsSequence(bytes, [0x65, 0x58, 0x49, 0x66]); // 'eXIf'
     expect(hasEIfChunk).toBe(true);
-    // PNG carries the TIFF without the JPEG marker; the TIFF header is there.
+    // PNG carries the bare TIFF — no JPEG Exif marker.
     expect(containsSequence(bytes, [0x49, 0x49, 0x2a, 0x00])).toBe(true);
   });
 
@@ -173,7 +173,7 @@ describe('renderAndEncode - preserveExif', () => {
     expect(blob.type).toBe('image/jpeg');
   });
 
-  // --- orientation-tag normalization (double-rotation prevention) ----------
+  // Orientation-tag normalization: the double-rotation-prevention guards.
 
   const indexOfSequence = (bytes: Uint8Array, needle: number[]): number => {
     outer: for (let i = 0; i + needle.length <= bytes.length; i++) {
@@ -209,14 +209,14 @@ describe('renderAndEncode - preserveExif', () => {
   });
 
   it('normalizes the orientation tag when no pending orientation was reported (irot already applied)', async () => {
-    // No decoded.orientation: libheif applied irot/imir at decode, so the
+    // No `decoded.orientation`: libheif applied irot/imir at decode, so the
     // raster is already upright — the stale tag must not survive injection.
     const blob = await renderAndEncode(decodedImage(EXIF_BLOCK), 'jpeg', 0.92, undefined, true, undefined, true);
     expect(await injectedOrientation(blob)).toBe(1);
   });
 
   it('keeps the orientation tag verbatim when applyOrientation is false', async () => {
-    // applyOrientation:false keeps stored geometry — the tag legitimately
+    // `applyOrientation: false` keeps stored geometry — the tag legitimately
     // describes it and consumers must still rotate.
     const blob = await renderAndEncode(
       { ...decodedImage(EXIF_BLOCK), orientation: 6 },

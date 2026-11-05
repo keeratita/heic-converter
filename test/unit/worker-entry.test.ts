@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Stubs the lazily imported worker chunk so these tests exercise the public
-// entry points in src/index.ts; worker.test.ts drives src/worker directly,
-// which leaves the deferred wrappers — what callers actually run — untested.
+// entry points in `src/index.ts`; `worker.test.ts` drives `src/worker`
+// directly, leaving the deferred wrappers — what callers actually run —
+// untested.
 vi.mock('../../src/worker', () => ({
   convertHeicInWorker: vi.fn(),
   convertManyInWorker: vi.fn(),
@@ -15,9 +16,9 @@ const convertHeicSpy = workerChunk.convertHeicInWorker as unknown as ReturnType<
 const convertManySpy = workerChunk.convertManyInWorker as unknown as ReturnType<typeof vi.fn>;
 
 const INPUT = new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70]);
-// Real option names only — `to`, not `format`, and `'arrayBuffer'` with the
-// capital B. A misspelled option here would be silently dropped by the library
-// and the test would still pass, proving nothing about what it forwards.
+// Real option names only (`to`, not `format`; `'arrayBuffer'` with the capital
+// B): a misspelled key is silently dropped by the library and the test would
+// still pass without proving anything is forwarded.
 const OPTIONS = { to: 'webp' as const, quality: 0.5, workerUrl: '/worker.js', output: 'arrayBuffer' as const };
 const decodedBlob = new Blob([new Uint8Array([1, 2, 3])], { type: 'image/jpeg' });
 
@@ -28,9 +29,9 @@ beforeEach(() => {
 
 describe('convertHeicInWorker / convertManyInWorker pass the deferred module through', () => {
   it('forwards input and options unchanged and resolves with the module result', async () => {
-    // Mock payloads must carry the real API shape (ConvertResult for OPTIONS'
-    // output), not a phantom — a wrapper that "passed through" a shape the
-    // implementation never returns would still have looked green here.
+    // Mock payloads must carry the real API shape for `OPTIONS.output`, not a
+    // phantom — a wrapper that "passed through" a shape the implementation
+    // never returns would still have looked green here.
     const result = new ArrayBuffer(3); // OPTIONS.output === 'arrayBuffer'
     convertHeicSpy.mockResolvedValue(result);
 
@@ -44,8 +45,8 @@ describe('convertHeicInWorker / convertManyInWorker pass the deferred module thr
   });
 
   it('resolves every OutputShape value verbatim', async () => {
-    // Each shape is paired with the `output` that produces it: passing
-    // `output: 'blob'` for all three would only ever exercise one branch.
+    // Each shape is paired with the `output` that produces it — `'blob'` for
+    // all three would exercise only one branch.
     const cases = [
       { output: 'blob' as const, value: decodedBlob },
       { output: 'dataUrl' as const, value: 'data:image/jpeg;base64,AAA=' },
@@ -58,7 +59,7 @@ describe('convertHeicInWorker / convertManyInWorker pass the deferred module thr
   });
 
   it('forwards the batch inputs and options unchanged and resolves with the module result', async () => {
-    // Real ContinueOnError result entries ({index, ok, result|error}).
+    // Real `ContinueOnError` result entries ({index, ok, result|error}).
     const results = [
       { index: 0, ok: true as const, result: decodedBlob },
       { index: 1, ok: false as const, error: new Error('x') },
@@ -76,7 +77,7 @@ describe('convertHeicInWorker / convertManyInWorker pass the deferred module thr
   });
 
   it('propagates a HeicConverterError from the worker implementation untouched', async () => {
-    // Only a failed chunk *fetch* may be re-mapped to worker_load_failed; an
+    // Only a failed chunk *fetch* may be re-mapped to `worker_load_failed`; an
     // error from the worker implementation keeps its code and identity.
     const timeout = new HeicConverterError('worker_timeout', 'timed out');
     convertHeicSpy.mockRejectedValue(timeout);

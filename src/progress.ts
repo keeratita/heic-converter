@@ -2,14 +2,13 @@ import { Messages } from './messages/core';
 import { HeicConverterError } from './errors';
 
 /**
- * Shared progress-value helpers. The public onProgress contract — "a number
- * clamped to 0-100, the final 100% withheld until success, a throwing host
- * callback surfaced as `progress_callback_failed`" — lives here as one
- * implementation so the in-process path (`convertHeic`) and the worker
- * transport cannot drift: each stage funnels host-visible percentages through
- * `clampPercent`/`createProgressGate` and decides only *when* to surface a
- * recorded host failure (in-process defers it to completion; the worker
- * rejects on the spot and terminates).
+ * The public onProgress contract — percentages clamped to 0-100, the final
+ * 100% withheld until success, a throwing host callback surfaced as
+ * `progress_callback_failed` — implemented once so the in-process path
+ * (`convertHeic`) and the worker transport cannot drift. Stages funnel
+ * host-visible percentages through `clampPercent`/`createProgressGate` and
+ * decide only *when* to surface a recorded host failure: in-process defers
+ * it to completion; the worker rejects on the spot and terminates.
  */
 
 /** Coerce an arbitrary value to the documented 0-100 progress range. */
@@ -28,10 +27,11 @@ export function progressCallbackError(error: unknown): HeicConverterError {
 }
 
 /**
- * The host callback when it is callable, `undefined` when it is effectively
- * absent. Everything non-function — truthy or not — counts as absent, so a
- * malformed `onProgress` is silently ignored rather than TypeErroring later.
- * One decision for all entry points and the worker transport.
+ * The host callback when callable, `undefined` when effectively absent.
+ * Everything non-function — truthy or not — counts as absent, so a malformed
+ * `onProgress` is silently ignored rather than TypeErroring (and surfacing
+ * as `progress_callback_failed`). One decision for all entry points and the
+ * worker transport.
  */
 export function progressCallbackFor<A extends unknown[]>(
   value: ((...args: A) => void) | undefined
@@ -39,13 +39,7 @@ export function progressCallbackFor<A extends unknown[]>(
   return typeof value === 'function' ? value : undefined;
 }
 
-/**
- * Build the gate for a host callback, or return undefined when it is
- * effectively absent. Anything non-function counts as absent — the decision
- * lives here once so the entry points and the worker transport cannot drift
- * on what a malformed `onProgress` means (silently ignored, not TypeErrors
- * surfacing as `progress_callback_failed`).
- */
+/** Build the gate for a host callback, or `undefined` when it is effectively absent (absence rule: `progressCallbackFor`). */
 export function progressGateFor(onProgress: ((percent: number) => void) | undefined): ProgressGate | undefined {
   const callback = progressCallbackFor(onProgress);
   return callback ? createProgressGate(callback) : undefined;
@@ -70,7 +64,7 @@ export function createProgressGate(onProgress: (percent: number) => void): Progr
       }
       const value = clampPercent(percent);
       if (value >= 100) {
-        return; // withheld; emitted by complete()
+        return; // withheld; emitted by `complete()`
       }
       try {
         onProgress(value);

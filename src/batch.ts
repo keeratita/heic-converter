@@ -2,24 +2,23 @@ import { HeicConverterError } from './errors';
 import { Messages } from './messages/core';
 import type { ConvertItemResult } from './types';
 
-/** How many runners a batch spawns (bounded by item count so an empty-ish batch never boots idle runners). */
+// Bounded by item count so an empty-ish batch never boots idle runners.
 function runnerCountFor(concurrency: number, total: number): number {
   return Math.min(concurrency, total);
 }
 
 /**
- * Shared bounded-concurrency batch runner backing both `convertMany` and
- * `convertManyInWorker`. Semantics (documented on the public APIs):
+ * Shared bounded-concurrency runner behind `convertMany` and
+ * `convertManyInWorker`; semantics are documented on the public APIs.
  *
- * - Items are processed in input order by at most `concurrency` runners.
+ * - Input order, at most `concurrency` runners.
  * - Default mode rejects with `batch_item_failed` as soon as the first
  *   failure is known; in-flight items settle in the background. The error
  *   names the first failing item and carries `itemIndex`/`itemTotal`/
- *   `failedCount`, plus up to two extra distinct failure messages.
- * - `continueOnError` mode never rejects for item failures and never stops
- *   launching items: it fulfills with per-item results in input order.
- * - Up-front failures thrown by `convertItem` synchronously (none today)
- *   propagate untouched.
+ *   `failedCount` plus up to two extra distinct failure messages.
+ * - `continueOnError` never rejects for item failures and never stops
+ *   launching: it fulfills with per-item results in input order.
+ * - Synchronous throws from `convertItem` (none today) propagate untouched.
  */
 export function runBoundedBatch<T>(
   inputs: readonly unknown[],
@@ -55,8 +54,8 @@ export async function runBoundedBatch<T>(
   let firstErrorIndex = -1;
   let failedCount = 0;
   const otherErrorMessages: string[] = [];
-  // Single early-settle channel for BOTH the first item failure and abort —
-  // the race below distinguishes the two cases after the fact.
+  // Single early-settle channel for BOTH the first item failure and abort;
+  // the race below distinguishes the two after the fact.
   let notifySettle: (() => void) | undefined;
   const settleEarly = new Promise<void>((resolve) => {
     notifySettle = resolve;
@@ -76,9 +75,9 @@ export async function runBoundedBatch<T>(
         return;
       }
       if (continueOnError && signal?.aborted) {
-        // Cancellation also honors continueOnError batches: stop launching
-        // new items and complete every not-yet-started entry as aborted
-        // (started items still settle normally).
+        // Cancellation honors continueOnError batches too: stop launching
+        // and complete every not-yet-started entry as aborted (started
+        // items still settle normally).
         const abortError = new HeicConverterError('aborted', Messages.Aborted);
         for (let i = index; i < inputs.length; i++) {
           results[i] = { index: i, ok: false, error: abortError };
@@ -128,12 +127,11 @@ export async function runBoundedBatch<T>(
     await Promise.race([Promise.all(runners), settleEarly]);
 
     // Completion shortcut: every runner recorded an ok result, so the batch
-    // fulfilled regardless of what else raced it. An abort racing the final
-    // item can never be observed alongside completedCount === inputs.length
-    // through the public API (abort() settles the race synchronously, before
-    // any pending runner records), so this branch's abort-interaction is not
-    // deterministically testable — it is intentionally not pinned with a
-    // timing-dependent test.
+    // fulfilled regardless of what raced it. An abort racing the final item
+    // is unobservable through the public API alongside
+    // `completedCount === inputs.length` (`abort()` settles the race
+    // synchronously, before any pending runner records), so this branch is
+    // intentionally not pinned with a timing-dependent test.
     if (completedCount === inputs.length) {
       return results.map((entry) => {
         /* v8 ignore if -- completedCount bookkeeping records every entry ok; dead by construction */
@@ -170,7 +168,6 @@ export async function runBoundedBatch<T>(
         failedCount,
       });
     }
-    // Unreachable: the race only settles via completion, failure, or abort.
     /* v8 ignore next 2 -- dead tail; see the branch comments above */
     throw new HeicConverterError(
       'batch_item_failed',

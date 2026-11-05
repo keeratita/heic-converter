@@ -8,12 +8,11 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ROOT_DIR = path.resolve(__dirname, '../..');
 
-// Paths to fixtures
 const examplePath = path.join(ROOT_DIR, 'test/fixtures/example.heic');
 const noAlphaPath = path.join(ROOT_DIR, 'test/fixtures/colors-no-alpha.heic');
 const withAlphaPath = path.join(ROOT_DIR, 'test/fixtures/colors-with-alpha.heic');
 
-// Path to compiled WASM (produced by `npm run build`)
+// `npm run build` produces the decoder binary this suite decodes with.
 const wasmPath = path.join(ROOT_DIR, 'dist/heic-decoder.wasm');
 
 const hasArtifacts =
@@ -26,12 +25,12 @@ const isCI = typeof process !== 'undefined' && !!process.env.CI;
 
 if (!hasArtifacts) {
   if (isCI) {
-    // CI must never silently skip the real-WASM decoder: this is the suite that
-    // instantiates the committed binary, so a missing build or artifact would
-    // hide exactly the regression class it exists to catch (a smaller WASM that
-    // only fails at WebAssembly.instantiate()). Per-test it.skipIf is not enough
-    // — when every test in a suite is skipped, beforeAll never runs and vitest
-    // exits 0. Skip the whole suite only outside CI.
+    // CI must never silently skip the real-WASM decoder: this suite instantiates
+    // the committed binary, so a missing build would hide exactly the regression
+    // class it exists to catch — a smaller WASM that only fails at
+    // `WebAssembly.instantiate()`. Per-test `it.skipIf` is not enough: when every
+    // test in a suite is skipped, `beforeAll` never runs and Vitest exits 0, so
+    // the whole suite skips only outside CI.
     console.error(
       '[decoder] dist/heic-decoder.wasm or test fixtures are missing in CI — this suite will FAIL.'
     );
@@ -43,21 +42,18 @@ if (!hasArtifacts) {
   }
 }
 
-/**
- * Exercises the real LibheifDecoder (actual Emscripten glue + WASM binary)
- * in Node. Distinct from integration.test.ts, which covers the end-to-end
- * convertHeic pipeline; this suite targets the decoder wrapper contract.
- *
- * Skips outside CI when build artifacts or fixtures are missing; on CI it runs
- * unconditionally and fails, so a broken artifact can never report green.
- */
+// Exercises the real `LibheifDecoder` against the actual Emscripten glue and
+// WASM in Node: the decoder wrapper contract, as distinct from the end-to-end
+// `convertHeic` pipeline in `integration.test.ts`. Skips outside CI when build
+// artifacts or fixtures are missing; on CI it runs unconditionally and fails,
+// so a broken artifact can never report green.
 describe.skipIf(!hasArtifacts && !isCI)('LibheifDecoder (real WASM)', () => {
   it('suite artifacts are present', () => {
     expect(hasArtifacts).toBe(true);
   });
 
-  // Fixture bytes are loaded once, lazily, so a missing dist/ build skips
-  // this suite instead of crashing module collection.
+  // Loaded once in `beforeAll`, not at module scope, so a missing `dist/` build
+  // skips this suite instead of crashing module collection.
   let wasmBinary: ArrayBuffer;
   let exampleHeic: Uint8Array;
   let noAlphaHeic: Uint8Array;
@@ -77,15 +73,15 @@ describe.skipIf(!hasArtifacts && !isCI)('LibheifDecoder (real WASM)', () => {
   });
 
   it('should accept wasmBinary as a Node Buffer (ArrayBufferView)', async () => {
-    // fs.readFileSync returns a Buffer; the widened option type must accept it.
+    // `fs.readFileSync` returns a Buffer; the widened option type must accept it.
     const decoder = new LibheifDecoder({ wasmBinary: fs.readFileSync(wasmPath) });
     await expect(decoder.initialize()).resolves.not.toThrow();
     decoder.free();
   });
 
   it('should reject an invalid wasmBinary at initialize() (never hang)', async () => {
-    // Compiles up front, so a bad binary rejects through initialize() — the
-    // glue offers no async failure channel.
+    // The binary is compiled up front, so a bad one rejects through
+    // `initialize()` — the glue offers no async failure channel.
     const decoder = new LibheifDecoder({ wasmBinary: new Uint8Array([0, 1, 2, 3]) });
     await expect(decoder.initialize()).rejects.toThrow(WebAssembly.CompileError);
     decoder.free();
@@ -186,8 +182,8 @@ describe.skipIf(!hasArtifacts && !isCI)('LibheifDecoder (real WASM)', () => {
       const decoder = new LibheifDecoder({ wasmBinary });
       await decoder.initialize();
 
-      // libheif is robust and can decode partial/truncated HEIC files
-      // This is valid behavior - the decoder extracts what it can
+      // Truncated input is valid here: libheif decodes what it can instead of
+      // failing.
       const result = await decoder.decode(truncatedData);
 
       expect(result).toBeDefined();
@@ -198,7 +194,6 @@ describe.skipIf(!hasArtifacts && !isCI)('LibheifDecoder (real WASM)', () => {
     });
 
     it('should handle HEIC with only header (no image data)', async () => {
-      // Create a minimal HEIC-like header (not valid but tests edge case)
       const minimalHeader = new Uint8Array([
         0x00, 0x00, 0x00, 0x18, // box size
         0x66, 0x74, 0x79, 0x70, // 'ftyp'
@@ -218,7 +213,7 @@ describe.skipIf(!hasArtifacts && !isCI)('LibheifDecoder (real WASM)', () => {
       const decoder = new LibheifDecoder({ wasmBinary });
       await decoder.initialize();
 
-      // Should still decode successfully (extra data ignored)
+      // The container parser ignores bytes past the last box, so this decodes.
       const result = await decoder.decode(dataWithTrailer);
 
       expect(result).toBeDefined();
@@ -271,7 +266,6 @@ describe.skipIf(!hasArtifacts && !isCI)('LibheifDecoder (real WASM)', () => {
 
       const decoder = new LibheifDecoder({ wasmBinary: corruptedWasm.buffer });
 
-      // Should fail to initialize with corrupted WASM
       await expect(decoder.initialize()).rejects.toThrow();
     });
 
@@ -284,9 +278,8 @@ describe.skipIf(!hasArtifacts && !isCI)('LibheifDecoder (real WASM)', () => {
     });
 
     it('should re-initialize and decode successfully after free', async () => {
-      // Documented contract: after free() the instance must be re-initialized;
-      // decode() transparently re-loads a fresh module (the loaded WASM module
-      // is dropped on free(), so this exercises a second instantiation too).
+      // Documented contract: `free()` drops the loaded module, so `decode()`
+      // re-loads a fresh one — this also exercises a second instantiation.
       const decoder = new LibheifDecoder({ wasmBinary });
 
       await decoder.initialize();
@@ -301,16 +294,16 @@ describe.skipIf(!hasArtifacts && !isCI)('LibheifDecoder (real WASM)', () => {
     });
 
     it('should discard an in-flight initialize() when freed during load', async () => {
-      // free() mid-initialization must not leave a live, unreachable WASM
-      // instance behind (generation-counter race fix). Observable contract:
-      // the instance ends up fully freed and reusable.
+      // `free()` mid-initialization must not strand a live, unreachable WASM
+      // instance (the generation-counter race fix). Observable contract: the
+      // instance ends up fully freed and reusable.
       const decoder = new LibheifDecoder({ wasmBinary });
 
       const initializing = decoder.initialize();
       decoder.free();
       await initializing;
 
-      // Not resurrected: decode() must re-initialize from scratch and work.
+      // Not resurrected: `decode()` must re-initialize from scratch and work.
       const result = await decoder.decode(exampleHeic);
       expect(result.data.length).toBe(result.width * result.height * 4);
       decoder.free();
@@ -320,24 +313,22 @@ describe.skipIf(!hasArtifacts && !isCI)('LibheifDecoder (real WASM)', () => {
       const decoder = new LibheifDecoder({ wasmBinary });
       await decoder.initialize();
 
-      // First free should succeed
       decoder.free();
 
-      // Second free should not throw (idempotent)
+      // `free()` is idempotent.
       expect(() => decoder.free()).not.toThrow();
     });
 
     it('should handle calling free before initialize', async () => {
       const decoder = new LibheifDecoder({ wasmBinary });
 
-      // Free before initialize should not throw
       expect(() => decoder.free()).not.toThrow();
     });
 
     it('should handle decode without initialize', async () => {
       const decoder = new LibheifDecoder({ wasmBinary });
 
-      // decode() lazily initializes when needed
+      // `decode()` lazily initializes when needed.
       const result = await decoder.decode(exampleHeic);
 
       expect(result.width).toBeGreaterThan(0);
@@ -345,10 +336,10 @@ describe.skipIf(!hasArtifacts && !isCI)('LibheifDecoder (real WASM)', () => {
     });
 
     it('should support concurrent decodes on the same instance', async () => {
-      // The wrapper memoizes module loading and hands each decode its own
-      // JS-owned pixel buffer, so concurrent decodes must all succeed with
-      // independent results. (Uses the small fixture: two full-size decodes
-      // are slow enough to trip the default timeout under coverage.)
+      // Module loading is memoized and each decode gets its own JS-owned pixel
+      // buffer, so concurrent decodes must all succeed independently. Uses the
+      // small fixture: two full-size decodes trip the default timeout under
+      // coverage.
       const decoder = new LibheifDecoder({ wasmBinary });
 
       await decoder.initialize();
@@ -361,7 +352,6 @@ describe.skipIf(!hasArtifacts && !isCI)('LibheifDecoder (real WASM)', () => {
         expect(result.height).toBe(64);
         expect(result.data.length).toBe(result.width * result.height * 4);
       }
-      // Independent buffers: the two results must not alias each other.
       expect(results[0].data).not.toBe(results[1].data);
 
       decoder.free();
@@ -386,8 +376,8 @@ describe.skipIf(!hasArtifacts && !isCI)('LibheifDecoder (real WASM)', () => {
       const decoder = new LibheifDecoder({ wasmBinary });
       await decoder.initialize();
 
-      // The callback contract violation surfaces with attribution (and never
-      // unwinds through the WASM frame, which would abort the module).
+      // The contract violation surfaces with attribution, and a host throw never
+      // unwinds through the WASM frame — that would abort the module.
       const error = await decoder.decode(heicData, throwingProgress).catch((e) => e);
       expect(error.code).toBe('progress_callback_failed');
       expect(error.message).toContain('onProgress callback threw during decode');
@@ -401,7 +391,6 @@ describe.skipIf(!hasArtifacts && !isCI)('LibheifDecoder (real WASM)', () => {
       const decoder = new LibheifDecoder({ wasmBinary });
       await decoder.initialize();
 
-      // Should not throw with non-function progress
       const result = await decoder.decode(exampleHeic, null as any);
 
       expect(result).toBeDefined();
@@ -411,7 +400,6 @@ describe.skipIf(!hasArtifacts && !isCI)('LibheifDecoder (real WASM)', () => {
 
     it('should handle progress callback with side effects', async () => {
       const sideEffectProgress = vi.fn().mockImplementation((percent) => {
-        // Simulate side effect
         void new Array(100).fill(percent);
       });
 
@@ -445,7 +433,7 @@ describe.skipIf(!hasArtifacts && !isCI)('LibheifDecoder (real WASM)', () => {
 
   describe('Decoded image edge cases', () => {
     it('should handle decoding image with zero dimensions', async () => {
-      // This tests the decoder's handling of malformed HEIC that might report zero dimensions
+      // Malformed container that could report zero dimensions.
       const invalidData = new Uint8Array([0x00, 0x00, 0x00, 0x00]);
 
       const decoder = new LibheifDecoder({ wasmBinary });
@@ -457,13 +445,12 @@ describe.skipIf(!hasArtifacts && !isCI)('LibheifDecoder (real WASM)', () => {
     });
 
     it('should handle decoding image with very large dimensions', async () => {
-      // Create data that might be interpreted as having large dimensions
       const largeDimData = new Uint8Array(10000);
 
       const decoder = new LibheifDecoder({ wasmBinary });
       await decoder.initialize();
 
-      // Should fail (not valid HEIC) but not crash
+      // Not valid HEIC: must reject rather than crash.
       await expect(decoder.decode(largeDimData)).rejects.toThrow();
 
       decoder.free();
@@ -475,14 +462,13 @@ describe.skipIf(!hasArtifacts && !isCI)('LibheifDecoder (real WASM)', () => {
 
       const result = await decoder.decode(exampleHeic);
 
-      // Verify the invariant: data.length === width * height * 4
       expect(result.data.length).toBe(result.width * result.height * 4);
 
       decoder.free();
     });
 
     it('should keep decoded pixels valid after free()', async () => {
-      // DecodedImage.data is a JS-owned buffer; free() must not invalidate it.
+      // `DecodedImage.data` is a JS-owned buffer; `free()` must not invalidate it.
       const decoder = new LibheifDecoder({ wasmBinary });
       await decoder.initialize();
 
@@ -494,7 +480,7 @@ describe.skipIf(!hasArtifacts && !isCI)('LibheifDecoder (real WASM)', () => {
 
       expect(result.data.length).toBe(expectedLength);
       expect(Array.from(result.data.slice(0, 8))).toEqual(firstPixels);
-      // It must be backed by a plain ArrayBuffer (usable in ImageData).
+      // Must be backed by a plain `ArrayBuffer` so it stays usable in `ImageData`.
       expect(result.data.buffer).toBeInstanceOf(ArrayBuffer);
     });
   });
@@ -503,10 +489,9 @@ describe.skipIf(!hasArtifacts && !isCI)('LibheifDecoder (real WASM)', () => {
     it('should handle multiple initialize calls', async () => {
       const decoder = new LibheifDecoder({ wasmBinary });
 
-      // First initialize
       await decoder.initialize();
 
-      // Second initialize is memoized and succeeds cheaply
+      // The second `initialize()` is memoized and succeeds cheaply.
       await expect(decoder.initialize()).resolves.not.toThrow();
 
       decoder.free();

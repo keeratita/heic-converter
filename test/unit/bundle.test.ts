@@ -5,29 +5,29 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 /**
- * Guards the lazy-chunk boundaries that keep the initial bundle small, plus the
- * published artifacts: both formats must defer the same modules, every
- * referenced chunk must exist on disk, dist's WASM must match src/wasm/public,
- * and the binary payload must stay under its ceilings. Skips when dist/ is
- * absent, so a bare `npm test` on a fresh checkout is unaffected; CI builds first.
+ * Guards the lazy-chunk boundaries and published artifacts: both formats defer
+ * the same modules, every referenced chunk exists on disk, `dist`'s WASM
+ * matches `src/wasm/public`, and the binary payload stays under its ceilings.
+ * Skips without `dist/` so a fresh checkout's `npm test` is unaffected; CI
+ * builds first.
  */
 const DIST = fileURLToPath(new URL('../../dist', import.meta.url));
 const SRC_WASM = fileURLToPath(new URL('../../src/wasm/public/heic-decoder.wasm', import.meta.url));
 const isBuilt = existsSync(`${DIST}/index.mjs`);
-// Same rule as the other real-artifact suites (AGENTS.md): on CI these guards
-// must never skip green — a tsup regression that stops emitting the entry while
-// still copying publicDir would otherwise delete every guard in this file.
+// Same CI rule as the other real-artifact suites (`AGENTS.md`): never skip
+// green — a tsup regression that stops emitting the entry while still copying
+// publicDir would silently delete every guard in this file.
 const isCI = !!process.env.CI;
 
-// 23_500 (from 23_000): the native-chunk degradation breadcrumb and the
-// fallback error-class discrimination are entry-thread logic — they decide what
-// the lazy chunks get asked to do and cannot be deferred. ESM (what browsers
-// load) is ~21.6 K; the CJS interop helpers pushed the CJS pass over the old
-// ceiling.
+// 23_500 (from 23_000): the native-chunk breadcrumb and fallback error-class
+// discrimination are entry-thread logic — they decide what the lazy chunks do
+// and cannot be deferred. ESM (what browsers load) is ~21.6 K; the CJS pass
+// crossed the old ceiling via its interop helpers.
 const EAGER_BUDGET_BYTES = 23_500;
-/** A hoisted implementation leaves a re-export stub on the dynamic edge, so the import() check alone passes. */
+// A hoisted implementation leaves a re-export stub on the dynamic edge, so the
+// `import()` check alone passes.
 const DEFERRED_CHUNK_MIN_BYTES = 1_000;
-/** Prefix → floor. The native Strategy is ~1.6 KB raw; a hoist stub is <200 B. */
+// Prefix → floor. The native Strategy is ~1.6 KB raw; a hoist stub is <200 B.
 const DEFERRED_MODULES: Array<{ prefix: string; min: number }> = [
   { prefix: 'worker', min: DEFERRED_CHUNK_MIN_BYTES },
   { prefix: 'exif', min: DEFERRED_CHUNK_MIN_BYTES },
@@ -35,14 +35,14 @@ const DEFERRED_MODULES: Array<{ prefix: string; min: number }> = [
   { prefix: 'native', min: 600 },
 ];
 
-// Deliberately loose (~15-20%): these catch a dropped build flag, not version
-// drift. Losing -s FILESYSTEM=0 trips the glue ceilings; losing the -Oz archives
-// or the codec exclusions trips the WASM one.
-// Raw C ABI (no --bind, see build-wasm/wrapper/main.cpp): measured pair
-// 2026-11-05 (emsdk 6.0.13) — glue chunk 7,867 raw / 3,287 gz, wasm
-// 241,008 gz, first-decode 252,516 gz. The ceilings sit well under the
-// embind shapes (28,657 raw /
-// 10,215 gz glue; 265,693 first-decode), so a re-added --bind trips them.
+// Deliberately loose (~15-20%): catches a dropped build flag, not version drift
+// — losing `-s FILESYSTEM=0` trips the glue ceilings, losing the `-Oz` archives
+// or codec exclusions trips the WASM one.
+// Raw C ABI (no `--bind`, see `build-wasm/wrapper/main.cpp`). Measured pair
+// 2026-11-05 (`emsdk` 6.0.13): glue 7,867 raw / 3,287 gz; wasm 241,008 gz;
+// first-decode 252,516 gz. Ceilings sit well under the embind shapes (glue
+// 28,657 raw / 10,215 gz; first-decode 265,693), so a re-added `--bind` trips
+// them.
 const GLUE_MAX_BYTES = 14_000;
 const GLUE_MAX_GZ = 6_000;
 const WASM_MAX_GZ = 300_000;
@@ -60,18 +60,17 @@ const bytesOf = (file: string): number => readFileSync(`${DIST}/${file}`).byteLe
 const gzOf = (file: string): number => gzipSync(readFileSync(`${DIST}/${file}`), { level: 9 }).length;
 const sha256Prefix = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex').slice(0, 12);
 
-// `\.m?js` on purpose: a bundler-output-helper change that emits an ESM chunk
-// as .js (or a cross-extension static edge) must not slip past the boundary
-// check and the byte budget.
+// `\.m?js` on purpose: an ESM chunk emitted as `.js`, or a cross-extension
+// static edge, must not slip past the boundary check and byte budget.
 const ESM_DEP = /from\s*"\.\/([^"]+\.m?js)"/g;
 const CJS_DEP = /require\("\.\/([^"]+\.m?js)"\)/g;
 
 /**
- * Static text in src/messages/worker.ts, extracted from source so the guard
- * covers entries added later. `Messages` is one object literal that esbuild
- * cannot tree-shake per property, so a worker-only string reaching the eager
- * graph is a silent size regression — and `messages.test.ts` compares key names,
- * which cannot see where the text ends up.
+ * Static text in `src/messages/worker.ts`, extracted from source so the guard
+ * covers entries added later. `Messages` is one object literal esbuild cannot
+ * tree-shake per property, so worker-only text reaching the eager graph is a
+ * silent size regression — and `messages.test.ts` compares key names, blind to
+ * where the text lands.
  */
 function workerOnlyMessageFragments(): string[] {
   const source = readFileSync(fileURLToPath(new URL('../../src/messages/worker.ts', import.meta.url)), 'utf8');
@@ -104,11 +103,12 @@ function staticGraph(entry: string, depPattern: RegExp): Map<string, string> {
 const eagerGraph = (): Map<string, string> => staticGraph('index.mjs', ESM_DEP);
 
 describe.skipIf(!isBuilt && !isCI)('bundle boundaries (requires npm run build)', () => {
-  // Read inside the tests: vitest runs describe callbacks even when the suite is
-  // skipped, so a read here would fail a fresh checkout instead of skipping.
+  // Read inside the tests: vitest runs describe callbacks even when the suite
+  // is skipped, so a top-level read would fail a fresh checkout instead of
+  // skipping.
   const entrySource = (): string => readFileSync(`${DIST}/index.mjs`, 'utf8');
 
-  // ESM and CJS are separate tsup passes: each is checked so one cannot regress
+  // ESM and CJS are separate tsup passes — check each so one cannot regress
   // while the other stays deferred.
   it.each(DEFERRED_MODULES)('defers $prefix behind a dynamic import', ({ prefix, min }) => {
     const chunk = chunkFile(prefix);
@@ -151,8 +151,7 @@ describe.skipIf(!isBuilt && !isCI)('bundle boundaries (requires npm run build)',
     }
     const cjsEntry = readFileSync(`${DIST}/index.js`, 'utf8');
     // Presence, not exact syntax: esbuild's CJS `import()` helper form is an
-    // implementation detail, and deferral is already proven by the require-walk
-    // above (a static edge would have made this graph include the chunk).
+    // implementation detail; the require-walk above already proved deferral.
     expect(cjsEntry, `${chunk} is not reachable from the CJS entry`).toContain(`./${chunk}`);
     const bytes = bytesOf(chunk);
     expect(bytes, `${chunk} is ${bytes} bytes — its code was hoisted into the eager CJS chunk`).toBeGreaterThan(min);
@@ -169,16 +168,14 @@ describe.skipIf(!isBuilt && !isCI)('bundle boundaries (requires npm run build)',
   });
 
   it('keeps the lazy chunks from statically sharing code outside the eager graph', () => {
-    // The four lazy payloads defer independently. A static edge from one to
-    // another (the worker chunk requiring the EXIF injectors, say) collapses
-    // two independent deferrals: the first worker call downloads EXIF too.
-    // esbuild usually honours such an edge by hoisting the imported code into
-    // a shared `chunk-*` file the importer requires — and that file is named
-    // by content hash, not the `exif-`/`worker-` prefix, so a prefix filter
-    // misses it (this was a real hole). The robust check: two lazy chunks may
-    // share a file ONLY when the eager entry graph also uses it statically
-    // (both legitimately reuse entry code). A file reachable from two distinct
-    // lazy chunks but NOT from the entry is lazy-to-lazy static coupling.
+    // The four lazy payloads defer independently; a static edge from one to
+    // another (the worker chunk requiring the EXIF injectors) collapses two
+    // deferrals into one — the first worker call would download EXIF too.
+    // esbuild honours such an edge by hoisting the shared code into a
+    // content-hash-named `chunk-*` file that a prefix filter misses (this was
+    // a real hole). Robust rule: two lazy chunks may share a file only when
+    // the eager entry graph uses it statically too; a file reachable from two
+    // distinct lazy chunks but not from the entry is lazy-to-lazy coupling.
     for (const [ext, depPattern] of [
       ['.mjs', ESM_DEP],
       ['.js', CJS_DEP],
@@ -190,9 +187,9 @@ describe.skipIf(!isBuilt && !isCI)('bundle boundaries (requires npm run build)',
       }));
       for (let i = 0; i < graphs.length; i++) {
         for (let j = i + 1; j < graphs.length; j++) {
-          // A chunk's own entry file appears in its own graph; it can only
-          // appear in ANOTHER lazy chunk's graph through the leak itself — so
-          // no exclusion is needed, and adding one would mask the direct edge.
+          // A chunk's own file appears only in its own graph; it reaches
+          // another lazy chunk's graph solely through the leak, so no
+          // exclusion is needed — one would mask the direct edge.
           const shared = [...graphs[i].files].filter((f) => graphs[j].files.has(f) && !eager.has(f));
           expect(
             shared,
@@ -223,13 +220,13 @@ describe.skipIf(!isBuilt && !isCI)('bundle boundaries (requires npm run build)',
   });
 
   it('ships the WASM that src/wasm/public currently holds', () => {
-    // tsup copies the binary verbatim, so a mismatch means dist/ predates the
+    // tsup copies the binary verbatim, so a mismatch means `dist/` predates the
     // last `npm run build:wasm` — a stale dist has shipped a wrong decoder past
     // local verification before.
     expect(existsSync(SRC_WASM), `missing ${SRC_WASM}`).toBe(true);
     const published = readFileSync(`${DIST}/heic-decoder.wasm`);
     const source = readFileSync(SRC_WASM);
-    // equals() is memcmp; toEqual on ~800 KB Buffers deep-compares and timed out.
+    // `equals()` is memcmp; `toEqual` on ~800 KB Buffers deep-compares and timed out.
     if (!published.equals(source)) {
       throw new Error(
         `dist/heic-decoder.wasm (${published.length} B, ${sha256Prefix(published)}) differs from ` +

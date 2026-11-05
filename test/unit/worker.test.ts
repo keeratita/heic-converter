@@ -59,7 +59,7 @@ class MockWorker {
     }
   }
 
-  /** The request id of the nth (0-based) posted request. */
+  // Request id of the nth (0-based) posted request.
   requestId(at: number): number | undefined {
     return (this.posted[at] as { id?: number } | undefined)?.id;
   }
@@ -172,7 +172,7 @@ describe('convertHeicInWorker', () => {
   it('should reject when a decoder is injected (cannot cross the worker boundary)', async () => {
     const decoder = { initialize: vi.fn(), decode: vi.fn(), free: vi.fn() };
 
-    // `decoder` is deliberately absent from WorkerConvertOptions, so it has to
+    // `decoder` is deliberately absent from `WorkerConvertOptions`, so it has to
     // arrive through a variable: the runtime guard is what's under test, and a
     // fresh object literal would be stopped by the excess-property check first.
     const options = { workerUrl: '/worker.js', decoder, onProgress: vi.fn(), scale: 0.5 };
@@ -206,8 +206,8 @@ describe('convertHeicInWorker', () => {
 
   it('treats a truthy non-function onProgress as absent', async () => {
     // Same "non-function is absent" policy as the in-process path
-    // (progressGateFor): the transport must not invoke it and surface the
-    // TypeError as progress_callback_failed.
+    // (`progressGateFor`): the transport must not invoke it and surface the
+    // TypeError as `progress_callback_failed`.
     const promise = convertHeicInWorker(new Uint8Array([1]), {
       workerUrl: '/worker.js',
       onProgress: 42 as unknown as (percent: number) => void,
@@ -556,10 +556,10 @@ describe('convertHeicInWorker', () => {
     });
 
     it('says the deadline was spent queued when no worker slot was ever granted', async () => {
-      // timeoutMs is a per-call deadline that includes queue wait, so a batch
+      // `timeoutMs` is a per-call deadline that includes queue wait, so a batch
       // saturating the per-URL semaphore times callers out that never ran. The
       // diagnostic must not blame the image ("increase timeoutMs for large
-      // images") when the answer is maxConcurrentWorkers.
+      // images") when the answer is `maxConcurrentWorkers`.
       const holder = convertHeicInWorker(new Uint8Array([1]), {
         workerUrl: '/saturated.js',
         maxConcurrentWorkers: 1,
@@ -667,7 +667,6 @@ describe('convertHeicInWorker', () => {
         maxConcurrentWorkers: 1,
       });
 
-      // Second call must wait for the only slot instead of spawning a worker.
       expect(MockWorker.instances).toHaveLength(1);
 
       MockWorker.instances[0].emit('message', { data: { type: 'result', ok: true, blob: firstBlob } });
@@ -828,8 +827,8 @@ describe('convertHeicInWorker', () => {
       worker.emit('message', { data: { type: 'result', ok: true, blob: new Blob(['a']) } });
       await first;
 
-      // A script that self.close()s after its first reply never answers the
-      // adopted lease; the timeout must say so instead of blaming the image.
+      // A script that calls `self.close()` after its first reply never answers
+      // the adopted lease; the timeout must say so instead of blaming the image.
       const second = convertHeicInWorker(new Uint8Array([2]), { workerUrl: '/worker.js', timeoutMs: 5 });
       const error = await second.catch((e) => e);
       expect(error.code).toBe('worker_timeout');
@@ -865,11 +864,9 @@ describe('convertHeicInWorker', () => {
   });
 });
 
-/**
- * Direct unit tests for the per-URL worker-slot semaphore. These exercise
- * state-machine branches (double release, cancelled/ignored grants) that the
- * public API cannot reach, via the @internal test hooks.
- */
+// Direct unit tests for the per-URL worker-slot semaphore. These exercise
+// state-machine branches (double release, cancelled/ignored grants) that the
+// public API cannot reach, via the `@internal` test hooks.
 describe('worker slot semaphore (internal hooks)', () => {
   const { reserveWorkerSlot, workerSlots } = __semaphoreTestHooks;
   const KEY = 'semaphore-test-key';
@@ -1241,9 +1238,9 @@ describe('convertManyInWorker', () => {
   });
 
   it('treats a truthy non-function onProgress as absent', async () => {
-    // The fourth entry point shares the one policy point (progressCallbackFor):
+    // The fourth entry point shares the one policy point (`progressCallbackFor`):
     // previously a malformed callback made every item fail with
-    // progress_callback_failed instead of being ignored.
+    // `progress_callback_failed` instead of being ignored.
     const blob = new Blob(['x'], { type: 'image/png' });
     const promise = convertManyInWorker([new Uint8Array([1])], {
       workerUrl: uniqueUrl(),
@@ -1286,7 +1283,7 @@ describe('convertManyInWorker', () => {
     emitProgress(MockWorker.instances[0], 40);
     emitResult(MockWorker.instances[0], blob);
     // The failing item still forwards its sub-100 percent live (documented
-    // contract); only its 100% is withheld, and continueOnError keeps the
+    // contract); only its 100% is withheld, and `continueOnError` keeps the
     // batch itself fulfilled with per-item entries.
     emitProgress(MockWorker.instances[1], 55);
     emitFailure(MockWorker.instances[1], 'one bad file');
@@ -1301,10 +1298,10 @@ describe('convertManyInWorker', () => {
     }
     expect(failedItem.error).toBeInstanceOf(HeicConverterError);
     expect((failedItem.error as HeicConverterError).code).toBe('worker_failed');
-    // Sub-100 percent arrives for both items…
+    // Sub-100 percent arrives for both items.
     expect(onProgress).toHaveBeenCalledWith(0, 40);
     expect(onProgress).toHaveBeenCalledWith(1, 55);
-    // …but only the successful item gets 100%.
+    // But only the successful item gets 100%.
     const hundreds = onProgress.mock.calls.filter(([, percent]) => percent === 100);
     expect(hundreds).toEqual([[0, 100]]);
   });
@@ -1472,9 +1469,9 @@ describe('worker entry-point validation (main thread)', () => {
   });
 
   it('convertManyInWorker validates batch knobs like convertMany does', async () => {
-    // Batch-only knobs go through validateBatchOptions, so a malformed one
-    // gets the same main-thread rejection convertMany gives — not a silently
-    // ignored property (and not stringified worker_failed).
+    // Batch-only knobs go through `validateBatchOptions`, so a malformed one
+    // gets the same main-thread rejection `convertMany` gives — not a silently
+    // ignored property (and not stringified `worker_failed`).
     for (const bad of ['yes', 1, {}]) {
       const error = await convertManyInWorker([input()], {
         workerUrl: validateUrl(),
@@ -1527,8 +1524,9 @@ describe('reserveWorkerSlot (semaphore)', () => {
     releaseA(); // A's real release hands the single slot to the next waiter
     expect(granted).toEqual([1, 3]);
 
-    releaseC(); // C was granted by A's hand-off; now it finishes and the
-    // emptied slot entry is collected.
+    // C was granted by A's hand-off; now it finishes and the emptied slot
+    // entry is collected.
+    releaseC();
     expect(granted).toEqual([1, 3]);
     expect(workerSlots.has(key)).toBe(false);
   });

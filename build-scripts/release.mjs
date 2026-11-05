@@ -29,7 +29,6 @@ function execDetail(err) {
   return [err.message, stderr].filter(Boolean).join('\n');
 }
 
-// Check if git directory is clean
 try {
   const status = git(['status', '--porcelain']).trim();
   if (status) {
@@ -62,19 +61,17 @@ if (!/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(currentBranch)) {
   process.exit(1);
 }
 
-// Function to run the release process
 function runRelease(type) {
   try {
-    // 1. Run lint, build, and test first to make sure everything passes
+    // 1. Everything must pass before anything is bumped, tagged, or pushed.
     console.log('🔄 Running lint, build, and tests...');
     npmInherit(['run', 'lint']);
     npmInherit(['run', 'build']);
     npmInherit(['run', 'test']);
 
     if (type === 'current') {
-      // Get current version from package.json. `current` skips `npm version`,
-      // so nothing else validates the version string — do it here before it
-      // becomes a tag name.
+      // `current` skips `npm version`, so nothing else validates the version
+      // string — check it here, before it becomes a tag name.
       const pkg = require(PKG_PATH);
       const currentVersion = pkg.version;
       if (typeof currentVersion !== 'string' || !/^\d+\.\d+\.\d+(-[\w.]+)?$/.test(currentVersion)) {
@@ -83,18 +80,15 @@ function runRelease(type) {
       }
       const tagName = `v${currentVersion}`;
 
-      // Check if tag already exists
       const tagExists = git(['tag', '-l', tagName]).trim();
       if (tagExists) {
         console.error(`❌ Error: Tag ${tagName} already exists!`);
         process.exit(1);
       }
 
-      // Create tag for current version
       console.log(`\n🔄 Creating tag ${tagName} for current version...`);
       gitInherit(['tag', '-a', tagName, '-m', `chore(release): ${tagName}`]);
 
-      // Push tag to remote
       console.log(`\n🔄 Pushing tag ${tagName} to remote...`);
       try {
         gitInherit(['push', 'origin', tagName]);
@@ -111,11 +105,11 @@ function runRelease(type) {
 
       console.log(`\n✅ Tag ${tagName} successfully created and pushed!`);
     } else {
-      // 2. Bump version
+      // 2. Bump the version.
       console.log(`\n🔄 Bumping version (${type})...`);
       npmInherit(['version', type, '-m', 'chore(release): %s']);
 
-      // 3. Push to git
+      // 3. Push the commit and tag.
       console.log(`\n🔄 Pushing commits and tags to remote (branch: ${currentBranch})...`);
       try {
         gitInherit(['push', 'origin', currentBranch, '--follow-tags']);
@@ -137,7 +131,6 @@ function runRelease(type) {
   }
 }
 
-// Get type from command line argument
 const arg = process.argv[2];
 const allowedTypes = ['patch', 'minor', 'major', 'current'];
 
@@ -149,13 +142,12 @@ if (arg) {
     process.exit(1);
   }
 } else {
-  // Interactive mode
+  // With no release type on the command line, prompt for one.
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout
   });
 
-  // Load current version for display
   let currentVersion = 'unknown';
   try {
     const pkg = require(PKG_PATH);

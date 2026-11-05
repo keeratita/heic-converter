@@ -21,12 +21,12 @@ const decodedImage = (width: number, height: number): DecodedImage => ({
   data: new Uint8ClampedArray(width * height * 4).fill(255),
 });
 
-/**
- * AVIF encoding is not universally available; a naive implementation would
- * silently emit PNG (the spec's fallback for unknown types), so the module
- * probes once and rejects with `format_unsupported` instead. The probe is a
- * 1×1 canvas encode, cached at module level — every test resets it.
- */
+// AVIF encoding is not universal, and a naive implementation would silently emit
+// PNG (the spec's fallback for unknown types), so the module probes once with a
+// 1×1 canvas encode and rejects with `format_unsupported` instead. The cached
+// verdict is tri-state — `true` for real bytes, `false` only for a definitive
+// refusal, `undefined` when indeterminate — and only `=== false` denies. Every
+// test resets the cache.
 describe('renderAndEncode - AVIF capability probe', () => {
   let mockCtx: {
     putImageData: ReturnType<typeof vi.fn>;
@@ -125,7 +125,7 @@ describe('renderAndEncode - AVIF capability probe', () => {
     expect(error).toMatchObject({ code: 'format_unsupported' });
     expect(error.message).toContain('avif');
     // The probe runs before any pixel work: only the probe canvas exists and
-    // exactly one toBlob happened.
+    // exactly one `toBlob` happened.
     expect(toBlobCalls).toHaveLength(1);
     expect(createdCanvases).toHaveLength(1);
     expect(mockCtx.putImageData).not.toHaveBeenCalled();
@@ -133,10 +133,10 @@ describe('renderAndEncode - AVIF capability probe', () => {
 
   it('treats a null-blob toBlob as indeterminate, then reports the encode failure honestly', async () => {
     // A null `toBlob` result is the spec's encoding-failure signal (tainted
-    // canvas, memory pressure), not a support verdict — engines that lack
-    // AVIF return a PNG blob instead. Caching it as `false` was the bug this
-    // pins against: the real encode hits the same null and the honest verdict
-    // is render_encode_failed.
+    // canvas, memory pressure), not a support verdict — engines without AVIF
+    // return a PNG blob instead. Caching it as `false` was the bug this pins:
+    // the real encode hits the same null, so the honest verdict is
+    // `render_encode_failed`.
     toBlobImpl = (_index, callback) => callback(null);
 
     const error = await renderAndEncode(decodedImage(100, 80), 'avif', 0.92).catch((e) => e);
@@ -194,7 +194,7 @@ describe('renderAndEncode - AVIF capability probe', () => {
     vi.useFakeTimers();
     try {
       toBlobImpl = () => {
-        // Wedged engine: the toBlob callback never fires (backgrounded tab,
+        // Wedged engine: the `toBlob` callback never fires (backgrounded tab,
         // memory pressure). The deadline must unblock the probe.
       };
       const first = canEncodeAvif();
@@ -252,13 +252,13 @@ describe('renderAndEncode - AVIF capability probe', () => {
     const error = await assertEncodeCapability('avif').catch((e) => e);
     expect(error).toMatchObject({ code: 'format_unsupported' });
     expect(await assertEncodeCapability('jpeg')).toBeUndefined();
-    // A non-avif format never triggers a probe; only the rejected avif call did.
+    // A non-`avif` format never triggers a probe; only the rejected `avif` call did.
     expect(toBlobCalls).toHaveLength(1);
   });
 
   it('does not reject assertEncodeCapability on an indeterminate probe', async () => {
     // A starved 1×1 encode must not fail a batch with "AVIF is not supported"
-    // on a browser that supports it; the encode-time blob.type check decides.
+    // on a browser that supports it; the encode-time `blob.type` check decides.
     vi.useFakeTimers();
     try {
       toBlobImpl = () => {
@@ -273,7 +273,7 @@ describe('renderAndEncode - AVIF capability probe', () => {
   });
 
   it('does not cache a canvas-creation failure as unsupported', async () => {
-    // createCanvas can fail transiently under memory pressure; caching that as
+    // `createCanvas` can fail transiently under memory pressure; caching that as
     // "unsupported" would deny AVIF for the rest of the page's life.
     (global.document.createElement as ReturnType<typeof vi.fn>).mockImplementationOnce(() => {
       throw new Error('canvas allocation failed');

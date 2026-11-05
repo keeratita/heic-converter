@@ -1,17 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import { inspectRegistryDoc, inspectAttestationDoc } from '../../build-scripts/verify-npm-provenance.mjs';
 
-// The publish workflow must not be able to ship a package that quietly lost its
-// attestation: a manual publish, a missing id-token permission, or a registry
-// hiccup all produce an installable, unattributable tarball. dist.attestations
-// is only a hint npm writes, so the statement it points at is what gets checked.
+// The publish workflow must not ship a package that quietly lost its
+// attestation: a manual publish, a missing `id-token` permission, or a registry
+// hiccup all produce an installable, unattributable tarball.
+// `dist.attestations` is only an npm-written hint, so the statement it points
+// at is what gets checked.
 
 const NAME = '@keeratita/heic-converter';
 const VERSION = '0.5.0';
 const GHA_BUILD_TYPE = 'https://slsa-framework.github.io/github-actions-buildtypes/workflow/v1';
 
-/** Registry shape with the two fields the gate requires marked optional, so
- *  the tests can delete them to prove each one is actually checked. */
+/**
+ * Registry shape with the two fields the gate requires marked optional, so
+ * tests can delete them to prove each one is actually checked.
+ */
 const healthyRegistryDoc = (): {
   gitHead?: string;
   dist: { tarball: string; attestations?: { url: string; provenance: { predicateType: string } } };
@@ -57,8 +60,8 @@ describe('inspectRegistryDoc', () => {
   });
 
   it('rejects a tarball served from anywhere but the pinned registry', () => {
-    // publishConfig.registry is honoured by `npm publish` too, so a commit that
-    // repoints it must not be able to make this gate read a friendly host.
+    // `npm publish` honours `publishConfig.registry` too, so a commit repointing
+    // it must not make this gate read a friendly host.
     const doc = healthyRegistryDoc();
     doc.dist.tarball = 'https://attacker.invalid/@keeratita/heic-converter/-/heic-converter-0.5.0.tgz';
     const problems = inspectRegistryDoc(doc, { name: NAME, version: VERSION });
@@ -104,8 +107,8 @@ describe('inspectAttestationDoc', () => {
   });
 
   it('rejects a statement whose build type is not GitHub Actions', () => {
-    // A laptop publish cannot produce the GitHub Actions build type, which is the
-    // whole reason the statement is read instead of trusting the registry hint.
+    // A laptop publish cannot produce the GitHub Actions build type — the whole
+    // reason the statement is read instead of trusting the registry hint.
     const problems = inspectAttestationDoc(slsaAttestation({ buildType: 'https://example.invalid/local-build/v1' }), {
       name: NAME,
       version: VERSION

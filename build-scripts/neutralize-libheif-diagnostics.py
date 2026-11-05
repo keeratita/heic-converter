@@ -22,7 +22,7 @@ ROOTS = [
 ]
 
 MIN_STUBS = 100  # 114 on v1.23.7; far below this means upstream reorganized
-                 # the diagnostics — refuse instead of shipping a half-patch.
+                 # the diagnostics — refuse instead of shipping a half-patch
 SANITY_FILE = 'libheif/box.cc'  # must contribute at least one stub
 
 
@@ -99,15 +99,15 @@ def neutralize(root):
             path = os.path.join(dirpath, fn)
             text = open(path).read()
             n = 0
-            # right-to-left so earlier match offsets stay valid after replacement
+            # Right-to-left so earlier match offsets stay valid after replacement.
             for m in reversed(list(HEADER.finditer(text))):
                 open_idx = text.find('{', m.end())
                 if open_idx < 0:
                     print(f'Error: {path}: definition without a body: {m.group(0)!r}',
                           file=sys.stderr)
                     sys.exit(1)
-                # between signature end and body '{' only whitespace is allowed —
-                # anything else ('= 0;', ';') is a declaration, not a definition
+                # Between signature end and body '{' only whitespace is allowed —
+                # anything else ('= 0;', ';') is a declaration, not a definition.
                 if text[m.end():open_idx].strip() != '':
                     continue
                 end = match_body(text, open_idx)

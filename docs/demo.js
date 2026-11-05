@@ -26,10 +26,8 @@ const download = document.getElementById('download');
 let selectedFile = null;
 /** @type {string | null} */
 let objectUrl = null;
-/**
- * Monotonic counter used to invalidate in-flight conversions when the user
- * picks a different file, so stale results never overwrite the current UI.
- */
+// Monotonic run id: a new selection invalidates in-flight conversions, so
+// stale results never overwrite the current UI.
 let conversionId = 0;
 
 function formatBytes(bytes) {
@@ -60,7 +58,7 @@ function resetOutput() {
   progressEl.style.width = '0%';
 }
 
-/** Lock the form (and show Cancel) while a conversion is in flight. */
+// Lock the form (and show Cancel) while a conversion is in flight.
 function setControlsEnabled(enabled) {
   convertBtn.disabled = !enabled || !selectedFile;
   formatEl.disabled = !enabled;
@@ -70,11 +68,11 @@ function setControlsEnabled(enabled) {
   cancelBtn.hidden = enabled;
 }
 
-// Brands that identify a HEIF/HEIC container's ftyp box (ISO-BMFF). The
-// decoder build handles the HEVC-based family plus the generic containers.
+// Brands identifying a HEIF/HEIC container's `ftyp` box (ISO-BMFF): the
+// HEVC-based family plus the generic containers the decoder build handles.
 const HEIF_BRANDS = ['heic', 'heix', 'heim', 'heis', 'hevc', 'hevm', 'hevs', 'mif1', 'msf1'];
 
-/** Content-level sniff: a .heic file name alone is not enough. */
+// Content-level sniff: a `.heic` file name alone is not enough.
 async function looksLikeHeicContainer(file) {
   if (file.size < 12) {
     return false;
@@ -84,7 +82,8 @@ async function looksLikeHeicContainer(file) {
   if (fourcc(4) !== 'ftyp') {
     return false;
   }
-  // Scan the ftyp box: major brand at 8, compatible brands until box end.
+  // Scan the `ftyp` box: major brand at offset 8, compatible brands until
+  // the box end.
   const boxLength = ((head[0] << 24) | (head[1] << 16) | (head[2] << 8) | head[3]) >>> 0;
   const end = Math.min(head.length, boxLength < 12 ? head.length : boxLength);
   for (let offset = 8; offset + 4 <= end; offset += 4) {
@@ -96,9 +95,8 @@ async function looksLikeHeicContainer(file) {
 }
 
 async function setFile(file) {
-  // Invalidate any conversion still in flight from a previous selection —
-  // including when the new file is rejected, so stale completions can never
-  // repopulate cleared UI state.
+  // Invalidate in-flight conversions even when this file is rejected — a
+  // stale completion must never repopulate cleared UI.
   conversionId++;
   const id = conversionId;
 
@@ -107,7 +105,7 @@ async function setFile(file) {
     selectedFile = null;
     fileMeta.hidden = true;
     convertBtn.disabled = true;
-    fileInput.value = ''; // Allow re-selecting the same file later.
+    fileInput.value = ''; // allow re-selecting the same file later
     resetOutput();
     setStatus(message, 'error');
   };
@@ -126,7 +124,7 @@ async function setFile(file) {
     looksLikeHeic = false;
   }
   if (id !== conversionId) {
-    return; // Superseded while the header was being read.
+    return; // superseded while the header was being read
   }
   if (!looksLikeHeic) {
     reject('That file does not look like a HEIC/HEIF image (no HEIF ftyp header).');
@@ -142,9 +140,9 @@ async function setFile(file) {
   setStatus('File ready. Choose output settings and convert.');
 }
 
-// Clicks are handled natively by the <label for="fileInput"> wrapper — a
-// JS click handler here would double-open the picker, and role=button
-// clicks alone are treated as untrusted gestures on WebKit.
+// Clicks are handled natively by the `<label for="fileInput">` wrapper — a
+// JS click handler would double-open the picker, and `role=button` clicks
+// alone are untrusted gestures on WebKit.
 dropzone.addEventListener('keydown', (event) => {
   if (event.key === 'Enter' || event.key === ' ') {
     event.preventDefault();
@@ -252,8 +250,8 @@ convertBtn.addEventListener('click', async () => {
     if (id !== conversionId) {
       return;
     }
-    // Keep the full error (including cause chain) available for debugging;
-    // stays fully local to the page.
+    // Keep the full error (including cause chain) for debugging — it stays
+    // local to the page.
     console.error('[heic-converter] conversion failed', error);
     const message =
       error instanceof Error ? error.message : 'Unknown conversion error';
@@ -267,10 +265,9 @@ convertBtn.addEventListener('click', async () => {
 });
 
 cancelBtn.addEventListener('click', () => {
-  // Cooperative cancellation: bumping conversionId makes the in-flight
-  // conversion's progress and result ignored when it eventually settles
-  // (a WASM decode cannot be aborted mid-run, so the job is left to finish
-  // harmlessly in the background).
+  // Cooperative cancellation: bumping `conversionId` makes the in-flight
+  // run's progress and result ignored when it settles — a WASM decode
+  // cannot abort mid-run, so it finishes harmlessly in the background.
   conversionId++;
   progressEl.style.width = '0%';
   setControlsEnabled(true);

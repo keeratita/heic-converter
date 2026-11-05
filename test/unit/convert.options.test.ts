@@ -164,7 +164,7 @@ describe('convertHeic - Options', () => {
         code: 'invalid_format',
         message: expect.stringContaining('Unsupported output format: gif'),
       });
-      // Failed fast: neither the decoder nor the encoder were touched.
+      // Failed fast: decoder and encoder untouched.
       expect(mockState.decoderInstances).toHaveLength(0);
       expect(mockState.renderAndEncodeMock).not.toHaveBeenCalled();
     });
@@ -195,7 +195,7 @@ describe('convertHeic - Options', () => {
 
   describe('Environment pre-check', () => {
     it('should fail before decoding when the environment cannot encode', async () => {
-      // assertEncodeEnvironment is spied through the shared harness; make it
+      // `assertEncodeEnvironment` is spied through the shared harness; make it
       // behave like plain Node (no canvas) and verify nothing else runs.
       mockState.assertEncodeEnvironmentMock.mockImplementationOnce(() => {
         throw new Error('Canvas is not supported in the current environment.');
@@ -240,8 +240,8 @@ describe('convertHeic - Options', () => {
 
     it('should handle options with extra properties', async () => {
       // Unknown keys must be tolerated, not rejected. Passed as a variable so
-      // the excess-property check (which only fires on fresh object literals)
-      // doesn't block the case being exercised.
+      // the excess-property check (which fires only on fresh literals) does not
+      // block the case being exercised.
       const options = { to: 'png' as const, quality: 0.8, onProgress: vi.fn(), extraProperty: 'should be ignored' };
       const result = await convertHeic(new Uint8Array([1]), options);
 

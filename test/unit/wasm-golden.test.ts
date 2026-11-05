@@ -12,13 +12,11 @@ const FIXTURE_DIR = path.join(ROOT_DIR, 'test/fixtures');
 
 const isCI = typeof process !== 'undefined' && !!process.env.CI;
 
-/**
- * Output goldens for the committed WASM. Smaller-build work here has repeatedly
- * produced a decoder that only failed at execution, and a codegen regression in
- * libde265's IDCT / loop-filter / intra-prediction paths still yields a
- * *decodable* image with wrong pixels — so pin the exact RGBA, dimensions,
- * pending orientation and EXIF length rather than asking "does it decode?".
- */
+// Output goldens for the committed WASM. Smaller-build work here has repeatedly
+// produced a decoder that only failed at execution, and a codegen regression in
+// libde265's IDCT / loop-filter / intra-prediction paths still yields a
+// *decodable* image with wrong pixels — so pin the exact RGBA, dimensions,
+// pending orientation and EXIF length rather than asking "does it decode?".
 
 type FixtureGolden = {
   width: number;
@@ -147,9 +145,9 @@ const MUTATION_GOLDENS: Record<string, string> = {
   'exif-orientation-6.heic:flip13@12794': 'OK:f3a28db4364b'
 };
 
-// Derived from the golden table: a fixture added there is automatically
-// required on disk (and vice versa, checked below), so the two lists cannot
-// drift the way a hand-maintained copy does.
+// Derived from the golden table, so a fixture added there is automatically
+// required on disk; the reverse check is below. The two lists cannot drift the
+// way a hand-maintained copy does.
 const FIXTURE_NAMES = Object.keys(FIXTURE_GOLDENS);
 const hasArtifacts =
   fs.existsSync(WASM_PATH) && FIXTURE_NAMES.every((f) => fs.existsSync(path.join(FIXTURE_DIR, f)));
@@ -177,11 +175,9 @@ const decodeFresh = async (bytes: Uint8Array) => {
   }
 };
 
-/**
- * Guards the golden tables themselves, independent of the artifacts: a bulk
- * edit here (renumbered labels, a dropped column, one outcome silently
- * deleted) would leave every decode assertion comparing against nonsense.
- */
+// Guards the golden tables themselves, independent of the artifacts: a bulk edit
+// here (renumbered labels, a dropped column, one outcome silently deleted) would
+// leave every decode assertion comparing against nonsense.
 describe('golden tables are well-formed', () => {
   it('pins every fixture on disk, and only those', () => {
     const onDisk = fs.readdirSync(FIXTURE_DIR).filter((f) => f.endsWith('.heic')).sort();
@@ -206,10 +202,10 @@ describe('golden tables are well-formed', () => {
   });
 });
 
-// 30s per test: each of these instantiates the real module per input (5
-// fixtures, 66 mutations, 41 truncations), and under the parallel suite the
-// default 5s is close enough to the edge to flake — a flaking real-decode
-// suite gets ignored, which defeats its entire purpose.
+// 30s per test: each instantiates the real module per input (5 fixtures, 66
+// mutations, 41 truncations), and the 5s default is close enough to the edge
+// under the parallel suite to flake — a flaking real-decode suite gets ignored,
+// which defeats its entire purpose.
 describe.skipIf(!hasArtifacts && !isCI)('WASM output goldens', { timeout: 30_000 }, () => {
   it('decodes every fixture to the golden dimensions, orientation and RGBA', async () => {
     for (const [name, golden] of Object.entries(FIXTURE_GOLDENS)) {
@@ -241,17 +237,18 @@ describe.skipIf(!hasArtifacts && !isCI)('WASM output goldens', { timeout: 30_000
   });
 
   it('drops a truncated Exif item rather than failing the decode', async () => {
-    // The mutation table records only the RGBA hash, so it cannot tell "identical
-    // pixels, metadata intact" from "identical pixels, metadata thrown away". This is
-    // the orientation regression fixture, and :trunc0.999 drops the last 11 bytes of
-    // its 12-byte tag-274 IFD entry (type, count, value) plus the 4-byte next-IFD
-    // offset, so IFD0 declares an entry with no body: libheif 1.23.6 rejected the
-    // whole file, 1.23.7 discards the malformed Exif item and returns the same raster
-    // with no orientation and no block to inject — metadata loss, never a half-parsed
-    // block reaching the injectors. Pin the whole outcome, not just the pixels.
+    // The mutation table pins only the RGBA hash, so it cannot tell "identical
+    // pixels, metadata intact" from "identical pixels, metadata thrown away" —
+    // hence pinning the whole outcome here. This is the orientation regression
+    // fixture, and `:trunc0.999` drops the last 11 bytes of its 12-byte tag-274
+    // IFD entry (type, count, value) plus the 4-byte next-IFD offset, leaving
+    // IFD0 with an entry that has no body: libheif 1.23.6 rejected the whole
+    // file, 1.23.7 discards the malformed Exif item and returns the same raster
+    // with no orientation and no block to inject — metadata loss, never a
+    // half-parsed block reaching the injectors.
     const golden = FIXTURE_GOLDENS['exif-orientation-6.heic'];
-    // The same input the table's :trunc0.999 row pins, taken from the generator that
-    // produces it, so the two cannot drift apart.
+    // The exact input the table's `:trunc0.999` row pins, taken from the generator
+    // that produces it, so the two cannot drift apart.
     const [truncated] = buildMutations()
       .filter(([label]) => label === 'exif-orientation-6.heic:trunc0.999')
       .map(([, bytes]) => bytes);
@@ -280,8 +277,8 @@ describe.skipIf(!hasArtifacts && !isCI)('WASM output goldens', { timeout: 30_000
         await decodeFresh(bytes);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        // An abort inside the module surfaces as a raw WebAssembly.RuntimeError
-        // and leaves it unusable; the contract is a typed HeicConverterError.
+        // An abort inside the module surfaces as a raw `WebAssembly.RuntimeError`
+        // and leaves it unusable; the contract is a typed `HeicConverterError`.
         if (!(error instanceof HeicConverterError) || /Aborted|RuntimeError/.test(message)) {
           aborts.push(`${label}: ${error instanceof Error ? `${error.constructor.name}: ${message}` : message}`);
         }
@@ -294,9 +291,11 @@ describe.skipIf(!hasArtifacts && !isCI)('WASM output goldens', { timeout: 30_000
     // The table above samples truncation at four ratios; this sweeps the box
     // parser much finer — every offset in the container header plus a linear
     // pass over the file. Two invariants a miscompile can break while "it
-    // decodes" still passes: malformed input must yield sane dimensions or a
-    // typed error (never RuntimeError/abort), and the shared Emscripten module
-    // must still decode a good file afterwards rather than stay wedged.
+    // decodes" still passes:
+    // - malformed input yields sane dimensions or a typed error (never
+    //   `RuntimeError`/abort)
+    // - the shared Emscripten module still decodes a good file afterwards
+    //   rather than staying wedged
     const bytes = fs.readFileSync(path.join(FIXTURE_DIR, 'example.heic'));
     const offsets = [
       ...[1, 2, 3, 4, 6, 8, 10, 12, 16, 20, 24, 28, 32, 40, 48, 56, 64],
@@ -329,7 +328,6 @@ describe.skipIf(!hasArtifacts && !isCI)('WASM output goldens', { timeout: 30_000
     expect(refused, 'no truncation was refused — the sweep degenerated').toBeGreaterThan(0);
     expect(decoded, 'every truncation failed — fixtures or decoder changed').toBeGreaterThan(0);
 
-    // And the module is still healthy afterwards.
     const healthy = await decodeFresh(fs.readFileSync(path.join(FIXTURE_DIR, 'example.heic')));
     expect(await sha256(healthy.data)).toBe(FIXTURE_GOLDENS['example.heic'].rgbaSha256);
   });

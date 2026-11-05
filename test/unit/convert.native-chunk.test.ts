@@ -17,8 +17,8 @@ vi.mock('../../src/wasm', async () => {
   return { LibheifDecoder: MockLibheifDecoder };
 });
 
-// Simulate the deployment failure: the native chunk fetch rejects (partial
-// upload, wrong MIME). The conversion must degrade to libheif without caching
+// Simulate the deployment failure (partial upload, wrong MIME): the native
+// chunk fetch rejects. The conversion must degrade to libheif without caching
 // a platform refusal. Sequential only: the module mocker mis-resolves racing
 // dynamic imports of the same path.
 vi.mock('../../src/wasm/native', async () => {

@@ -1,9 +1,9 @@
 /**
- * Error strings thrown from `src/worker.ts`, which is the lazily loaded worker
- * chunk. Add a string here when the *chunk* throws it — not when the API is
- * worker-related: text that `src/index.ts` or `src/validate.ts` can reach must
- * go to `./core`, or the eager bundle grows, because an object literal cannot
- * be tree-shaken per property.
+ * Error strings thrown from `src/worker.ts`, the lazily loaded worker chunk.
+ * Add text here when the *chunk* throws it — not merely when the API is
+ * worker-related: text `src/index.ts` or `src/validate.ts` can reach belongs
+ * in `./core`, or the eager bundle grows (an object literal cannot be
+ * tree-shaken per property).
  */
 export const WorkerMessages = {
   WorkerUnsupported: 'Web Worker is not supported in the current environment',

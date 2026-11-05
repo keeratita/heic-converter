@@ -4,21 +4,21 @@ import { isDecoderPoisoned } from '../../src/wasm/fault';
 import { HeicConverterError } from '../../src/errors';
 
 /**
- * Mocked glue for the raw C ABI in build-wasm/wrapper/main.cpp. Tests express
- * decode outcomes as JS objects; the mock `_heic_decode` serializes them into
- * a fake heap the way the C++ does — 36-byte DecodeResult header (nine 4-byte
- * little-endian fields), stride-aware plane rows, exif/error payloads — so
- * wrapper.ts's DataView reads, JS-side copies, and the post-decode HEAPU8
- * re-read are all on the tested path.
+ * Mocked glue for the raw C ABI in `build-wasm/wrapper/main.cpp`.
  *
- * The struct ABI narrows what the mock can express, and that IS the contract
- * now: orientation is int32 by construction (DataView.getInt32) and exif is
- * pointer+length, so non-numeric orientation values and non-byte-array exif
- * fields are unreachable and no longer have tests. Out-of-range ints, short
- * blocks, error strings, and null results stay under test.
+ * - Tests express decode outcomes as JS objects; the mock `_heic_decode`
+ *   serializes them into a fake heap the way the C++ does — 36-byte
+ *   `DecodeResult` header (nine 4-byte little-endian fields), stride-aware
+ *   plane rows, exif/error payloads — so `wrapper.ts`'s DataView reads,
+ *   JS-side copies, and the post-decode `HEAPU8` re-read are all tested.
+ * - The struct ABI narrows what the mock can express, and that IS the
+ *   contract: orientation is int32 by construction (`DataView.getInt32`)
+ *   and exif is pointer+length, so non-numeric orientation values and
+ *   non-byte-array exif fields are unreachable and untested. Out-of-range
+ *   ints, short blocks, error strings, and null results stay under test.
  */
 
-const INPUT_SLOT = 16; // _malloc always hands out this address
+const INPUT_SLOT = 16; // `_malloc` always hands out this address
 
 const mockState = vi.hoisted(() => {
   const INITIAL_HEAP = 64 * 1024;
@@ -53,8 +53,8 @@ const mockState = vi.hoisted(() => {
     if (bytes <= state.heap.length) {
       return;
     }
-    // ALLOW_MEMORY_GROWTH simulation: a NEW buffer with the old bytes kept,
-    // and module.HEAPU8 re-pointed — wrapper.ts MUST re-read it after decode.
+    // `ALLOW_MEMORY_GROWTH` simulation: a NEW buffer with the old bytes kept,
+    // and `module.HEAPU8` re-pointed — `wrapper.ts` MUST re-read it after decode.
     let size = state.heap.length;
     while (size < bytes) size *= 2;
     const grown = new Uint8Array(size);
@@ -66,7 +66,7 @@ const mockState = vi.hoisted(() => {
   const alloc = (n: number): number => {
     const at = state.cursor;
     ensure(at + n);
-    state.cursor = (at + n + 3) & ~3; // keep the cursor 4-aligned for DataView
+    state.cursor = (at + n + 3) & ~3; // keep the cursor 4-aligned for `DataView`
     return at;
   };
 
@@ -185,7 +185,7 @@ vi.mock('../../src/wasm/wrapper/heic-decoder.js', () => ({
 
 describe('LibheifDecoder (mocked glue)', () => {
   // Smallest valid WASM module (magic + version): the wrapper compiles
-  // wasmBinary now, so option tests need real bytes, not an ArrayBuffer stub.
+  // `wasmBinary` now, so option tests need real bytes, not an `ArrayBuffer` stub.
   const MINIMAL_WASM = new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
 
   beforeEach(() => {
@@ -213,8 +213,8 @@ describe('LibheifDecoder (mocked glue)', () => {
       const decoder = new LibheifDecoder({ wasmBinary: MINIMAL_WASM });
       await decoder.initialize();
 
-      // Emscripten >=4 glue ignores Module.wasmBinary; the wrapper supplies
-      // the bytes via instantiateWasm.
+      // Emscripten >=4 glue ignores `Module.wasmBinary`; the wrapper supplies
+      // the bytes via `instantiateWasm`.
       expect(mockState.factory).toHaveBeenCalledWith({
         instantiateWasm: expect.any(Function),
       });
@@ -333,7 +333,7 @@ describe('LibheifDecoder (mocked glue)', () => {
     });
 
     it('should fall back to the no-detail message when the error struct carries no bytes', async () => {
-      // width=0 with error=0/error_len=0 (C++ make_error on an empty
+      // `width=0` with `error=0`/`error_len=0` (C++ make_error on an empty
       // message): still a decode failure, just without sanitizable detail.
       mockState.state.decode.mockReturnValue('');
 
@@ -346,7 +346,7 @@ describe('LibheifDecoder (mocked glue)', () => {
     });
 
     it('should clamp an oversized decoder error detail to 200 characters', async () => {
-      // Decoder strings reach error.message (logs, demo DOM): oversized
+      // Decoder strings reach `error.message` (logs, demo DOM): oversized
       // details clamp to 200 chars with an ellipsis, control chars stripped.
       const mockData = new Uint8Array([1, 2, 3, 4]);
       mockState.state.decode.mockReturnValue(`heif: ${'x'.repeat(300)} trailing`);
@@ -377,7 +377,6 @@ describe('LibheifDecoder (mocked glue)', () => {
       });
 
       const decoder = new LibheifDecoder();
-      // Don't call initialize() - should auto-initialize in decode()
       await decoder.decode(new Uint8Array([1, 2, 3, 4]));
 
       expect(mockState.factory).toHaveBeenCalledTimes(1);
@@ -409,10 +408,10 @@ describe('LibheifDecoder (mocked glue)', () => {
       await decoder.initialize();
       const result = await decoder.decode(new Uint8Array([1, 2, 3, 4]));
 
-      // The plane lives in the mock heap until _heic_result_free; the copy
-      // the wrapper takes must own its buffer...
+      // The plane lives in the mock heap until `_heic_result_free`; the copy
+      // the wrapper takes must own its buffer.
       expect(result.data.buffer).not.toBe(mockState.state.heap.buffer);
-      // ...so later glue-side writes cannot corrupt the caller's pixels.
+      // Later glue-side writes cannot corrupt the caller's pixels.
       mockState.state.heap.fill(0);
       expect(Array.from(result.data)).toEqual([9, 8, 7, 6]);
     });
@@ -434,7 +433,7 @@ describe('LibheifDecoder (mocked glue)', () => {
       await decoder.initialize();
 
       decoder.free();
-      decoder.free(); // Should not throw
+      decoder.free();
 
       expect(mockState.factory).toHaveBeenCalledTimes(1);
     });
@@ -539,8 +538,8 @@ describe('LibheifDecoder (mocked glue)', () => {
 
     it('should read the result header from the grown heap after memory growth', async () => {
       // Start on a heap too small for the plane: the mock grows it mid-decode
-      // (new buffer, module.HEAPU8 re-pointed). A wrapper that cached HEAPU8
-      // before the decode would read a stale buffer and misreport everything.
+      // (new buffer, `module.HEAPU8` re-pointed). A wrapper that cached
+      // `HEAPU8` before the decode would read a stale buffer and misreport everything.
       mockState.state.heap = new Uint8Array(4096);
       mockState.state.module.HEAPU8 = mockState.state.heap;
       const pixels = new Uint8Array(64 * 64 * 4).fill(7);
@@ -575,7 +574,7 @@ describe('LibheifDecoder (mocked glue)', () => {
       await decoder.initialize();
       await decoder.decode(new Uint8Array([1, 2, 3, 4]));
 
-      // Without a host callback the slot is installed as null, so the EM_JS
+      // Without a host callback the slot is installed as null, so the `EM_JS`
       // trampoline fires nothing and the slot is cleared afterwards.
       expect(slotDuringDecode).toBeNull();
       expect(mockState.state.module.__progressCb).toBeNull();
@@ -653,7 +652,7 @@ describe('LibheifDecoder (mocked glue)', () => {
 
     it('should stop delivering events after the host callback throws', async () => {
       // The wrapper nulls the slot on the first host throw — the containment
-      // the old per-call embind callback gave by construction.
+      // the old per-call `embind` callback gave by construction.
       const hostCalls: number[] = [];
       mockState.state.decode.mockImplementation(
         (_data: Uint8Array, fire: (percent: number) => void) => {
@@ -717,7 +716,7 @@ describe('LibheifDecoder (mocked glue)', () => {
       const [moduleArgs] = mockState.factory.mock.calls[0];
       expect(moduleArgs.wasmBinary).toBeUndefined();
       // The shim instantiates the prepared binary and hands the instance to
-      // the glue's receiveInstance callback.
+      // the glue's `receiveInstance` callback.
       const instance = await new Promise((resolve) =>
         moduleArgs.instantiateWasm({}, resolve)
       );
@@ -773,8 +772,8 @@ describe('LibheifDecoder (mocked glue)', () => {
       const decoder = new LibheifDecoder();
       await decoder.initialize();
 
-      // SECURITY.md promises a typed error rather than a raw module fault, with
-      // the original kept on `cause`, and a faulted heap must never be reused.
+      // `SECURITY.md` promises a typed error rather than a raw module fault,
+      // with the original kept on `cause`, and a faulted heap must never be reused.
       const error = await decoder.decode(new Uint8Array([1])).catch((e: unknown) => e);
       expect(error).toBeInstanceOf(HeicConverterError);
       expect((error as HeicConverterError).code).toBe('decode_failed');
@@ -800,11 +799,11 @@ describe('LibheifDecoder (mocked glue)', () => {
     });
 
     it('should copy input that is backed by the WASM heap before writing it back', async () => {
-      // Overlap/detach guard: input already living on the module heap must be
-      // copied out before `HEAPU8.set` writes it into the `_malloc` slot.
-      // Asserting the bytes that arrive is vacuous (source and destination
-      // don't overlap here, and `TypedArray#set` is memmove-safe anyway), so
-      // inspect the VIEW handed to set: it must be a copy, not the heap.
+      // Overlap/detach guard: heap-backed input must be copied out before
+      // `HEAPU8.set` writes it into the `_malloc` slot. Asserting the bytes
+      // that arrive is vacuous (no overlap here, `TypedArray#set` is
+      // memmove-safe anyway), so inspect the view handed to `set`: it must
+      // be a copy, not the heap.
       mockState.state.heap.set([9, 8, 7, 6], 0);
       mockState.state.decode.mockReturnValue({ width: 1, height: 1, data: new Uint8Array([1, 2, 3, 4]) });
       const heapBackedInput = new Uint8Array(mockState.state.heap.buffer, 0, 4);
@@ -833,7 +832,7 @@ describe('LibheifDecoder (mocked glue)', () => {
         _malloc: mockState.state.malloc,
         _free: mockState.state.free,
         _heic_decode: mockState.state.heicDecode,
-        // _heic_result_free and HEAPU8 deliberately missing
+        // `_heic_result_free` and `HEAPU8` are deliberately missing.
       });
 
       const decoder = new LibheifDecoder();
@@ -858,7 +857,7 @@ describe('LibheifDecoder (mocked glue)', () => {
     });
 
     it('clears the faulted flag on free() so a re-initialized decoder is leaseable', async () => {
-      // A fresh module means a fresh heap: the poison must not survive free()
+      // A fresh module means a fresh heap: the poison must not survive `free()`
       // or a re-initialized instance would be discarded by the pool forever.
       mockState.state.heicDecode.mockImplementationOnce(() => {
         throw new Error('wasm exploded');
@@ -914,7 +913,7 @@ describe('LibheifDecoder (mocked glue)', () => {
       // before starting the second one, mirroring real-world timing.
       await new Promise((r) => setTimeout(r, 0));
       decoder.free(); // abandons the first load
-      await decoder.initialize(); // newer load succeeds
+      await decoder.initialize();
 
       rejectFirst!(new Error('stale load failed'));
       await expect(first).rejects.toThrow('stale load failed');
@@ -961,7 +960,7 @@ describe('LibheifDecoder (mocked glue) - orientation reporting', () => {
   });
 
   it('normalizes out-of-range int32 orientations to identity', async () => {
-    // The header field is int32 by construction (DataView), so out-of-range
+    // The header field is int32 by construction (`DataView`), so out-of-range
     // integers are the only unusable values the ABI can carry.
     for (const garbage of [0, 9, -1, 255, 2147483647]) {
       const decoded = await decodeWith(garbage);
@@ -998,11 +997,11 @@ describe('LibheifDecoder (mocked glue) - exif reporting', () => {
     const decoded = await decodeWithExif(source);
 
     expect(decoded.exif).toBeInstanceOf(Uint8Array);
-    // The block lived in the mock heap until _heic_result_free: the wrapper
-    // must hand back an owned copy...
+    // The block lived in the mock heap until `_heic_result_free`: the wrapper
+    // must hand back an owned copy.
     expect((decoded.exif as Uint8Array).buffer).not.toBe(mockState.state.heap.buffer);
     expect(Array.from(decoded.exif as Uint8Array)).toEqual(Array.from(source));
-    // ...so glue-side writes afterwards cannot corrupt the consumer's block.
+    // Glue-side writes afterwards cannot corrupt the consumer's block.
     mockState.state.heap.fill(0);
     expect(Array.from(decoded.exif as Uint8Array)).toEqual(Array.from(source));
   });

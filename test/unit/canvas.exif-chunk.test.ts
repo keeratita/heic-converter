@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-// The EXIF writers are a lazy chunk. When it cannot be fetched the conversion must
-// still succeed and carry no EXIF, not reject with a module-load error.
+// The EXIF writers are a lazy chunk; when it cannot be fetched the conversion
+// must still succeed with no EXIF, not reject with a module-load error.
 vi.mock('../../src/render/exif', () => {
   throw new Error('Failed to fetch dynamically imported module .../dist/exif-XXXX.js');
 });

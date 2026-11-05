@@ -2,7 +2,7 @@
 // pinned SHA-256 baseline and that the glue contains no dynamic code
 // evaluation (the CSP guarantee from -s DYNAMIC_EXECUTION=0).
 //
-// Usage:
+// Invoke it directly:
 //   node build-scripts/verify-wasm-artifacts.mjs          # check (CI)
 //   node build-scripts/verify-wasm-artifacts.mjs --write  # after an intentional `npm run build:wasm`
 import { createHash } from 'node:crypto';
@@ -17,8 +17,8 @@ const ARTIFACTS = {
   'src/wasm/wrapper/heic-decoder.js': 'glue',
 };
 
-// Must stay false: the library is built with -s DYNAMIC_EXECUTION=0 so no
-// eval()/new Function() is ever emitted (CSP-compliance requirement).
+// The scan must stay clean: the library is built with `-s DYNAMIC_EXECUTION=0`,
+// so the glue never contains `eval()` or `new Function()` (the CSP guarantee).
 const FORBIDDEN_PATTERNS = [
   { label: 'eval(', pattern: /(^|[^\w.$])eval\s*\(/ },
   { label: 'new Function(', pattern: /new\s+Function\s*\(/ },

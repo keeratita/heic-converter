@@ -3,39 +3,21 @@ import type { DecodedImage } from '../../../src/types';
 import type { renderAndEncode } from '../../../src/render/canvas';
 
 /**
- * Shared mock harness for the convert.* unit tests. Vitest isolates modules
- * per test file, so the module-level `mockState` below is fresh for each
- * suite. Test files wire it up like this (the vi.mock factories must use
- * dynamic imports because they are hoisted above static imports):
+ * Shared mock harness for the `convert.*` unit tests.
  *
- * ```ts
- * import { mockState, resetConvertMocks } from './helpers/convert-mocks';
- *
- * vi.mock('../../src/render/canvas', async (importOriginal) => {
- *   const actual = await importOriginal<typeof import('../../src/render/canvas')>();
- *   const { mockState } = await import('./helpers/convert-mocks');
- *   return {
- *     ...actual,
- *     renderAndEncode: mockState.renderAndEncodeMock,
- *     assertEncodeEnvironment: mockState.assertEncodeEnvironmentMock,
- *     assertEncodeCapability: mockState.assertEncodeCapabilityMock,
- *   };
- * });
- *
- * vi.mock('../../src/wasm', async () => {
- *   const { MockLibheifDecoder } = await import('./helpers/convert-mocks');
- *   return { LibheifDecoder: MockLibheifDecoder };
- * });
- * ```
+ * - Vitest isolates modules per test file, so the module-level `mockState`
+ *   below is fresh for each suite.
+ * - `vi.mock` factories are hoisted above static imports, so the wiring must
+ *   `await import()` this module from inside the factory — see
+ *   `convert.many.test.ts` for the canonical setup.
  */
 
 export type DecodeImpl = (
   data: Uint8Array,
   onProgress?: (percent: number) => void,
   /**
-   * The mock decoder running this decode. A fault marks the *instance*, so a
-   * test that wants to exercise the pool's fault handling needs this handle to
-   * pass to the real `markFaulted` registry before throwing.
+   * The mock instance running this decode — a fault marks the *instance*, so
+   * pool-fault tests need this handle for the real `markFaulted` registry.
    */
   self?: MockDecoderInstance
 ) => Promise<DecodedImage>;
@@ -74,7 +56,7 @@ export const mockState: ConvertMockState = {
   initializeThrowValue: null,
 };
 
-/** Mock of LibheifDecoder used by the vi.mock('../../src/wasm') factory. */
+/** Mock of `LibheifDecoder` used by the `vi.mock('../../src/wasm')` factory. */
 export class MockLibheifDecoder {
   initialize = vi.fn(async (): Promise<void> => {
     if (mockState.initializeThrowValue !== null) {
@@ -106,15 +88,15 @@ interface NativeMockState {
   instances: MockDecoderInstance[];
   decodeShouldThrow: boolean;
   initializeShouldThrow: boolean;
-  /** When set, replaces the mock initialize (abort-timing scenarios). */
+  // When set, replaces the mock initialize (abort-timing scenarios).
   initializeImpl: (() => Promise<void>) | null;
-  /** When set, replaces the mock decode entirely (abort/delay scenarios). */
+  // When set, replaces the mock decode entirely (abort/delay scenarios).
   decodeImpl: (() => Promise<DecodedImage>) | null;
   isRefused: ReturnType<typeof vi.fn>;
   markRefused: ReturnType<typeof vi.fn>;
 }
 
-/** State for the vi.mock('../../src/wasm/native') factory; tests pre-seed `refused`. */
+/** State for the `vi.mock('../../src/wasm/native')` factory; tests pre-seed `refused`. */
 export const nativeMockState: NativeMockState = {
   refused: false,
   instances: [],
@@ -128,7 +110,7 @@ export const nativeMockState: NativeMockState = {
   }),
 };
 
-/** Mock of NativeHeicDecoder used by the vi.mock('../../src/wasm/native') factory. */
+/** Mock of `NativeHeicDecoder` used by the `vi.mock('../../src/wasm/native')` factory. */
 export class MockNativeHeicDecoder {
   initialize = vi.fn(async (): Promise<void> => {
     if (nativeMockState.initializeImpl) {
@@ -163,7 +145,7 @@ export class MockNativeHeicDecoder {
  * default for that suite's tests).
  */
 export function resetConvertMocks(overrides?: {
-  /** Typed as the real signature so a mock that drifts from it fails here. */
+  // Typed as the real signature so a mock that drifts from it fails here.
   renderAndEncode?: (...args: Parameters<typeof renderAndEncode>) => Promise<Blob>;
   decodeImpl?: DecodeImpl;
   decodedImage?: DecodedImage;
@@ -190,11 +172,11 @@ export function resetConvertMocks(overrides?: {
 }
 
 /**
- * The caller's options object doubles as the resize carrier — src/index.ts
- * hands it to renderAndEncode as the 4th argument and `validateResize` reads
- * only maxWidth/maxHeight/scale. When no resize is requested, none of those
- * keys may carry an effective value. Check per key: expect.not.objectContaining
- * only fails when ALL three keys are present, so a single-knob leak slips
+ * The caller's options object doubles as the resize carrier — `src/index.ts`
+ * hands it to `renderAndEncode` as the 4th argument and `validateResize` reads
+ * only `maxWidth`/`maxHeight`/`scale`, so none may carry an effective value
+ * when no resize is requested. Check per key: `expect.not.objectContaining`
+ * only fails when all three keys are present, so a single-knob leak slips
  * through it.
  */
 export function expectNoEffectiveResize(carrier: unknown): void {

@@ -3,23 +3,23 @@ import { Messages } from '../messages/core';
 import { HeicConverterError } from '../errors';
 import { validateCrop, validateFormat, validateResize } from '../validate';
 
-// Option validators live in src/validate.ts (single source of truth shared
-// with the orchestration layer); the render stage imports them directly for
-// its own up-front re-checks.
+// Option validators live in `src/validate.ts`, the single source of truth
+// shared with the orchestration layer; the render stage imports them directly
+// for its up-front re-checks.
 
 /**
- * Maximum supported canvas dimension per side (browsers cap around this):
- * turns absurd scale factors into a clear error instead of an allocation
- * failure. The WASM wrapper (main.cpp) and the native Strategy apply the same
- * cap before allocating — keep them in sync.
+ * Max canvas dimension per side (browsers cap around this): turns absurd scale
+ * factors into a clear error instead of an allocation failure. The WASM
+ * wrapper (`main.cpp`) and the native strategy apply the same cap before
+ * allocating — keep them in sync.
  */
 export const MAX_CANVAS_DIMENSION = 16384;
 
 /**
- * Cheap probe for canvas support, safe to call before an expensive decode.
- * Throws (unwrapped, with an actionable message) in environments with
- * neither OffscreenCanvas nor HTMLCanvasElement — notably plain Node.js,
- * where encoding is unsupported even though decoding works.
+ * Cheap probe safe to call before an expensive decode. Throws unwrapped (with
+ * an actionable message) in environments with neither `OffscreenCanvas` nor
+ * `HTMLCanvasElement` — notably plain Node.js, where encoding is unsupported
+ * even though decoding works.
  */
 export function assertEncodeEnvironment(): void {
   if (typeof OffscreenCanvas === 'undefined' && typeof document === 'undefined') {
@@ -27,25 +27,23 @@ export function assertEncodeEnvironment(): void {
   }
 }
 
-/**
- * Environment probe: some browsers cannot encode AVIF via canvas (e.g.
- * Safari), and per spec `toBlob` silently falls back to PNG — trusting the
- * requested type would emit a PNG under an AVIF label. Probed once. `false`
- * is a definitive refusal (the only verdict that may produce
- * `format_unsupported`); `undefined` is indeterminate (wedged `toBlob`,
- * throwing canvas under memory pressure) — callers proceed and let the
- * encode-time `blob.type` check decide.
- */
+// Environment probe: some browsers cannot encode AVIF via canvas (e.g.
+// Safari) and per spec `toBlob` silently falls back to PNG — trusting the
+// requested type would emit a PNG under an AVIF label. Probed once. `false`
+// is a definitive refusal (the only verdict that may produce
+// `format_unsupported`); `undefined` is indeterminate (wedged `toBlob`,
+// throwing canvas under memory pressure) — callers proceed and let the
+// encode-time `blob.type` check decide.
 type AvifSupport = boolean | undefined;
 
 let avifSupport: Promise<AvifSupport> | null = null;
 
-/** How long the probe's toBlob may take before the attempt is deemed indeterminate. Exported so tests control the window. */
+/** How long the probe's `toBlob` may take before the attempt is deemed indeterminate. Exported so tests control the window. */
 export const AVIF_PROBE_TIMEOUT_MS = 5000;
 
 /**
  * An indeterminate verdict is never cached as truth, but re-probing per call
- * would make a starved host pay the full timeout each time. The latest "don't
+ * would make a starved host pay the full timeout each time; the latest "don't
  * know" is honoured for this cooldown. Exported so tests advance past it, not
  * around it.
  */
@@ -62,7 +60,7 @@ async function runAvifProbe(): Promise<AvifSupport> {
     return undefined;
   }
   const pending = canvasToBlob(probe, 'image/avif');
-  // toBlob callbacks can be starved (backgrounded tabs): race against a
+  // `toBlob` callbacks can be starved (backgrounded tabs): race against a
   // deadline so a wedged probe can neither hang later conversions nor poison
   // the cache with a false negative.
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -71,8 +69,8 @@ async function runAvifProbe(): Promise<AvifSupport> {
   });
   try {
     const result = await Promise.race([pending, deadline]);
-    // `undefined` = indeterminate: a starved 1×1 toBlob says nothing about
-    // support; awaiters must not reject format_unsupported on it.
+    // `undefined` = indeterminate: a starved 1×1 `toBlob` says nothing about
+    // support; awaiters must not reject `format_unsupported` on it.
     return result === 'timeout' ? undefined : result.type === 'image/avif' && result.size > 0;
   } finally {
     /* v8 ignore else -- the deadline executor assigns timer synchronously */
@@ -181,10 +179,6 @@ export function computeTargetSize(
   return { width: targetWidth, height: targetHeight };
 }
 
-/**
- * Validates that computed target dimensions are finite and within the
- * supported canvas bounds.
- */
 function validateTargetSize(width: number, height: number): void {
   if (
     !Number.isFinite(width) ||
@@ -226,9 +220,9 @@ export async function blobToBase64(blob: Blob): Promise<string> {
 }
 
 /**
- * Encodes a canvas via the encoder it exposes: `convertToBlob` for an
- * OffscreenCanvas, `toBlob` for an HTMLCanvasElement. A null blob from the
- * latter is a `render_encode_failed`.
+ * Encodes a canvas via the encoder it exposes — `convertToBlob` for an
+ * `OffscreenCanvas`, `toBlob` for an `HTMLCanvasElement`. A null blob from
+ * the latter is a `render_encode_failed`.
  */
 export function canvasToBlob(
   canvas: HTMLCanvasElement | OffscreenCanvas,
@@ -236,11 +230,9 @@ export function canvasToBlob(
   quality?: number
 ): Promise<Blob> {
   if ('convertToBlob' in canvas) {
-    // OffscreenCanvas API
     return canvas.convertToBlob({ type, quality });
   }
 
-  // HTMLCanvasElement API
   return new Promise<Blob>((resolve, reject) => {
     canvas.toBlob(
       (blob) => {
@@ -256,9 +248,7 @@ export function canvasToBlob(
   });
 }
 
-/**
- * Creates a canvas of the given size, preferring OffscreenCanvas.
- */
+// Creates a canvas of the given size, preferring `OffscreenCanvas`.
 function createCanvas(width: number, height: number): HTMLCanvasElement | OffscreenCanvas {
   if (typeof OffscreenCanvas !== 'undefined') {
     return new OffscreenCanvas(width, height);
@@ -272,12 +262,10 @@ function createCanvas(width: number, height: number): HTMLCanvasElement | Offscr
   throw new HeicConverterError('unsupported_environment', Messages.CanvasUnsupported);
 }
 
-/**
- * Releases the backing store of a canvas so its memory can be reclaimed
- * before a long-running encode step.
- */
+// Releases the backing store of a canvas so its memory can be reclaimed
+// before a long-running encode step.
 function releaseCanvas(canvas: HTMLCanvasElement | OffscreenCanvas): void {
-  // OffscreenCanvas.close() exists at runtime but is missing from the
+  // `OffscreenCanvas.close()` exists at runtime but is missing from the
   // TypeScript DOM lib, so probe it structurally.
   const closable = canvas as OffscreenCanvas & { close?: () => void };
   if (typeof closable.close === 'function') {
@@ -287,9 +275,6 @@ function releaseCanvas(canvas: HTMLCanvasElement | OffscreenCanvas): void {
   }
 }
 
-/**
- * Writes RGBA pixel data onto a canvas context.
- */
 function writeImageData(
   ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D,
   data: Uint8ClampedArray,
@@ -297,27 +282,27 @@ function writeImageData(
   height: number
 ): void {
   if (typeof ImageData !== 'undefined') {
-    // TypeScript may complain about ArrayBufferLike vs ArrayBuffer, but at runtime
-    // the WASM decoder produces a standard ArrayBuffer-backed Uint8ClampedArray.
+    // The WASM decoder produces a standard `ArrayBuffer`-backed
+    // `Uint8ClampedArray`; the cast only papers over TypeScript's
+    // `ArrayBufferLike` view of it.
     ctx.putImageData(
       new ImageData(data as unknown as Uint8ClampedArray<ArrayBuffer>, width, height),
       0,
       0
     );
   } else {
-    // Fallback for environments where ImageData constructor isn't available but ctx.createImageData is
+    // Fallback for environments without the `ImageData` constructor but with
+    // `ctx.createImageData`.
     const created = ctx.createImageData(width, height);
     created.data.set(data);
     ctx.putImageData(created, 0, 0);
   }
 }
 
-/**
- * Canvas transform matrices mapping stored `w×h` pixels into their
- * EXIF-orientation display space (orientations 2–8; 5–8 swap the axes).
- * Returns null for orientation 1 (identity). Composed with the resize scale
- * before `setTransform`, so rotation and downscale share one drawImage.
- */
+// Canvas transform matrices mapping stored `w×h` pixels into their
+// EXIF-orientation display space (orientations 2–8; 5–8 swap the axes).
+// Returns null for orientation 1 (identity). Composed with the resize scale
+// before `setTransform`, so rotation and downscale share one `drawImage`.
 function orientationMatrix(
   orientation: number,
   w: number,
@@ -343,10 +328,8 @@ function orientationMatrix(
   }
 }
 
-/**
- * Normalizes a DecodedImage orientation to a usable EXIF value (1-8).
- * Anything else (absent, injected decoder, garbage) means identity.
- */
+// Normalizes a `DecodedImage` orientation to a usable EXIF value (1-8).
+// Anything else (absent, injected decoder, garbage) means identity.
 function effectiveOrientation(orientation: number | undefined, apply: boolean): number {
   if (!apply || typeof orientation !== 'number' || !Number.isInteger(orientation)) {
     return 1;
@@ -356,12 +339,10 @@ function effectiveOrientation(orientation: number | undefined, apply: boolean): 
 
 let exifChunkWarned = false;
 
-/**
- * Re-inject the source EXIF block into freshly encoded JPEG/PNG bytes when
- * `preserveExif` is on. Fail-safe: returns the original blob when the flag
- * is off, no block was decoded, or the injector refused to modify
- * unparsable output (metadata loss beats a corrupt image, always).
- */
+// Re-injects the source EXIF block into freshly encoded JPEG/PNG bytes when
+// `preserveExif` is on. Fail-safe: returns the original blob when the flag is
+// off, no block was decoded, or the injector refused to modify unparsable
+// output — metadata loss beats a corrupt image, always.
 async function withExif(
   blob: Blob,
   decoded: DecodedImage,
@@ -375,8 +356,8 @@ async function withExif(
   }
   // Opt-in (metadata can carry GPS), so the injectors are a lazy chunk. A
   // failed fetch is part of the fail-safe contract: convert without EXIF, but
-  // say so once — a missing dist/exif-*.mjs must not look like a file with no
-  // Exif item.
+  // say so once — a missing `dist/exif-*.mjs` must not look like a file with
+  // no Exif item.
   const exifModule = await import('./exif').catch(() => null);
   if (!exifModule) {
     if (!exifChunkWarned) {
@@ -398,12 +379,13 @@ async function withExif(
     return blob;
   }
   // `injected` is only distinct from `bytes` when the injector built a fresh
-  // whole-buffer Uint8Array, so `.buffer` is its complete payload.
+  // whole-buffer `Uint8Array`, so `.buffer` is its complete payload.
   return new Blob([injected.buffer as ArrayBuffer], { type: blob.type });
 }
 
 /**
- * Renders DecodedImage pixel data onto a canvas and encodes it into the target format.
+ * Renders `DecodedImage` pixel data onto a canvas and encodes it into the
+ * target format.
  */
 export async function renderAndEncode(
   decoded: DecodedImage,
@@ -414,14 +396,14 @@ export async function renderAndEncode(
   crop?: CropOptions,
   preserveExif = false
 ): Promise<Blob> {
-  // Reject unknown formats before any canvas/pixel work happens.
+  // Reject unknown formats before any canvas or pixel work.
   validateFormat(format);
   validateCrop(crop);
 
   const normalizedFormat = format.toLowerCase();
   // AVIF cannot be encoded by every canvas implementation and a failed
-  // toBlob() would silently emit a PNG. Only a definitive `false` rejects;
-  // indeterminate defers to the blob.type check below.
+  // `toBlob()` would silently emit a PNG. Only a definitive `false` rejects;
+  // indeterminate defers to the `blob.type` check below.
   if (normalizedFormat === 'avif' && (await canEncodeAvif()) === false) {
     throw new HeicConverterError('format_unsupported', Messages.FormatUnsupported('avif'));
   }
@@ -434,7 +416,6 @@ export async function renderAndEncode(
     throw new HeicConverterError('render_encode_failed', Messages.InvalidDimensions(width, height));
   }
 
-  // Validate data length matches expected dimensions
   const expectedLength = width * height * 4;
   if (data.length !== expectedLength) {
     throw new HeicConverterError(
@@ -445,8 +426,8 @@ export async function renderAndEncode(
 
   const orientation = effectiveOrientation(decoded.orientation, applyOrientation);
   // The injected EXIF may keep its orientation tag verbatim only when a
-  // pending rotation was NOT applied (applyOrientation:false keeps the stored
-  // geometry); upright output needs tag 274 normalized to 1.
+  // pending rotation was NOT applied (`applyOrientation: false` keeps the
+  // stored geometry); upright output needs tag 274 normalized to 1.
   const pendingRotation =
     decoded.orientation !== undefined && decoded.orientation >= 2 && decoded.orientation <= 8;
   const normalizeExifOrientation = !pendingRotation || applyOrientation;
@@ -490,7 +471,7 @@ export async function renderAndEncode(
     writeImageData(sourceCtx, data, width, height);
     if (needsTransform) {
       // Compose stored → display (orientation matrix) → crop translate →
-      // resize scale in one canvas transform: setTransform maps stored
+      // resize scale in one canvas transform: `setTransform` maps stored
       // pixel p=(px,py) to (A·px + C·py + E, B·px + D·py + F).
       const sx = target.width / regionWidth;
       const sy = target.height / regionHeight;
@@ -540,8 +521,8 @@ export async function renderAndEncode(
   }
   /* v8 ignore else -- jpeg/jpg/png/webp/avif all return above; validateFormat admits nothing else */
   if (normalizedFormat === 'svg') {
-    // SVG wrapping of the raster image (an <image> element embedding a PNG —
-    // note this is a wrapper format, not vector output; PNG is smaller).
+    // SVG wrapping of the raster image (an `<image>` element embedding a
+    // PNG — a wrapper format, not vector output; PNG is smaller).
     const pngBlob = await canvasToBlob(canvas, 'image/png');
     // The canvas is fully consumed by encode; release its backing store
     // before the base64/SVG assembly, which is the memory-heavy stage.
@@ -555,7 +536,6 @@ export async function renderAndEncode(
     // into an intermediate full-size concatenated string.
     return new Blob([svgPrefix, base64Url, svgSuffix], { type: 'image/svg+xml' });
   }
-  // Unreachable: validateFormat rejected other formats above.
   /* v8 ignore next 1 -- no supported format reaches here */
   throw new HeicConverterError('invalid_format', Messages.UnsupportedFormat(String(format)));
 }

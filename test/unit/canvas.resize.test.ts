@@ -24,11 +24,11 @@ const createMockDecodedImage = (width: number, height: number): DecodedImage => 
 describe('renderAndEncode - Resize', () => {
   let mockCtx: MockContext;
   let createdCanvases: MockCanvasObject[];
-  // Queued getContext() results (one per canvas creation); when exhausted,
-  // the shared mockCtx is returned. Lets tests fail the source-canvas
-  // context lookup specifically.
+  // Queued `getContext()` results (one per canvas creation); when exhausted,
+  // the shared mockCtx is returned. Lets a test fail the source-canvas context
+  // lookup specifically.
   let contextResults: unknown[];
-  // Per-test toBlob behaviour, shared by every canvas created in that test.
+  // Per-test `toBlob` behaviour, shared by every canvas created in that test.
   let toBlobImpl: (
     callback: (blob: Blob | null) => void,
     type?: string,
@@ -52,10 +52,10 @@ describe('renderAndEncode - Resize', () => {
     contextResults = [];
     toBlobImpl = (callback) => callback(new Blob(['blob'], { type: 'image/jpeg' }));
 
-    // Each createElement() yields an independent canvas: the resize path
-    // creates a target canvas first and a full-resolution source canvas
-    // second, and releaseCanvas() zeroes them at different times — sharing
-    // one stub between them would hide that.
+    // Each `createElement()` yields an independent canvas: the resize path
+    // creates the target canvas first and the full-resolution source second,
+    // and `releaseCanvas()` zeroes them at different times — a shared stub
+    // would hide that.
     global.document = {
       createElement: vi.fn(() => {
         const results = contextResults;
@@ -116,9 +116,9 @@ describe('renderAndEncode - Resize', () => {
     const mockBlob = new Blob(['jpeg-data'], { type: 'image/jpeg' });
     const stateAtEncode: Array<{ sourceWidth: number; target: [number, number] }> = [];
     toBlobImpl = (callback) => {
-      // Peak-memory fix: the full-res source must be released before the
-      // encode runs, while the target is still alive at its scaled size.
-      // releaseCanvas() frees the HTMLCanvasElement backing store via width=0.
+      // Peak-memory fix: the full-res source is released before the encode
+      // runs, while the target is alive at its scaled size. `releaseCanvas()`
+      // frees the HTMLCanvasElement backing store via `width=0`.
       stateAtEncode.push({
         sourceWidth: sourceCanvas().width,
         target: [targetCanvas().width, targetCanvas().height],
@@ -209,7 +209,7 @@ describe('renderAndEncode - Resize', () => {
 
   it('should use the resized dimensions in the SVG output', async () => {
     const decoded = createMockDecodedImage(200, 100);
-    // The SVG embed path reads arrayBuffer() + btoa, so a real Blob works.
+    // The SVG embed path reads `arrayBuffer()` + `btoa`, so a real Blob works.
     const mockPngBlob = new Blob(['png-data'], { type: 'image/png' });
     toBlobImpl = (callback) => callback(mockPngBlob);
 

@@ -1,7 +1,6 @@
 #!/bin/bash
 set -e
 
-# Configuration
 LIBDE265_VERSION="1.1.3"
 LIBHEIF_VERSION="1.23.7"
 EMSDK_VERSION="6.0.13"
@@ -14,7 +13,7 @@ mkdir -p "$BUILD_DIR"
 mkdir -p "$OUT_DIR"
 mkdir -p "$(dirname "$WASM_JS_OUT")"
 
-# Compile the tracked C++ wrapper directly; never regenerate it here.
+# The wrapper is tracked first-party source — compiled here, never generated.
 if [ ! -f "$BUILD_DIR/wrapper/main.cpp" ]; then
   echo "Error: $BUILD_DIR/wrapper/main.cpp is missing." >&2
   echo "It is a tracked first-party file; restore it with: git checkout -- build-wasm/wrapper/main.cpp" >&2
@@ -24,11 +23,10 @@ fi
 echo "Starting Docker-based Emscripten build..."
 
 # --force: the in-container patch scripts edit the submodule trees, so a rerun
-# must be able to reset them even when a previous build left them modified;
-# the tag check below still pins provenance.
+# must be able to reset them; the tag check below still pins provenance.
 git submodule update --init --recursive --force
 
-# The submodule commit is the version marker; verify it matches the pinned tags
+# The submodule commit is the version marker; verify it matches the pinned tags.
 LIBHEIF_CHECKOUT="$(git -C "$BUILD_DIR/src/libheif" describe --tags --exact-match 2>/dev/null || echo 'unknown')"
 LIBDE265_CHECKOUT="$(git -C "$BUILD_DIR/src/libde265" describe --tags --exact-match 2>/dev/null || echo 'unknown')"
 if [ "$LIBHEIF_CHECKOUT" != "v${LIBHEIF_VERSION}" ]; then
@@ -54,10 +52,10 @@ apt-get update && apt-get install -y autoconf automake libtool pkg-config
 mkdir -p build-wasm/src
 cd build-wasm/src
 
-# 1. Build libde265 (CMake-only since v1.1.0)
-# Cache reuse is gated on version + a hash of this script and the two libheif
-# patch inputs (they change libheif.a without touching this file);
-# over-invalidating on comment-only edits is the safe direction.
+# 1. Build libde265 (CMake-only since v1.1.0).
+# Cache key = version + hashes of this script and the two libheif patch inputs
+# (they change libheif.a without touching this file); over-invalidating on
+# comment-only edits is the safe direction.
 SCRIPT_HASH=\$(md5sum /src/build-scripts/build-wasm.sh /src/build-scripts/neutralize-libheif-diagnostics.py /src/build-scripts/libheif-no-streams.h | md5sum | cut -c1-12)
 
 cd libde265
@@ -81,28 +79,28 @@ else
     -DWITH_FUZZERS=OFF \
     -DCMAKE_C_FLAGS=\"-Oz\" \
     -DCMAKE_CXX_FLAGS=\"-Oz\"
-  # Archives compile at -Oz; the link stays at -O3 (step 3). Archive flags
-  # cannot touch the import/export contract: identical glue, smaller module
-  # (1,294,646 -> 829,227 B raw / 413,850 -> 300,609 B gz), output pinned
-  # byte-identical by test/unit/wasm-golden.test.ts.
+  # Archives at -Oz; the link stays -O3 (step 3). Archive flags cannot touch the
+  # import/export contract: identical glue, smaller module (1,294,646 ->
+  # 829,227 B raw / 413,850 -> 300,609 B gz), output pinned byte-identical by
+  # test/unit/wasm-golden.test.ts.
   emmake make -j\$(nproc) de265
   cd ..
   touch build/.built-v\${LIBDE265_VERSION}-\${SCRIPT_HASH}
 fi
 # libde265 >= 1.1.0: de265.h includes <libde265/de265-version.h>, which CMake
-# generates into the build dir; copy it into the source tree so libheif finds
-# it via LIBDE265_INCLUDE_DIR.
+# generates into the build dir — copy it to the source tree for libheif's
+# LIBDE265_INCLUDE_DIR.
 if [ -f build/libde265/de265-version.h ]; then
   cp build/libde265/de265-version.h libde265/de265-version.h
 fi
 cd ..
 
-# 2. Build libheif
+# 2. Build libheif.
 python3 /src/build-scripts/patch-libheif.py
-# Stub the debug-only diagnostic printers; with the -include shim below this
-# drops libc++ iostream+locale (~18% gz, canonical figures in AGENTS.md).
-# Fails loudly if a libheif bump reshapes the diagnostics; output verified
-# byte-identical by test/unit/wasm-golden.test.ts.
+# Stubs the debug-only diagnostic printers; with the -include shim below this
+# drops libc++ iostream+locale (~18% gz; canonical figures in AGENTS.md). Fails
+# loudly if a libheif bump reshapes them; output pinned byte-identical by
+# test/unit/wasm-golden.test.ts.
 python3 /src/build-scripts/neutralize-libheif-diagnostics.py
 
 cd libheif
@@ -113,7 +111,7 @@ else
   rm -rf build
   mkdir -p build
   cd build
-  # libheif locates libde265 via pkg-config
+  # libheif locates libde265 via pkg-config.
   export PKG_CONFIG_PATH=\"/src/build-wasm/src/libde265/build/libde265:\$PKG_CONFIG_PATH\"
 
   emcmake cmake .. \
@@ -141,23 +139,22 @@ else
     -DWITH_EXAMPLES=OFF \\
     -DCMAKE_C_FLAGS=\"-Oz\" \\
     -DCMAKE_CXX_FLAGS=\"-Oz -DLIBHEIF_BOX_EMSCRIPTEN_H -include /src/build-scripts/libheif-no-streams.h\"
-    # -include libheif-no-streams.h replaces std::stringstream with a
-    # non-logging fake: error codes and control flow survive, streamed text
-    # does not. The link-map guard below fails the build if libc++ iostream
-    # gets linked anyway.
-  # The WITH_* knobs are libheif's generated per-codec options (an option()
-  # loop over its codec table): a name the pinned version does not declare is
-  # silently ignored, not an error — this set is diffed against v1.23.7. The
-  # old WITH_AOM/WITH_JPEG/WITH_OPENJPEG spelled options that never existed,
-  # leaving the real knobs at their ON defaults and relying on the emsdk image
-  # lacking those dev packages; correct spelling makes exclusion structural.
+    # -include libheif-no-streams.h swaps std::stringstream for a non-logging
+    # fake: error codes and control flow survive, streamed text does not. The
+    # link-map guard below fails the build if libc++ iostream links anyway.
+  # The WITH_* knobs are libheif's generated per-codec options (an option() loop
+  # over its codec table): a name v1.23.7 does not declare is silently ignored,
+  # not an error, so this set is diffed against that tag. The old
+  # WITH_AOM/WITH_JPEG/WITH_OPENJPEG spelled options that never existed, leaving
+  # the real knobs at their ON defaults and relying on the emsdk image lacking
+  # those dev packages — correct spelling makes exclusion structural.
   # WITH_LIBSHARPYUV stays ON: inert (its find_package never resolves).
   # -DLIBHEIF_BOX_EMSCRIPTEN_H compiles out libheif's dead EMSCRIPTEN_BINDINGS
   # block (the link is without --bind): ~5,451 B gz on top of -Oz.
   emmake make -j\$(nproc)
-  # Guard: no third-party codec may be linked in. Plugin wrappers compile in
-  # on find_package resolution, not the options above, so check the cache.
-  # libde265 is the sole intended codec (passed explicitly).
+  # Guard: no third-party codec may link in. Plugin wrappers compile in on
+  # find_package resolution, not the options above, so check the cache; libde265
+  # is the sole intended codec (passed explicitly).
   if grep -iqE '(AOM|JPEG|OpenJPEG|X264|X265|DAV1D|SvtEnc|RAV1E|H264|SHARPYUV|WEBP)[A-Z_]*_FOUND:BOOL=(TRUE|1|ON|YES)' CMakeCache.txt \
      || grep -iqE '(AOM|JPEG|OpenJPEG|X264|X265|DAV1D|SvtEnc|RAV1E|H264|SHARPYUV)[A-Z_]*(_LIBRARY|_DIR):(FILEPATH|PATH)=/[^/]' CMakeCache.txt; then
     echo 'Error: libheif resolved a third-party codec (inspect build/CMakeCache.txt).' >&2
@@ -170,17 +167,18 @@ else
 fi
 cd ..
 
-# 3. Compile the WASM wrapper (source: build-wasm/wrapper/main.cpp)
+# 3. Compile the WASM wrapper (source: build-wasm/wrapper/main.cpp).
 echo 'Compiling WebAssembly wrapper...'
 
-# Strict-CSP WASM link (-s DYNAMIC_EXECUTION=0: no eval/new Function ever).
-# Flags that must be preserved (AGENTS.md): DYNAMIC_EXECUTION=0,
-# ALLOW_MEMORY_GROWTH=1, EXPORT_ES6=1, MODULARIZE=1, ENVIRONMENT,
-# MALLOC=emmalloc, FILESYSTEM=0, link -O3, the raw C ABI exports (a --bind-
-# less link; re-adding --bind re-ships ~13.7 KB gz of embind tables for
-# nothing), and the post-link wasm-opt below. Size also depends on the two
-# libheif patches above and the link-map guard below, which fails the build
-# when they stop biting.
+# Strict-CSP link: -s DYNAMIC_EXECUTION=0 means no eval/new Function is ever
+# emitted. What must be preserved (AGENTS.md):
+# - DYNAMIC_EXECUTION=0, ALLOW_MEMORY_GROWTH=1, EXPORT_ES6=1, MODULARIZE=1,
+#   ENVIRONMENT, MALLOC=emmalloc, FILESYSTEM=0, and link -O3
+# - the raw C ABI exports: the link is without --bind (re-adding --bind re-ships
+#   ~13.7 KB gz of embind tables for nothing)
+# - the post-link wasm-opt below; size also depends on the two libheif patches
+#   above and the link-map guard below, which fails the build when they stop
+#   biting
 #
 # Link -O3 is the only level verified to instantiate: -O2 fails real decodes;
 # -Os/-Oz/-flto build smaller modules that die at instantiate (function import
@@ -188,12 +186,12 @@ echo 'Compiling WebAssembly wrapper...'
 #
 # FILESYSTEM=0 is safe because decoding is memory-only
 # (read_from_memory_without_copy in, raw RGBA out; libde265's lone fopen sits
-# inside #if 0). Syscall stubs replace MEMFS: glue halved, module
-# byte-identical; a filesystem-using libheif would abort on first decode.
+# inside #if 0). Syscall stubs replace MEMFS: glue halved, module byte-identical;
+# a filesystem-using libheif would abort on first decode.
 #
-# -fexceptions: for the wrapper TU's own std:: allocations only; host progress
-# throws are contained by the EM_JS trampoline in main.cpp, never by unwinding
-# through libheif.
+# -fexceptions: the wrapper TU's own std:: allocations only; host progress throws
+# are contained by the EM_JS trampoline in main.cpp, never by unwinding through
+# libheif.
 # EXPORTED_FUNCTIONS/EXPORTED_RUNTIME_METHODS: the pointer protocol in
 # src/wasm/wrapper.ts (_malloc upload, _heic_decode, DecodeResult header read,
 # _heic_result_free release).
@@ -223,9 +221,9 @@ em++ ${WRAPPER_SRC} \\
 # Post-link size pass: binaryen runs on the emitted module after the glue is
 # final, so it cannot desynchronize imports the way emcc link-level size flags
 # do. --zero-filled-memory drops the all-zero data segment (~110 KB section;
-# worth 7.5 KB gz / 5.8 KB brotli with MALLOC=emmalloc). The --enable flags
-# are mandatory: this binaryen gates on CLI features, not the module, and
-# rejects wasm-ld's memory.copy/fill and trunc_sat output without them.
+# worth 7.5 KB gz / 5.8 KB brotli with MALLOC=emmalloc). The --enable flags are
+# mandatory: this binaryen gates on CLI features, not the module, and rejects
+# wasm-ld's memory.copy/fill and trunc_sat output without them.
 # Separate statements, NOT one && list: set -e does not fire before the final
 # && of a list, and the SIMD experiment proved a failed wasm-opt here silently
 # ships the unoptimized module (pinned by test/unit/build-wasm-script.test.ts).
@@ -254,17 +252,16 @@ if grep -qE 'libc\+\+[^ ]*\.a\((iostream|ostream|strstream)\.o\)' /src/build-was
 fi
 rm -f /src/build-wasm/wrapper/heic-decoder.map
 
-# Copy artifacts
 cp /src/build-wasm/wrapper/heic-decoder.wasm /src/src/wasm/public/
 cp /src/build-wasm/wrapper/heic-decoder.js /src/src/wasm/wrapper/
 echo 'Build complete!'
 " 2>&1 | tee "$BUILD_LOG"
-# set -e cannot see a failed docker run through the pipe (the pipeline status
-# is tee's); read the container status so the error can name the exit code.
+# The pipeline status is tee's, so set -e cannot see a failed docker run through
+# the pipe; read the container status so the error can name the exit code.
 container_status=${PIPESTATUS[0]}
 
 # The container script is one bash -c string: a stray double quote silently
-# truncates it and docker still exits 0 with nothing built. Require the
+# truncates it and docker still exits 0 with nothing built, so require the
 # sentinel, not the exit code.
 if ! grep -q 'Build complete!' "$BUILD_LOG"; then
   rm -f "$BUILD_LOG"

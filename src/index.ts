@@ -41,14 +41,12 @@ import type { WorkerBatchOptions, WorkerConvertOptions } from './worker';
 
 /**
  * Lazily loads the worker chunk so in-process callers never pay for the worker
- * transport. `import()` is cached per specifier by the host, so every caller
- * gets the same module instance and therefore shares one per-URL worker
- * semaphore — keep this dynamic; a static `import './worker'` would put the
- * transport in the eager chunk (guarded by test/unit/bundle.test.ts).
- *
- * A failed chunk *fetch* becomes `worker_load_failed`; errors from the worker
- * implementation itself pass through, so these entry points only ever reject
- * with a `HeicConverterError`.
+ * transport. The host caches `import()` per specifier, so all callers share
+ * one module — and one per-URL worker semaphore. Keep it dynamic: a static
+ * import would push the transport into the eager chunk (guarded by
+ * test/unit/bundle.test.ts). A failed chunk *fetch* becomes
+ * `worker_load_failed`; worker-internal errors pass through, so these entry
+ * points only ever reject with a `HeicConverterError`.
  */
 function loadWorkerModule(): Promise<typeof import('./worker')> {
   return import('./worker').catch((cause: unknown) => {
@@ -62,11 +60,10 @@ function loadWorkerModule(): Promise<typeof import('./worker')> {
 
 /**
  * Converts a HEIC image inside a Web Worker so the main thread stays responsive
- * during the (potentially slow) WASM decode. This is the public entry point; the
- * implementation lives in `src/worker.ts` and is fetched as a lazy chunk on the
- * first call, so a deployment missing that chunk rejects with
- * `worker_load_failed` (original failure on `cause`) rather than a raw
- * module-load error.
+ * during the (potentially slow) WASM decode. The implementation lives in
+ * `src/worker.ts`, fetched as a lazy chunk on the first call — a deployment
+ * missing that chunk rejects with `worker_load_failed` (original failure on
+ * `cause`) rather than a raw module-load error.
  *
  * The worker script is user-provided and must handle the following message
  * protocol (types are exported as {@link WorkerProgressMessage} and
@@ -140,14 +137,12 @@ export function convertHeicInWorker<S extends OutputShape = 'blob'>(
  * semantics (input order, bounded concurrency, `batch_item_failed` aggregation
  * or `continueOnError` per-item results). Concurrency is bounded by
  * `maxConcurrentWorkers` (default `navigator.hardwareConcurrency` clamped to
- * 1–8): items queue behind the worker semaphore, so a large batch never
- * exhausts memory or the browser's worker limit. Workers are pooled per
- * `workerUrl`, so items reuse live instances rather than paying boot per
- * item (see the worker-protocol note above — the script must stay alive
- * across requests). Via {@link convertHeicInWorker}, which means `decoder`
- * cannot be injected and `workerUrl` is required. See that function for the
- * worker script protocol and the caveats about `timeoutMs`, the worker
- * boundary, and `worker_load_failed`.
+ * 1–8), so a large batch never exhausts memory or the browser's worker limit;
+ * workers are pooled per `workerUrl`, so items reuse live instances instead
+ * of paying boot per item (the script must stay alive across requests — see
+ * the protocol above). Runs via {@link convertHeicInWorker}: `decoder` cannot
+ * be injected and `workerUrl` is required — see it for the protocol and the
+ * `timeoutMs`, worker-boundary, and `worker_load_failed` caveats.
  *
  * ```ts
  * const blobs = await convertManyInWorker(heicFiles, {
@@ -206,10 +201,7 @@ export function freeSharedDecoder(): void {
 }
 
 
-/**
- * Converts a Blob to the requested output representation. The base64 path
- * reuses the canvas module's `blobToBase64` (arrayBuffer + btoa).
- */
+/** Reshapes a Blob to the requested output; base64 reuses the canvas module's `blobToBase64`. */
 async function shapeOutput<S extends OutputShape>(blob: Blob, output: S): Promise<ConvertResult<S>> {
   if (output === 'dataUrl') {
     return (await blobToBase64(blob)) as ConvertResult<S>;
@@ -222,10 +214,8 @@ async function shapeOutput<S extends OutputShape>(blob: Blob, output: S): Promis
 
 /**
  * Resolves any supported input form to a Uint8Array, including cross-realm
- * Blob-likes (detected via `arrayBuffer()` — a Blob from another realm fails
- * `instanceof Blob`) and every ArrayBufferView (DataView, non-Uint8 typed
- * arrays, SharedArrayBuffer-backed views), which the public `HeicInput` type
- * declares.
+ * Blob-likes (`instanceof Blob` fails across realms, so duck-type on
+ * `arrayBuffer()`) and every ArrayBufferView the public `HeicInput` declares.
  */
 async function resolveInputBytes(input: HeicInput): Promise<Uint8Array> {
   if (input instanceof Uint8Array) {
@@ -261,9 +251,9 @@ async function resolveInputBytes(input: HeicInput): Promise<Uint8Array> {
 
 /**
  * The `nativeDecode` selection policy — the single source consulted by both
- * `convertHeic`'s Strategy pick and `convertMany`'s pool gate, so they can
- * never drift. The native Strategy yields no Exif item and cannot report
- * stored geometry, so those options pin the libheif path.
+ * `convertHeic`'s strategy pick and `convertMany`'s pool gate, so they cannot
+ * drift. The native path yields no Exif item and cannot report stored
+ * geometry, so those options pin the libheif path.
  */
 function nativeDecodeEligible(
   options: Pick<ConvertOptions, 'nativeDecode' | 'preserveExif' | 'applyOrientation'> | undefined
@@ -317,21 +307,20 @@ export async function convertHeic<S extends OutputShape = 'blob'>(
   const format = options?.to ?? 'jpeg';
   validateConvertOptions(options);
   // Probe the environment before the expensive WASM load so the error names
-  // the real cause (no canvas) instead of a decode-stage failure; the AVIF
-  // capability probe runs here too so unsupported engines never pay for a
-  // decode (renderAndEncode keeps a defensive re-check for worker realms).
+  // the real cause (no canvas), and run the AVIF probe here too — unsupported
+  // engines never pay for a decode (renderAndEncode keeps a defensive
+  // re-check for worker realms).
   assertEncodeEnvironment();
   await assertEncodeCapability(format);
   const signal = options?.signal;
   throwIfAborted(signal);
 
-  // The full options object doubles as the resize carrier (`ConvertOptions
-  // extends ResizeOptions`): validateResize/computeTargetSize no-op when no
-  // knob is set, so gating on "does any knob exist" in a second place here
-  // would only create a drift opportunity.
+  // The options object doubles as the resize carrier (ConvertOptions extends
+  // ResizeOptions): validateResize/computeTargetSize no-op without a knob, so
+  // re-gating on "any knob exists" here would only create a drift opportunity.
   const resizeOptions = options;
 
-  // 2. Resolve input to a Uint8Array
+  // 2. Resolve input to a Uint8Array.
   const buffer = await resolveInputBytes(input);
   throwIfAborted(signal);
 
@@ -429,7 +418,7 @@ export async function convertHeic<S extends OutputShape = 'blob'>(
     freeDecoder();
     throwIfAborted(signal);
 
-    // 5. Render to canvas and encode to target format
+    // 5. Render to canvas and encode to target format.
     const quality = options?.quality !== undefined ? options.quality : DEFAULT_QUALITY;
 
     let blob: Blob;
@@ -470,16 +459,14 @@ export async function convertHeic<S extends OutputShape = 'blob'>(
 
 /**
  * Pool of library-owned decoder instances shared across the runners of one
- * `convertMany` batch (`reuseDecoders: true`). Each in-use instance belongs
- * to exactly one item at a time — the exclusive-use invariant of the
- * per-conversion path is preserved; only the creation (WASM init/free) cost
- * is amortized. No capacity accounting: the pool exists per batch, every
- * runner holds at most one lease, so `acquire()` can never be starved — a
- * bounded pool with a waiter queue could only ever park on itself. An
- * over-subscribed runner count (a broken invariant elsewhere) therefore
- * creates an extra instance instead of deadlocking. `dispose()` is safe to
- * call while items are still running: leased instances are freed when they
- * come back.
+ * `convertMany` batch (`reuseDecoders: true`). An in-use instance belongs to
+ * exactly one item at a time — the per-conversion path's exclusive-use
+ * invariant, with only the WASM init/free cost amortized. No capacity
+ * accounting: the pool exists per batch and every runner holds at most one
+ * lease, so `acquire()` cannot starve; an over-subscribed runner count (a
+ * broken invariant elsewhere) creates an extra instance instead of
+ * deadlocking. `dispose()` is safe mid-batch: leased instances are freed when
+ * they come back.
  */
 class DecoderPool {
   private readonly idle: LibheifDecoder[] = [];
@@ -577,9 +564,9 @@ export async function convertMany<S extends OutputShape = 'blob'>(
   } = options ?? {};
   const hostProgress = progressCallbackFor(onProgress);
 
-  // The pool leases LibheifDecoder instances — leasing one into a batch that is
-  // actually taking the native path would silently defeat nativeDecode. Batches
-  // whose opt-in is policy-pinned to libheif still pool (see nativeDecodeEligible).
+  // The pool leases LibheifDecoder instances — leasing one into a batch that
+  // takes the native path would silently defeat nativeDecode. Batches
+  // policy-pinned to libheif still pool (see nativeDecodeEligible).
   const usePool = reuseDecoders === true && options?.decoder === undefined && !nativeDecodeEligible(options);
   const pool = usePool ? new DecoderPool() : null;
 
@@ -593,9 +580,9 @@ export async function convertMany<S extends OutputShape = 'blob'>(
           return await convertHeic<S>(input as HeicInput, {
             ...itemOptions,
             ...(leased ? { decoder: leased } : {}),
-            // `hostProgress` is the one typeof decision for the whole batch
-            // (progressCallbackFor: non-function counts as absent), bound per
-            // item to the documented (index, percent) signature.
+            // One typeof decision for the whole batch (progressCallbackFor:
+            // non-function counts as absent), bound per item to the
+            // documented (index, percent) signature.
             onProgress: hostProgress ? (percent: number) => hostProgress(index, percent) : undefined,
           });
         } finally {

@@ -9,30 +9,28 @@ import type { DecodedImage, IHeicDecoder } from '../types';
  */
 
 /**
- * Decoded-dimension cap, a duplicate of `MAX_CANVAS_DIMENSION` in
- * render/canvas.ts (pinned equal by native-decoder.test.ts) so this lazy
- * chunk stays out of the render module graph.
+ * Decoded-dimension cap, a duplicate of `MAX_CANVAS_DIMENSION`
+ * (render/canvas.ts). The duplication keeps this lazy chunk out of the
+ * render module graph; native-decoder.test.ts pins the two equal.
  */
 export const MAX_NATIVE_DECODE_DIMENSION = 16384;
 
 /**
- * Total-pixel cap, a duplicate of `kMaxDecodePixels` in
- * build-wasm/wrapper/main.cpp (pinned equal by native-decoder.test.ts, same
- * lazy-chunk-purity reason as the dimension cap). Without it, a
- * container-declared 16384x16384 passes both side checks and the canvas +
- * ImageData pair below allocates ~1 GB outside the WASM heap — the libheif
- * path rejects that size, so native must not accept it.
+ * Total-pixel cap, a duplicate of `kMaxDecodePixels`
+ * (build-wasm/wrapper/main.cpp), pinned equal by native-decoder.test.ts for
+ * the same lazy-chunk-purity reason. Without it, a container-declared
+ * 16384x16384 clears both side checks and the canvas + ImageData pair below
+ * allocates ~1 GB outside the WASM heap — the libheif path rejects that
+ * size, so native must not accept it.
  */
 export const MAX_NATIVE_DECODE_PIXELS = 64 * 1024 * 1024;
 
-/**
- * Per-realm refusal flag, sticky only for an environment-class failure
- * (missing platform APIs at initialize()). Decode-class failures — corrupt
- * file, absurd declared size, transient 2D pressure — are input properties,
- * so convertHeic retries them without caching: one bad upload must not cost
- * the page its native acceleration. Success is not cached: there is no
- * pre-decode API that tells a decodable file from a corrupt one.
- */
+// Per-realm refusal flag, sticky only for an environment-class failure
+// (missing platform APIs at `initialize()`). Decode-class failures — corrupt
+// file, absurd declared size, transient 2D pressure — are input properties,
+// so `convertHeic` retries them without caching: one bad upload must not cost
+// the page its native acceleration. Success is not cached: there is no
+// pre-decode API that tells a decodable file from a corrupt one.
 let nativeHeicRefused = false;
 let refusedWarned = false;
 
@@ -65,12 +63,12 @@ export function __resetNativeHeicProbe(): void {
 
 /**
  * createImageBitmap + OffscreenCanvas readback behind the same
- * `DecodedImage` contract as LibheifDecoder, so the render stage is shared.
+ * `DecodedImage` contract as `LibheifDecoder`, so the render stage is shared.
  * `imageOrientation: 'from-image'` applies the display transform (EXIF and
- * irot/imir), so results are upright with no pending orientation — the
- * selection policy only picks this Strategy when `applyOrientation` is not
- * false. Errors never reach a consumer: convertHeic retries with libheif,
- * which produces the typed error of record, so these strings stay chunk-local.
+ * `irot`/`imir`), so results are upright with no pending orientation —
+ * selection only picks this Strategy when `applyOrientation` is not false.
+ * Errors never reach a consumer: `convertHeic` retries with libheif, which
+ * produces the typed error of record, so these strings stay chunk-local.
  */
 export class NativeHeicDecoder implements IHeicDecoder {
   async initialize(): Promise<void> {
@@ -84,10 +82,10 @@ export class NativeHeicDecoder implements IHeicDecoder {
 
   async decode(data: Uint8Array): Promise<DecodedImage> {
     // Per spec, browser Blob construction rejects SharedArrayBuffer-backed
-    // parts (DataCloneError); only those need the detaching copy. Copying
-    // unconditionally would put every input through memory twice to defend
-    // one edge case. (Node's Blob does not throw, so the copy is pinned by
-    // inspecting the constructor argument, not by bytes — native-decoder.test.ts.)
+    // parts (DataCloneError); only those need the detaching copy — copying
+    // unconditionally would put every input through memory twice for one
+    // edge case. (Node's Blob does not throw, so native-decoder.test.ts
+    // pins the copy by inspecting the constructor argument, not bytes.)
     const bytes: Uint8Array<ArrayBuffer> =
       typeof SharedArrayBuffer !== 'undefined' && data.buffer instanceof SharedArrayBuffer
         ? new Uint8Array(data)
@@ -109,7 +107,7 @@ export class NativeHeicDecoder implements IHeicDecoder {
       if (bitmap.width * bitmap.height > MAX_NATIVE_DECODE_PIXELS) {
         // Both sides pass at up to 16384 each — a 16384x8192 container clears
         // the side cap but allocates ~512 MB here. Same budget as the WASM
-        // path's kMaxDecodePixels; checked before any canvas/ImageData exists.
+        // path's `kMaxDecodePixels`; checked before any canvas/ImageData exists.
         throw new HeicConverterError(
           'decode_failed',
           `Native HEIC decoding is limited to ${MAX_NATIVE_DECODE_PIXELS / (1024 * 1024)}MP total, got ${bitmap.width}x${bitmap.height} (${bitmap.width * bitmap.height} pixels).`
@@ -124,7 +122,7 @@ export class NativeHeicDecoder implements IHeicDecoder {
         );
       }
       ctx.drawImage(bitmap, 0, 0);
-      // ImageData.data is owned: pixels survive close(), like the WASM copy.
+      // ImageData.data is owned: pixels survive `close()`, like the WASM copy.
       const image = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
       return { width: image.width, height: image.height, data: image.data };
     } finally {
@@ -133,6 +131,6 @@ export class NativeHeicDecoder implements IHeicDecoder {
   }
 
   free(): void {
-    // Nothing WASM-side to release; the bitmap is closed in decode().
+    // Nothing WASM-side to release; the bitmap is closed in `decode()`.
   }
 }

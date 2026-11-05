@@ -108,7 +108,7 @@ describe('convertHeic - native decode strategy', () => {
   });
 
   it('re-throws a typed aborted raised inside the native attempt, unmarked and without the fallback', async () => {
-    // Abort lands mid-initialize(): the post-initialize throwIfAborted raises
+    // Abort lands mid-initialize(): the post-initialize `throwIfAborted` raises
     // the typed aborted the catch must re-throw before any fallback.
     const controller = new AbortController();
     let initStarted!: () => void;
@@ -205,9 +205,10 @@ describe('convertHeic - native decode strategy', () => {
   });
 
   it('bypasses the reuseDecoders pool so nativeDecode is not silently defeated', async () => {
-    // If the pool captured native batches, libheif would decode despite the opt-in.
-    // concurrency: 1 because the module mocker mis-resolves concurrent dynamic
-    // imports of the same path (runner concurrency is covered in convert.many).
+    // If the pool captured native batches, libheif would decode despite the
+    // opt-in. `concurrency: 1` because the module mocker mis-resolves racing
+    // dynamic imports of the same path (runner concurrency is covered in
+    // convert.many).
     await expect(
       convertMany([new Uint8Array([1]), new Uint8Array([2])], {
         reuseDecoders: true,
@@ -220,7 +221,7 @@ describe('convertHeic - native decode strategy', () => {
   });
 
   it('pools libheif for reuseDecoders batches whose nativeDecode is policy-pinned to libheif', async () => {
-    // preserveExif pins every item to the libheif path, so leasing is safe —
+    // `preserveExif` pins every item to the libheif path, so leasing is safe —
     // the pool only stands down when the native path is actually eligible.
     await expect(
       convertMany([new Uint8Array([1]), new Uint8Array([2])], {
@@ -242,7 +243,7 @@ describe('convertHeic - native decode strategy', () => {
 
     await convertHeic(INPUT, { nativeDecode: true }).catch(() => undefined);
     expect(nativeMockState.instances).toHaveLength(1);
-    // Freed before the fallback is constructed; finally is idempotent.
+    // Freed before the fallback is constructed; `finally` is idempotent.
     expect(nativeMockState.instances[0].free).toHaveBeenCalled();
     expect(mockState.decoderInstances).toHaveLength(1);
     expect(mockState.decoderInstances[0].free).toHaveBeenCalled(); // fallback freed too

@@ -124,7 +124,7 @@ describe('convertMany', () => {
   });
 
   it('should convert a single input', async () => {
-    // Value 42: any byte value works as long as it is not a failure sentinel.
+    // Any byte value works as long as it is not a failure sentinel.
     const results = await convertMany([new Uint8Array([42])]);
 
     expect(results).toHaveLength(1);
@@ -133,8 +133,8 @@ describe('convertMany', () => {
 
   it('treats a truthy non-function onProgress as absent', async () => {
     // One "non-function is absent" policy for all four entry points
-    // (progressCallbackFor): a malformed callback must neither be invoked
-    // nor surface progress_callback_failed — previously the per-item wrapper
+    // (`progressCallbackFor`): a malformed callback must neither be invoked
+    // nor surface `progress_callback_failed` — previously the per-item wrapper
     // called it and the TypeError surfaced as a contract error.
     const results = await convertMany([new Uint8Array([1]), new Uint8Array([2])], {
       onProgress: 42 as unknown as (index: number, percent: number) => void,
@@ -150,7 +150,7 @@ describe('convertMany', () => {
 
     expect(mockState.renderAndEncodeMock).toHaveBeenCalledWith(expect.any(Object), 'png', 0.4,
         // The caller's options object is the resize carrier (arg 4); the batch
-        // knobs were stripped upstream by convertMany's destructuring.
+        // knobs were stripped upstream by `convertMany`'s destructuring.
         expect.not.objectContaining({ concurrency: expect.anything() }),
         true,
         undefined,
@@ -177,9 +177,7 @@ describe('convertMany', () => {
     expect(results).toHaveLength(2);
     expect(injected.initialize).toHaveBeenCalledTimes(2);
     expect(injected.decode).toHaveBeenCalledTimes(2);
-    // The library never frees a user-injected decoder.
     expect(injected.free).not.toHaveBeenCalled();
-    // And no default decoders were created.
     expect(mockState.decoderInstances).toHaveLength(0);
   });
 
@@ -319,7 +317,7 @@ describe('convertMany', () => {
     await vi.waitFor(() => {
       expect(mockState.decoderInstances).toHaveLength(2);
       mockState.decoderInstances.forEach((decoder) => {
-        // Failed item's decoder is freed via finally; the in-flight item's
+        // Failed item's decoder is freed via `finally`; the in-flight item's
         // decoder is freed once its background conversion completes.
         expect(decoder.free).toHaveBeenCalledTimes(1);
       });
@@ -453,10 +451,10 @@ describe('convertMany - continueOnError', () => {
   });
 
   it('forwards partial progress for failed items but withholds their 100%', async () => {
-    // The documented contract (API.md): percentages below 100 are live and
-    // may arrive for items that ultimately fail; the 100% event fires only
-    // for items that succeed. The previous version of this test was vacuous
-    // for the partial-progress half because the failing mock never emitted.
+    // The API.md contract: sub-100 percentages are live even for items that
+    // fail; only success fires 100%. The previous version of this test was
+    // vacuous for the partial-progress half because the failing mock never
+    // emitted.
     resetConvertMocks({
       renderAndEncode: renderFromPixel,
       decodeImpl: async (data, onProgress) => {
@@ -478,9 +476,9 @@ describe('convertMany - continueOnError', () => {
     });
 
     expect(results.map((entry) => entry.ok)).toEqual([false, true]);
-    // The failed item's 30% reaches the host…
+    // The failed item's 30% reaches the host.
     expect(onProgress).toHaveBeenCalledWith(0, 30);
-    // …the successful item's events arrive too, and it is the only 100%.
+    // The successful item's events arrive too, and it is the only 100%.
     expect(onProgress).toHaveBeenCalledWith(1, 40);
     expect(onProgress).toHaveBeenCalledWith(1, 100);
     expect(onProgress.mock.calls.filter(([, percent]) => percent === 100)).toEqual([[1, 100]]);
@@ -544,7 +542,7 @@ describe('convertMany - reuseDecoders (pool)', () => {
     expect(mockState.decoderInstances).toHaveLength(2);
     for (const instance of mockState.decoderInstances) {
       expect(instance.decode).toHaveBeenCalledTimes(4);
-      // dispose() frees exactly once per pooled instance.
+      // `dispose()` frees exactly once per pooled instance.
       expect(instance.free).toHaveBeenCalledTimes(1);
     }
     expect(mockState.renderAndEncodeMock).toHaveBeenCalledTimes(8);
@@ -575,7 +573,7 @@ describe('convertMany - reuseDecoders (pool)', () => {
   });
 
   it('discards a pooled decoder whose module faulted instead of re-leasing it', async () => {
-    // A trap inside the module leaves emmalloc's arena unusable. An instance in
+    // A trap inside the module leaves `emmalloc`'s arena unusable. An instance in
     // the fault registry must never be leased again — parking it would hand a
     // corrupted heap to the next item, which is undefined behaviour, not an error.
     resetConvertMocks({
@@ -598,11 +596,11 @@ describe('convertMany - reuseDecoders (pool)', () => {
     expect(results.map((entry) => entry.ok)).toEqual([true, false, true]);
     const [faulted, replacement] = mockState.decoderInstances;
     expect(mockState.decoderInstances).toHaveLength(2);
-    // The faulted instance served items 10 and 11, was freed by release() — and
+    // The faulted instance served items 10 and 11, was freed by `release()` — and
     // was never leased a third time.
     expect(faulted!.decode).toHaveBeenCalledTimes(2);
     expect(faulted!.free).toHaveBeenCalledTimes(1);
-    // The replacement served item 12, and dispose() frees it.
+    // The replacement served item 12, and `dispose()` frees it.
     expect(replacement!.decode).toHaveBeenCalledTimes(1);
     expect(replacement!.free).toHaveBeenCalledTimes(1);
   });
@@ -683,8 +681,8 @@ describe('convertMany - reuseDecoders (pool)', () => {
 describe('convertMany - reuseDecoders: disposal', () => {
   it('frees an in-flight leased decoder even after the batch disposed the pool', async () => {
     // Early rejection disposes the pool while the slow item still holds its
-    // lease: release() must free it, not re-park it, and swallow a throwing
-    // free() rather than leak an unhandled rejection.
+    // lease: `release()` must free it, not re-park it, and swallow a throwing
+    // `free()` rather than leak an unhandled rejection.
     let slowFree: ReturnType<typeof vi.fn> | undefined;
     resetConvertMocks({
       decodeImpl: async (data, _onProgress, self) => {
@@ -711,7 +709,7 @@ describe('convertMany - reuseDecoders: disposal', () => {
     ).rejects.toThrow('decode failed for input 9');
 
     // The slow item settles in the background; its lease goes through the
-    // disposed branch of pool.release() and survives the throwing free().
+    // disposed branch of `pool.release()` and survives the throwing `free()`.
     await vi.waitFor(() => expect(slowFree).toHaveBeenCalledTimes(1));
     await vi.waitFor(() => expect(mockState.decoderInstances).toHaveLength(2));
   });
@@ -719,7 +717,7 @@ describe('convertMany - reuseDecoders: disposal', () => {
 
 describe('convertMany - concurrency clamping', () => {
   it('clamps absurd-but-legal concurrency to the item count instead of spawning runaway runners', async () => {
-    // runnerCountFor() caps the runner pool at inputs.length; without the
+    // `runnerCountFor()` caps the runner pool at inputs.length; without the
     // cap, the ceiling value 64 with 3 items would materialize 64 runners.
     resetConvertMocks({ decodeImpl: batchDecodeImpl });
     active.count = 0;
