@@ -32,4 +32,14 @@ describe('build-wasm.sh failure semantics', () => {
     expect(script).toContain("(iostream|ostream|strstream)");
     expect(script).toContain('Build complete!');
   });
+
+  it('compiles both archives with -Oz and -DNDEBUG', () => {
+    // Dropping -DNDEBUG is a silent 5,877 B gz (2.4%) payload regression, and
+    // the 300 KB WASM ceilings are deliberately too loose to notice; -Oz loss
+    // costs far more. The cache stamps key on this file, so either flag moving
+    // forces both libraries to rebuild rather than relinking stale archives.
+    const flags = script.match(/-DCMAKE_C(?:XX)?_FLAGS=\\"[^"]*\\"/g) ?? [];
+    expect(flags).toHaveLength(4); // libde265 + libheif, C and CXX each
+    expect(flags.every((f) => f.includes('-Oz') && f.includes('-DNDEBUG'))).toBe(true);
+  });
 });

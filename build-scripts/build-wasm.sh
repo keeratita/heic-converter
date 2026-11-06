@@ -77,8 +77,13 @@ else
     -DENABLE_SHERLOCK265=OFF \
     -DENABLE_INTERNAL_DEVELOPMENT_TOOLS=OFF \
     -DWITH_FUZZERS=OFF \
-    -DCMAKE_C_FLAGS=\"-Oz\" \
-    -DCMAKE_CXX_FLAGS=\"-Oz\"
+    -DCMAKE_C_FLAGS=\"-Oz -DNDEBUG\" \
+    -DCMAKE_CXX_FLAGS=\"-Oz -DNDEBUG\"
+    # -DNDEBUG compiles out every libheif/libde265 assert: 5,877 B gz /
+    # 5,358 B brotli off the module (241,008 -> 235,131 gz). Accepted
+    # trade: a violated internal invariant becomes undefined behaviour
+    # instead of a trap, so the goldens and the 66-input mutation sweep
+    # are the guard on pixel identity.
   # Archives at -Oz; the link stays -O3 (step 3). Archive flags cannot touch the
   # import/export contract: identical glue, smaller module (1,294,646 ->
   # 829,227 B raw / 413,850 -> 300,609 B gz), output pinned byte-identical by
@@ -137,8 +142,8 @@ else
     -DWITH_OpenJPEG_DECODER=OFF \\
     -DWITH_OpenJPEG_ENCODER=OFF \\
     -DWITH_EXAMPLES=OFF \\
-    -DCMAKE_C_FLAGS=\"-Oz\" \\
-    -DCMAKE_CXX_FLAGS=\"-Oz -DLIBHEIF_BOX_EMSCRIPTEN_H -include /src/build-scripts/libheif-no-streams.h\"
+    -DCMAKE_C_FLAGS=\"-Oz -DNDEBUG\" \\
+    -DCMAKE_CXX_FLAGS=\"-Oz -DNDEBUG -DLIBHEIF_BOX_EMSCRIPTEN_H -include /src/build-scripts/libheif-no-streams.h\"
     # -include libheif-no-streams.h swaps std::stringstream for a non-logging
     # fake: error codes and control flow survive, streamed text does not. The
     # link-map guard below fails the build if libc++ iostream links anyway.
@@ -174,6 +179,9 @@ echo 'Compiling WebAssembly wrapper...'
 # emitted. What must be preserved (AGENTS.md):
 # - DYNAMIC_EXECUTION=0, ALLOW_MEMORY_GROWTH=1, EXPORT_ES6=1, MODULARIZE=1,
 #   ENVIRONMENT, MALLOC=emmalloc, FILESYSTEM=0, and link -O3
+# - the archive flags -Oz and -DNDEBUG: dropping NDEBUG costs 5,877 B gz,
+#   dropping -Oz far more; the cache stamps below force a rebuild when
+#   either moves
 # - the raw C ABI exports: the link is without --bind (re-adding --bind re-ships
 #   ~13.7 KB gz of embind tables for nothing)
 # - the post-link wasm-opt below; size also depends on the two libheif patches

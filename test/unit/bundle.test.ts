@@ -39,10 +39,12 @@ const DEFERRED_MODULES: Array<{ prefix: string; min: number }> = [
 // — losing `-s FILESYSTEM=0` trips the glue ceilings, losing the `-Oz` archives
 // or codec exclusions trips the WASM one.
 // Raw C ABI (no `--bind`, see `build-wasm/wrapper/main.cpp`). Measured pair
-// 2026-11-05 (`emsdk` 6.0.13): glue 7,867 raw / 3,287 gz; wasm 241,008 gz;
-// first-decode 252,516 gz. Ceilings sit well under the embind shapes (glue
-// 28,657 raw / 10,215 gz; first-decode 265,693), so a re-added `--bind` trips
-// them.
+// 2026-11-06 (`emsdk` 6.0.13, archives at `-Oz -DNDEBUG`): glue 7,724 raw /
+// 3,215 gz; wasm 235,131 gz; first-decode 246,567 gz. Dropping `-DNDEBUG`
+// costs 5,877 B gz — below these ceilings' resolution, so that flag is pinned
+// by build-wasm-script.test.ts instead. Ceilings sit well under the embind
+// shapes (glue 28,657 raw / 10,215 gz; first-decode 265,693), so a re-added
+// `--bind` trips them.
 const GLUE_MAX_BYTES = 14_000;
 const GLUE_MAX_GZ = 6_000;
 const WASM_MAX_GZ = 300_000;
