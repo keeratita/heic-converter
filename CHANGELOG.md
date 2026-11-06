@@ -5,6 +5,23 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.2-prerelease.1] - 2026-11-06
+
+### Changed
+
+- **The decoder ships 7,742 B gz smaller than the published prerelease** — packaged binary 638,059 → 623,439 raw, 242,873 → **235,131 gz**, 196,730 → 188,847 br; first-decode payload 254,806 → **246,567 gz**. Two build changes get there: the Emscripten toolchain moves 3.1.56 → **6.0.13** (−1,865 B gz on the binary, 4,066 B raw off the emitted glue), and both archives compile with **`-DNDEBUG`** (−5,877 B gz). Decoded pixels are unchanged — `test/unit/wasm-golden.test.ts` matches every fixture's exact RGBA and all 66 mutation inputs against the rebuilt pair, and the browser E2E passes.
+- **`-DNDEBUG` is a recorded safety trade, not a free win**: a violated libheif/libde265 invariant now becomes undefined behaviour instead of trapping the WASM instance (`decode()` still reports a trap as `decode_failed` and the pool discards the faulted decoder). `test/unit/build-wasm-script.test.ts` pins the flag on all four archive flag strings — `bundle.test.ts`'s ceilings are deliberately ~15-20% loose and cannot see a 2.4% move — and `WASM_DEPENDENCIES.md` § Build-time patches records the decision.
+- **`wasmBinary` is honoured again.** Emscripten ≥4 dropped `Module.wasmBinary`, so the old passthrough was silently ignored and the glue fell back to a file lookup beside itself. The wrapper now pre-compiles the supplied bytes and delivers them through `Module.instantiateWasm`, so a malformed binary rejects `initialize()` normally (covered by an invalid-binary test).
+- Linking follows the new toolchain: the link runs through **`em++`** (Emscripten ≥4 ships no C++ runtime under the C driver — `emcc` fails with undefined `operator new`/`__resumeException`), and the post-link `wasm-opt` gains `--enable-bulk-memory-opt --enable-nontrapping-float-to-int`, which this binaryen requires for wasm-ld's `memory.copy`/`trunc_sat` output. The link-map diagnostics guard is narrowed to the out-of-line stream members (`iostream`/`ostream`/`strstream`) whose absence is what actually matters.
+
+### Build
+
+- tsup 9 emits the type declarations with its own DTS pass (its 8.x setup injected a `baseUrl` that TypeScript 6 rejects as a TS5101 deprecation), alongside vitest 5.1 and `globals` 17.14. The package keeps **zero runtime dependencies**.
+
+### Documentation
+
+- Repo-wide comment pass — comment-only, verified by AST and token diff so no code token changed — and the size notes in `AGENTS.md`/`WASM_DEPENDENCIES.md` now record the measured dead ends from the size hunt. Two candidates were wins on paper and are **refused**: stubbing the vtable-pinned `Box::write(StreamWriter&)` bodies (−6,088 gz) would let `Box_ipco::find_or_append_child_box` silently deduplicate distinct properties, because `Box::operator==` compares boxes *by serializing them*; an `__assert_fail` override (−2,136 gz) claimed a mechanism the link map contradicts.
+
 ## [0.6.2-prerelease] - 2026-11-01
 
 ### Changed
