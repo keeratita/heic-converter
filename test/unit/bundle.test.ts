@@ -62,10 +62,20 @@ const bytesOf = (file: string): number => readFileSync(`${DIST}/${file}`).byteLe
 const gzOf = (file: string): number => gzipSync(readFileSync(`${DIST}/${file}`), { level: 9 }).length;
 const sha256Prefix = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex').slice(0, 12);
 
-// `\.m?js` on purpose: an ESM chunk emitted as `.js`, or a cross-extension
-// static edge, must not slip past the boundary check and byte budget.
-const ESM_DEP = /from\s*"\.\/([^"]+\.m?js)"/g;
-const CJS_DEP = /require\("\.\/([^"]+\.m?js)"\)/g;
+// Quote style is minifier-dependent — terser emits `"`, esbuild's minifier
+// emits `'` — so nothing below may hard-code one. Building with `minify: true`
+// kept all 15 guards green while the static-edge walk found zero edges at all:
+// every check here passed vacuously. A bare `import'./x'` is a static edge too
+// (side-effect import, no `from`), and matching only `from` hides exactly the
+// hoist these guards exist to catch — an injected `import'./worker-*.mjs'`
+// sailed through until both forms were covered. `\.m?js` on purpose: an ESM
+// chunk emitted as `.js`, or a cross-extension static edge, must not slip past
+// the boundary check and byte budget. `matchAll` clones the regex, so sharing
+// these is safe.
+const DEP = `["']\\.\\/([^"']+\\.m?js)["']`;
+const ESM_DEP = new RegExp(`(?:from|import)\\s*${DEP}`, 'g');
+const CJS_DEP = new RegExp(`require\\(\\s*${DEP}\\s*\\)`, 'g');
+const DYN_DEP = new RegExp(`import\\(\\s*${DEP}\\s*\\)`, 'g');
 
 /**
  * Static text in `src/messages/worker.ts`, extracted from source so the guard
@@ -115,7 +125,7 @@ describe.skipIf(!isBuilt && !isCI)('bundle boundaries (requires npm run build)',
   it.each(DEFERRED_MODULES)('defers $prefix behind a dynamic import', ({ prefix, min }) => {
     const chunk = chunkFile(prefix);
     for (const [file, source] of eagerGraph()) {
-      expect(new RegExp(`from\\s*"\\./${chunk}"`).test(source), `${file} statically imports ${chunk}`).toBe(false);
+      expect(new RegExp(`(?:from|import)\\s*["']\\./${chunk}["']`).test(source), `${file} statically imports ${chunk}`).toBe(false);
     }
     expect(entrySource(), `${chunk} is not reachable from the entry`).toContain(`./${chunk}`);
     const bytes = bytesOf(chunk);
@@ -207,11 +217,7 @@ describe.skipIf(!isBuilt && !isCI)('bundle boundaries (requires npm run build)',
     const missing: string[] = [];
     for (const file of readdirSync(DIST).filter((n) => n.endsWith('.mjs') || n.endsWith('.js'))) {
       const source = readFileSync(`${DIST}/${file}`, 'utf8');
-      const refs = [
-        ...source.matchAll(/from\s*"\.\/([^"]+\.m?js)"/g),
-        ...source.matchAll(/import\("\.\/([^"]+\.m?js)"\)/g),
-        ...source.matchAll(/require\("\.\/([^"]+\.m?js)"\)/g),
-      ];
+      const refs = [...source.matchAll(ESM_DEP), ...source.matchAll(DYN_DEP), ...source.matchAll(CJS_DEP)];
       for (const [, dep] of refs) {
         if (!existsSync(`${DIST}/${dep}`)) {
           missing.push(`${file} -> ./${dep}`);
