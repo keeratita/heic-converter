@@ -5,6 +5,17 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **The Emscripten toolchain moves 6.0.13 → 7.0.0** (LLVM 23.1.3, libc++ 23), the first pin change since the raw-C-ABI rebuild. The decoder ships **954 B gz smaller**: packaged binary 623,439 → 627,162 raw / 235,131 → **234,177 gz** / 188,847 → 188,501 br — the module grows in raw bytes but compresses better, so both wire formats shrink — and the first-decode payload 246,567 → **245,592 gz**. The lazily-loaded glue drops to 7,691 raw / 3,195 gz (emcc-emitted: 15,205 raw / 4,622 gz). Decoded pixels are byte-identical: `npm run wasm:goldens` reports every fixture's exact RGBA and all 66 mutation rows unchanged, the unit suite runs green at 100% coverage on all four axes, and the browser E2E passes in the CSP sandbox on the rebuilt pair.
+- **libc++ 23 needs no workaround here, and the reason is recorded.** 7.0.0 prunes libc++'s transitive header includes (upstream's stopgap is `-D_LIBCPP_KEEP_TRANSITIVE_INCLUDES_LLVM23`); libheif compiles without it because the diagnostics neutralizer already removes the `std::cerr`/`<sstream>` users those includes fed. Both fail-closed guards held: no third-party codec resolved in `CMakeCache.txt`, and the link map still shows no libc++ stream members. 7.0.0 also raises the default minimum browser targets (Chrome 93 / Firefox 92 / Safari 15.4).
+
+### Build
+
+- `WASM_DEPENDENCIES.md` now records the toolchain pin alongside the library pins, and `test/unit/build-wasm-script.test.ts` pins that table to `build-wasm.sh`'s `LIBHEIF_VERSION`/`LIBDE265_VERSION`/`EMSDK_VERSION` — plus a new guard that `EMSDK_VERSION` stays an immutable `x.y.z` tag, since `latest` would make `wasm-artifacts.json` unreproducible. The size sweeps recorded in `AGENTS.md` were measured on 6.0.13 and are stamped as such; a retirement is only as current as the toolchain it was measured on.
+
 ## [0.6.2-prerelease.1] - 2026-11-06
 
 ### Changed

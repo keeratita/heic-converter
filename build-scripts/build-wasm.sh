@@ -3,7 +3,7 @@ set -e
 
 LIBDE265_VERSION="1.1.3"
 LIBHEIF_VERSION="1.23.7"
-EMSDK_VERSION="6.0.13"
+EMSDK_VERSION="7.0.0"
 BUILD_DIR="$(pwd)/build-wasm"
 OUT_DIR="$(pwd)/src/wasm/public"
 WASM_JS_OUT="$(pwd)/src/wasm/wrapper/heic-decoder.js"
@@ -80,7 +80,8 @@ else
     -DCMAKE_C_FLAGS=\"-Oz -DNDEBUG\" \
     -DCMAKE_CXX_FLAGS=\"-Oz -DNDEBUG\"
     # -DNDEBUG compiles out every libheif/libde265 assert: 5,877 B gz /
-    # 5,358 B brotli off the module (241,008 -> 235,131 gz). Accepted
+    # 5,358 B brotli off the module (241,008 -> 235,131 gz, measured on the
+    # 6.0.13 pair). Accepted
     # trade: a violated internal invariant becomes undefined behaviour
     # instead of a trap, so the goldens and the 66-input mutation sweep
     # are the guard on pixel identity.

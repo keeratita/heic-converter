@@ -12,9 +12,11 @@ Both libraries are checked out as **git submodules** under `build-wasm/src/`, pi
 - `build-wasm/src/libheif` → `v1.23.7`
 - `build-wasm/src/libde265` → `v1.1.3`
 
+The toolchain is pinned the same way: `EMSDK_VERSION` in `build-scripts/build-wasm.sh` selects the `emscripten/emsdk` Docker image — currently **7.0.0** (LLVM 23.1.3, libc++ 23). `test/unit/build-wasm-script.test.ts` fails if the versions above drift from the script's variables, so this table is a checked fact rather than a claim.
+
 ## Updating
 
-1. Bump the `LIBHEIF_VERSION` / `LIBDE265_VERSION` variables in `build-scripts/build-wasm.sh`.
+1. Bump the `LIBHEIF_VERSION` / `LIBDE265_VERSION` variables in `build-scripts/build-wasm.sh` (and `EMSDK_VERSION` if the toolchain moves too — a toolchain bump needs no submodule checkout, just the rebuild and re-pin below).
 2. Check out the new tag in the submodule:
 
    ```bash

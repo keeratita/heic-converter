@@ -42,4 +42,39 @@ describe('build-wasm.sh failure semantics', () => {
     expect(flags).toHaveLength(4); // libde265 + libheif, C and CXX each
     expect(flags.every((f) => f.includes('-Oz') && f.includes('-DNDEBUG'))).toBe(true);
   });
+
+  it('pins the toolchain to an immutable image tag, never a floating one', () => {
+    // `emscripten/emsdk:latest` would make `wasm-artifacts.json` unverifiable:
+    // the same commit would rebuild to different bytes whenever upstream ships,
+    // and the provenance job would fail with no way to reproduce the green run.
+    const emsdk = script.match(/EMSDK_VERSION="([^"]*)"/)?.[1];
+    expect(emsdk).toMatch(/^\d+\.\d+\.\d+$/);
+  });
+});
+
+/**
+ * `WASM_DEPENDENCIES.md` restates the three pins as prose and a table. Repo
+ * convention is that a doc which duplicates a code fact is tested, not trusted
+ * — an unstamped table is how a bump ends up shipping with docs describing the
+ * previous release.
+ */
+describe('WASM_DEPENDENCIES.md pin table', () => {
+  const script = readFileSync('build-scripts/build-wasm.sh', 'utf8');
+  const doc = readFileSync('WASM_DEPENDENCIES.md', 'utf8');
+  const pin = (name: string): string => {
+    const value = script.match(new RegExp(`${name}="([^"]*)"`))?.[1];
+    if (!value) {
+      throw new Error(`${name} is missing from build-scripts/build-wasm.sh`);
+    }
+    return value;
+  };
+
+  it('states the same libheif and libde265 versions the script builds', () => {
+    expect(doc).toContain(`| libheif | ${pin('LIBHEIF_VERSION')} |`);
+    expect(doc).toContain(`| libde265 | ${pin('LIBDE265_VERSION')} |`);
+  });
+
+  it('states the same emsdk version the script pulls', () => {
+    expect(doc).toContain(`**${pin('EMSDK_VERSION')}**`);
+  });
 });
