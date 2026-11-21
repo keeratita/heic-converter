@@ -2,5 +2,10 @@
   "allow": {
     "esbuild": "0.28.2",
     "fsevents": "2.3.3"
+  },
+  "aliases": {
+    "@typescript/native": "typescript@7.0.2",
+    "@typescript/old": "typescript@6.0.3",
+    "typescript": "@typescript/typescript6@6.0.2"
   }
 }

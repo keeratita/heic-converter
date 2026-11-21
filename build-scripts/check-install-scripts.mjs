@@ -12,6 +12,14 @@
 // public registry's own tarball for that name (`git`/`file:`/link, a foreign
 // host, or another package's path) is never allowlisted, so a hand-edited
 // lockfile cannot feed attacker bytes to an allowlisted name.
+// npm aliases (`"typescript": "npm:@typescript/typescript6@^6"`) are the one
+// sanctioned exception to "the name in `node_modules` is the package in it":
+// TypeScript 7 ships only the native CLI, while typescript-eslint and tsup's
+// DTS pass need the 6.0 programmatic API, so this tree installs both side by
+// side. An alias still moves one package's bytes under another name, which is
+// what the provenance rule exists to refuse, so it is reviewed separately — an
+// explicit target in the `aliases` map, accepted only when the lockfile resolves
+// the alias to that target's own tarball on the public registry.
 
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -26,6 +34,17 @@ const SKIP = new Set(['.bin', '.package-lock.json', '.cache']);
 // both `compare()` and `--write` refuse such entries. One shared name so a
 // rename cannot silently desync the stamp from the refusal.
 const NON_REGISTRY_DEP = 'non-registry-dep';
+// The hook label that marks an npm alias. Aliased packages usually declare no
+// install script at all, so without a label of their own they would never reach
+// the verdict and an unreviewed retarget would pass silently; `compare()`
+// requires a matching entry in `aliases` whenever it sees this. Same
+// shared-constant rule as above: the stamp and the requirement cannot drift.
+const ALIASED = 'aliased';
+// Allowlist values are exact pins. A range is not a review: it matches nothing
+// here, and "the package you just wrote down is not allowlisted" is the wrong
+// way to discover a typo in the reviewed file.
+const EXACT_VERSION = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
+const PACKAGE_NAME = /^(?:@[^/]+\/)?[^/]+$/;
 
 // Exact origin, not a hostname shape: a loose `registry.` pattern lets
 // `https://registry.npmjs.org.evil.com/x.tgz`, or a plain-HTTP "registry", pass
@@ -62,7 +81,9 @@ export function isRegistryTarballFor(name, resolved) {
  *
  * Non-registry dependencies are flagged even without an install script: npm runs
  * `prepare` for `git`/`file:` deps and they have no published manifest, so
- * `hasInstallScript` never covers them.
+ * `hasInstallScript` never covers them. npm aliases are flagged the same way —
+ * the directory name is not the package that landed in it, and which package
+ * lives under a name the whole toolchain imports is a reviewable decision.
  */
 export function collectFromLockfile(lock) {
   const found = [];
@@ -71,6 +92,11 @@ export function collectFromLockfile(lock) {
       continue; // the root project itself is not a dependency
     }
     const name = key.slice(key.lastIndexOf('node_modules/') + 'node_modules/'.length);
+    // npm writes `name` only for an aliased install: the manifest in the
+    // directory belongs to the target, the directory belongs to the alias.
+    const target =
+      typeof entry.name === 'string' && entry.name.length && entry.name !== name ? entry.name : undefined;
+    const version = entry.version ?? 'unknown';
     const hooks = [];
     if (entry.hasInstallScript) {
       hooks.push('hasInstallScript');
@@ -78,12 +104,18 @@ export function collectFromLockfile(lock) {
     const resolved = typeof entry.resolved === 'string' ? entry.resolved : '';
     // Fail closed: an entry without `resolved` has no registry provenance to
     // check — the root project is already skipped above, and every legitimately
-    // installed dependency carries a tarball URL.
-    if (entry.link === true || entry.linked === true || !isRegistryTarballFor(name, resolved)) {
+    // installed dependency carries a tarball URL. The tarball must belong to the
+    // bytes' real owner, so an alias is checked against its *target's* path:
+    // `npm:typescript@7` resolving to typescript's tarball is honest, resolving
+    // to someone else's is the same name-swap the rule above refuses.
+    if (entry.link === true || entry.linked === true || !isRegistryTarballFor(target ?? name, resolved)) {
       hooks.push(NON_REGISTRY_DEP);
     }
+    if (target && !hooks.includes(NON_REGISTRY_DEP)) {
+      hooks.push(ALIASED);
+    }
     if (hooks.length) {
-      found.push({ name, version: entry.version ?? 'unknown', hooks });
+      found.push({ name, version, hooks, ...(target ? { alias: { name: target, version } } : {}) });
     }
   }
   return found;
@@ -185,8 +217,15 @@ export function collectInstallScripts(nodeModulesDir) {
  * superset allowlist is correct and only reported as a note. Own-property lookup
  * only — a package named `constructor` or `__proto__` must not inherit its way
  * past the gate.
+ *
+ * `aliases` is the reviewed map of npm alias (`node_modules` directory name) to
+ * the exact target it must resolve to (`name@version`). An alias is judged on
+ * both axes: unreviewed or retargeted is a problem, and if the target does run
+ * install scripts its *own* name and version need the `allow` entry, because the
+ * target's bytes are what execute — the alias is just the address.
  */
-export function compare(found, allowed) {
+export function compare(found, allowed, aliases) {
+  const reviewedAliases = aliases ?? {};
   const problems = [];
   for (const pkg of found) {
     // Load-bearing, not decorative: an allowlisted name is worthless once its
@@ -199,17 +238,84 @@ export function compare(found, allowed) {
       );
       continue;
     }
-    if (!Object.prototype.hasOwnProperty.call(allowed, pkg.name)) {
-      problems.push(`${pkg.name}@${pkg.version} declares ${pkg.hooks.join(', ')} but is not allowlisted`);
-    } else if (allowed[pkg.name] !== pkg.version) {
+    const scriptHooks = pkg.hooks.filter((hook) => hook !== ALIASED);
+    let identity = pkg.name;
+    if (pkg.alias) {
+      identity = pkg.alias.name;
+      const actual = `${pkg.alias.name}@${pkg.alias.version}`;
+      const reviewed = Object.prototype.hasOwnProperty.call(reviewedAliases, pkg.name)
+        ? reviewedAliases[pkg.name]
+        : undefined;
+      if (reviewed === undefined) {
+        problems.push(
+          `${pkg.name}@${pkg.version} is an npm alias for ${actual} that has not been reviewed — an alias decides whose bytes land under a name the whole toolchain imports; read the target, then npm run check:scripts -- --write`
+        );
+      } else if (reviewed !== actual) {
+        problems.push(
+          `${pkg.name}@${pkg.version} resolves to ${actual} but the allowlist reviewed ${reviewed} — retargeting an alias is a dependency change; read it, then npm run check:scripts -- --write`
+        );
+      }
+    }
+    if (!scriptHooks.length) {
+      continue; // a reviewed alias that runs nothing at install time needs no `allow` entry
+    }
+    if (!Object.prototype.hasOwnProperty.call(allowed, identity)) {
+      problems.push(`${identity}@${pkg.version} declares ${scriptHooks.join(', ')} but is not allowlisted`);
+    } else if (allowed[identity] !== pkg.version) {
       problems.push(
-        `${pkg.name}@${pkg.version} is allowlisted at ${allowed[pkg.name]} — an install script at a new version has not been reviewed; read it, then npm run check:scripts -- --write`
+        `${identity}@${pkg.version} is allowlisted at ${allowed[identity]} — an install script at a new version has not been reviewed; read it, then npm run check:scripts -- --write`
       );
     }
   }
-  const foundNames = new Set(found.map((pkg) => pkg.name));
+  const foundNames = new Set(found.map((pkg) => (pkg.alias ? pkg.alias.name : pkg.name)));
   const stale = Object.keys(allowed).filter((name) => !foundNames.has(name));
-  return { problems, stale };
+  const staleAliases = Object.keys(reviewedAliases).filter(
+    (name) => !found.some((pkg) => pkg.alias && pkg.name === name)
+  );
+  return { problems, stale, staleAliases };
+}
+
+/**
+ * Shape check for the reviewed file itself. A malformed value fails closed
+ * anyway — a range never equals an exact version, so the package stays flagged —
+ * but then it fails as "not allowlisted" for a name the reviewer just wrote
+ * down, which reads as a bug in the gate. Say what is actually wrong instead.
+ */
+export function validateAllowlist(config) {
+  const problems = [];
+  for (const [field, value] of [
+    ['allow', config?.allow],
+    ['aliases', config?.aliases],
+  ]) {
+    if (value === undefined || value === null) {
+      continue; // absent means "nothing reviewed here", which is the fail-closed default
+    }
+    if (typeof value !== 'object' || Array.isArray(value)) {
+      problems.push(`install-scripts.json "${field}" must be an object of package name → exact pin`);
+      continue;
+    }
+    for (const [name, spec] of Object.entries(value)) {
+      if (typeof spec !== 'string' || !spec.length) {
+        problems.push(`install-scripts.json ${field}["${name}"] must be a non-empty string`);
+      } else if (/\s/.test(spec)) {
+        problems.push(`install-scripts.json ${field}["${name}"] = "${spec}" contains whitespace — a pin is exact, not padded`);
+      } else if (field === 'aliases') {
+        const at = spec.lastIndexOf('@');
+        const target = at > 0 ? spec.slice(0, at) : '';
+        const version = at > 0 ? spec.slice(at + 1) : '';
+        if (!PACKAGE_NAME.test(target) || !EXACT_VERSION.test(version)) {
+          problems.push(
+            `install-scripts.json aliases["${name}"] = "${spec}" is not "name@exact-version" — an alias is reviewed against one target release`
+          );
+        }
+      } else if (!EXACT_VERSION.test(spec)) {
+        problems.push(
+          `install-scripts.json allow["${name}"] = "${spec}" is not an exact version — a range is not a reviewed pin`
+        );
+      }
+    }
+  }
+  return problems;
 }
 
 /**
@@ -262,17 +368,43 @@ function main() {
       );
       process.exit(1);
     }
-    const allow = Object.fromEntries(found.map((pkg) => [pkg.name, pkg.version]));
-    writeFileSync(ALLOWLIST, `${JSON.stringify({ allow }, null, 2)}\n`);
-    console.log(`Allowlisted ${found.length} package(s): ${Object.keys(allow).join(', ') || '(none)'}`);
+    const allow = {};
+    const aliases = {};
+    for (const pkg of found) {
+      if (pkg.alias) {
+        aliases[pkg.name] = `${pkg.alias.name}@${pkg.alias.version}`;
+      }
+      if (pkg.hooks.some((hook) => hook !== ALIASED)) {
+        // Keyed by the identity that executes: an aliased package is allowlisted
+        // under its own name, so a reviewer reads the manifest of the bytes that
+        // actually ran rather than of the address they were installed under.
+        allow[pkg.alias ? pkg.alias.name : pkg.name] = pkg.version;
+      }
+    }
+    writeFileSync(
+      ALLOWLIST,
+      `${JSON.stringify(Object.keys(aliases).length ? { allow, aliases } : { allow }, null, 2)}\n`
+    );
+    console.log(
+      `Allowlisted ${Object.keys(allow).length} install-script package(s) and ${Object.keys(aliases).length} alias(es): ${[
+        ...Object.keys(allow),
+        ...Object.keys(aliases).map((name) => `${name} → ${aliases[name]}`),
+      ].join(', ') || '(none)'}`
+    );
     return;
   }
   if (!existsSync(ALLOWLIST)) {
     console.error('build-scripts/install-scripts.json is missing — generate it with: npm run check:scripts -- --write');
     process.exit(1);
   }
-  const { allow } = JSON.parse(readFileSync(ALLOWLIST, 'utf8'));
-  const { problems, stale } = compare(found, allow ?? {});
+  const { allow, aliases } = JSON.parse(readFileSync(ALLOWLIST, 'utf8'));
+  const malformed = validateAllowlist({ allow, aliases });
+  if (malformed.length) {
+    console.error(`Install-script allowlist is malformed:\n  ${malformed.join('\n  ')}`);
+    console.error('\nEvery entry is a pin a human reviewed; fix the file, do not widen the gate.');
+    process.exit(1);
+  }
+  const { problems, stale, staleAliases } = compare(found, allow ?? {}, aliases ?? {});
   if (problems.length) {
     console.error('Install-script drift detected:\n  ' + problems.join('\n  '));
     console.error('\nCurrent install-script-bearing packages:');
@@ -284,6 +416,9 @@ function main() {
   }
   if (stale.length) {
     console.log(`Note: allowlisted but not installed here (platform-specific optional deps): ${stale.join(', ')}`);
+  }
+  if (staleAliases.length) {
+    console.log(`Note: reviewed aliases no longer installed (drop them when convenient): ${staleAliases.join(', ')}`);
   }
   console.log(
     `Install scripts OK: ${found.length} package(s) — ${found.map((p) => `${p.name}@${p.version} (${p.hooks.join(', ')})`).join(', ') || '(none)'}`

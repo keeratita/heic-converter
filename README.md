@@ -731,6 +731,7 @@ This script will automatically run the linter, build the TS library, run the uni
 | Runtime dependencies | **none** — the package ships no `dependencies` at all |
 | Provenance | SLSA provenance attestation, from OIDC trusted publishing in `.github/workflows/publish.yml` |
 | Install-time code | two dev-tree packages — `esbuild` (links its platform binary) and `fsevents` (macOS-only native addon) — pinned in an allowlist that CI enforces (`npm run check:scripts`) |
+| Build-time toolchain | two TypeScript compilers, both reviewed: the native (Go) 7.x binary runs `tsc`, the 6.0 JS API runs the linter and the typings build. Installed as npm aliases whose targets are checked against the public registry by the same gate; neither runs at install time or in your app |
 | `eval()` / `new Function()` | never generated (`-s DYNAMIC_EXECUTION=0`); CI scans the emitted glue for both |
 | Decoder artifacts | committed WASM + glue pinned to SHA-256 and re-verified on every CI run (`npm run verify:wasm`) |
 | Publish path | tag pushes only; the job asserts the attestation landed (`npm run verify:provenance`) |

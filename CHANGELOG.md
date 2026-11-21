@@ -5,6 +5,14 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Build
+
+- **`tsc` moves to the native (Go) TypeScript 7.0.2; the linter and the typings build stay on the 6.0 API.** TypeScript 7 ships only a CLI — the programmatic API lands in 7.1 — so `typescript-eslint` (peer-capped `<6.1.0`), tsup's DTS pass, and `ts-api-utils` keep loading 6.0 through `@typescript/typescript6`. The pair installs as two npm aliases, the compat package's own dependency (`@typescript/old`, requested as the floating `npm:typescript@^6`, which reaches past the linter's cap) is pinned to `6.0.3` by an `override`, and `dist/` is byte-identical to the TypeScript 6 build. `npm run typecheck` drops 0.90 s → 0.23 s on this tree.
+- **The install-script gate learned to read aliases.** `build-scripts/install-scripts.json` gains an `aliases` map — `node_modules` directory name → the exact `name@version` a reviewer approved — because an alias is precisely the "familiar name, somebody else's bytes" shape the provenance rule exists to refuse. Provenance is now checked against the target's tarball on the public registry, so a reviewed alias still cannot launder a `git`/`file:`/foreign-path resolution; a new or retargeted alias fails closed until reviewed, and `--write` records it after that review. Allowlist values must be exact pins: a range is reported as malformed instead of surfacing later as "not allowlisted".
+- **Pinned by tests, not trusted.** `test/unit/install-scripts.test.ts` (36 tests) covers the alias paths — unreviewed, retargeted, aliased install scripts, foreign tarballs, prototype keys, malformed files — and the new `test/unit/typescript-toolchain.test.ts` pins which compiler runs the typecheck, which API the tools embed, and that the API sits inside every installed package's declared peer range.
+
 ## [0.6.2] - 2026-11-21
 
 ### Changed

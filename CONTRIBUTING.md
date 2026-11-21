@@ -39,7 +39,7 @@ npm run test:e2e
 - **A WASM change is not done until it has been executed.** A smaller `heic-decoder.wasm` that fails to instantiate is worse than a bigger one; the real-decode and browser E2E suites must pass against the rebuilt artifact pair.
 - **New behaviour needs a test that fails without it.** Prove a new assertion by breaking the source it guards, then reverting.
 - Public API stays small and backwards compatible; new error codes are additive.
-- If `npm run check:scripts` fails, a dev dependency now runs code at install time. Review the script, then `npm run check:scripts -- --write`.
+- If `npm run check:scripts` fails, either a dev dependency now runs code at install time or an npm alias resolves to something other than the target a reviewer recorded. Read the script (or the alias's target package), then `npm run check:scripts -- --write` and commit the diff. A `git`/`file:`/foreign-host resolution is never allowlisted — fix the resolution instead.
 
 ## Reporting something sensitive
 
